@@ -52,7 +52,7 @@ pub const Anim = enum(u2) {
     wave,
 };
 
-/// What a vertex packs into its last float: an integer under 2^21, exact
+/// What a vertex packs into its last float: an integer under 2^23, exact
 /// in a float, which the shader takes apart with floor and powers of two.
 pub const Info = struct {
     /// The atlas tile (water: how deep it is, in blocks, up to 63).
@@ -63,10 +63,13 @@ pub const Info = struct {
     sky: u4,
     lamp: u4,
     anim: Anim = .none,
+    /// The tile's fine detail (solid faces only).
+    detail: blocks.Detail = .none,
 
     pub fn pack(i: Info) f32 {
         const v: u32 = @as(u32, i.tile) | @as(u32, i.ao) << 6 | @as(u32, @intFromEnum(i.face)) << 8 |
-            @as(u32, i.sky) << 11 | @as(u32, i.lamp) << 15 | @as(u32, @intFromEnum(i.anim)) << 19;
+            @as(u32, i.sky) << 11 | @as(u32, i.lamp) << 15 | @as(u32, @intFromEnum(i.anim)) << 19 |
+            @as(u32, @intFromEnum(i.detail)) << 21;
         return @floatFromInt(v);
     }
 
@@ -79,6 +82,7 @@ pub const Info = struct {
             .sky = @truncate(v >> 11),
             .lamp = @truncate(v >> 15),
             .anim = @enumFromInt(@as(u2, @truncate(v >> 19))),
+            .detail = @enumFromInt(@as(u2, @truncate(v >> 21))),
         };
     }
 };
@@ -107,8 +111,16 @@ pub const Section = enum(u3) {
     pub const count = 7;
 };
 
+/// The order a strip's solid faces are kept in, a face's after another's.
+/// From most places only one of each pair of opposite faces can be seen
+/// (and usually the tops), and whichever they are, this order puts most
+/// of them next to each other, to be drawn together.
+pub const face_order = [6]Face{ .north, .west, .up, .east, .south, .down };
+
 pub const Mesh = struct {
     lists: [Section.count]std.ArrayList(Vertex) = @splat(.empty),
+    /// Quads of each solid strip facing each way (in `face_order`).
+    face_quads: [blocks.Tile.strips][6]u32 = @splat(@splat(0)),
 
     pub fn deinit(m: *Mesh, gpa: std.mem.Allocator) void {
         for (&m.lists) |*l| l.deinit(gpa);
@@ -116,6 +128,7 @@ pub const Mesh = struct {
 
     pub fn clearRetainingCapacity(m: *Mesh) void {
         for (&m.lists) |*l| l.clearRetainingCapacity();
+        m.face_quads = @splat(@splat(0));
     }
 
     pub fn list(m: *Mesh, s: Section) *std.ArrayList(Vertex) {
@@ -247,7 +260,7 @@ fn emitQuad(list: *std.ArrayList(Vertex), gpa: std.mem.Allocator, face: Face, co
         try list.append(gpa, .{
             .pos = c,
             .uv = .{ uv[0], stripT(tile, uv[1] - top) },
-            .info = (Info{ .tile = look.tile, .ao = look.ao[k], .face = face, .sky = look.sky[k], .lamp = look.lamp[k], .anim = anims[k] }).pack(),
+            .info = (Info{ .tile = look.tile, .ao = look.ao[k], .face = face, .sky = look.sky[k], .lamp = look.lamp[k], .anim = anims[k], .detail = tile.detail() }).pack(),
         });
     }
 }
@@ -300,7 +313,12 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, mesh: *Mesh) !
     // The faces in one slice, waiting to be merged: the biggest slice is
     // 16 by 64.
     var mask: [world_mod.chunk_size * world_mod.size_y]?FaceLook = undefined;
-    for (Face.all) |face| {
+    for (face_order, 0..) |face, k| {
+        var before: [blocks.Tile.strips]usize = undefined;
+        for (&before, 0..) |*b, st| b.* = mesh.items(.solid(@intCast(st))).len;
+        defer for (before, 0..) |b, st| {
+            mesh.face_quads[st][k] = @intCast((mesh.items(.solid(@intCast(st))).len - b) / 4);
+        };
         const a: usize = @intFromEnum(face) / 2;
         const b = (a + 1) % 3;
         const c = (a + 2) % 3;

@@ -39,6 +39,30 @@ pub const max_quads = 16384;
 /// Mipmap levels after the first: down to a pixel a tile (64 to 1).
 const mip_levels = 6;
 
+/// Chunks nearer than this (in blocks, along the ground) are drawn with
+/// their bumps and detail (terrain_bump.zig, whose `bump_far` it is);
+/// further off, the bumps are too small to see, and terrain.zig draws them
+/// for less.
+pub const near_distance = 32;
+
+/// The detail texture: as the strips, but repeating both ways.
+fn detailConfig() vc4.texture.Config {
+    const layout = vc4.texture.mipmapLayout(textures.detail_size, textures.detail_size, detail_levels);
+    return .{
+        .offset = layout.base,
+        .width = textures.detail_size,
+        .height = textures.detail_size,
+        .mag_filter = .linear,
+        .min_filter = .nearest,
+        .mip_levels = detail_levels,
+        .mip_filter = .linear,
+        .wrap_s = .repeat,
+        .wrap_t = .repeat,
+    };
+}
+
+const detail_levels = 6;
+
 /// How the strips are sampled: smoothly (bilinear) up close; further off,
 /// from the mipmap levels, the nearest texel of the two nearest levels
 /// mixed (so a texel of the next tile down never bleeds in); repeating
@@ -164,6 +188,8 @@ const ChunkGpu = struct {
     /// Quads in each of its meshes (one after another in `bo`, in the
     /// order of mesher.Section).
     quads: [mesher.Section.count]u32 = @splat(0),
+    /// Of the solid quads, how many face each way (see mesher.face_order).
+    face_quads: [blocks.Tile.strips][6]u32 = @splat(@splat(0)),
     /// How high its faces go, for culling.
     min_y: f32 = 0,
     max_y: f32 = 0,
@@ -173,6 +199,38 @@ const ChunkGpu = struct {
         var n: u32 = 0;
         for (c.quads[0..@intFromEnum(s)]) |q| n += q;
         return n * 4 * @sizeOf(Vertex);
+    }
+
+    /// The parts of a solid strip that can face the eye, as runs of quads
+    /// (first, count) from the strip's start: a face is seen only from in
+    /// front of it, so of the faces of a chunk the eye is east of, none
+    /// facing west are.
+    fn facing(c: ChunkGpu, strip: usize, corner: V3, eye: V3, runs: *[3][2]u32) []const [2]u32 {
+        const size: f32 = world_mod.chunk_size;
+        // A little room for leaves swaying.
+        const m = 0.25;
+        var n: usize = 0;
+        var at: u32 = 0;
+        for (mesher.face_order, c.face_quads[strip]) |face, q| {
+            const seen = switch (face) {
+                .east => eye[0] > corner[0] - m,
+                .west => eye[0] < corner[0] + size + m,
+                .up => eye[1] > c.min_y,
+                .down => eye[1] < c.max_y,
+                .south => eye[2] > corner[2] - m,
+                .north => eye[2] < corner[2] + size + m,
+            };
+            if (seen and q > 0) {
+                if (n > 0 and runs[n - 1][0] + runs[n - 1][1] == at) {
+                    runs[n - 1][1] += q;
+                } else {
+                    runs[n] = .{ at, q };
+                    n += 1;
+                }
+            }
+            at += q;
+        }
+        return runs[0..n];
     }
 };
 
@@ -196,6 +254,8 @@ pub const Stats = struct {
     chunks: u32 = 0,
     draws: u32 = 0,
     triangles: u32 = 0,
+    /// Of the draws, those with bumps and detail (the near chunks').
+    detailed: u32 = 0,
 };
 
 pub fn Renderer(comptime Device: type) type {
@@ -216,6 +276,8 @@ pub fn Renderer(comptime Device: type) type {
         strips: [blocks.Tile.strips]vc4.Bo,
         albedo: [blocks.Tile.strips]vc4.Bo,
         normals: [blocks.Tile.strips]vc4.Bo,
+        /// Fine detail drawn over near faces.
+        detail: vc4.Bo,
         indices: vc4.Bo,
         sea: vc4.Bo,
         sea_quads: u32,
@@ -258,6 +320,14 @@ pub fn Renderer(comptime Device: type) type {
             for (&bos) |*bo| {
                 bo.* = try dev.createBo(layout.size);
                 made += 1;
+            }
+            const detail_layout = vc4.texture.mipmapLayout(textures.detail_size, textures.detail_size, detail_levels);
+            const detail = try dev.createBo(detail_layout.size);
+            errdefer dev.destroyBo(detail);
+            {
+                var fine: [textures.detail_size * textures.detail_size]u32 = undefined;
+                textures.detail(&fine);
+                try vc4.texture.uploadMipmaps(gpa, detail.map, &fine, textures.detail_size, textures.detail_size, detail_levels, .colour);
             }
             const px = try gpa.create([3][textures.strip_width * textures.strip_height]u32);
             defer gpa.destroy(px);
@@ -307,6 +377,7 @@ pub fn Renderer(comptime Device: type) type {
                 .strips = bos[0..blocks.Tile.strips].*,
                 .albedo = bos[blocks.Tile.strips..][0..blocks.Tile.strips].*,
                 .normals = bos[2 * blocks.Tile.strips ..][0..blocks.Tile.strips].*,
+                .detail = detail,
                 .indices = indices,
                 .sea = sea,
                 .sea_quads = @intCast(sea_verts.len / 4),
@@ -320,7 +391,7 @@ pub fn Renderer(comptime Device: type) type {
         pub fn deinit(r: *Self) void {
             for (&r.chunks) |*c| if (c.bo) |bo| r.dev.destroyBo(bo);
             for ([_][blocks.Tile.strips]vc4.Bo{ r.strips, r.albedo, r.normals }) |set| for (set) |bo| r.dev.destroyBo(bo);
-            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines }) |bo| r.dev.destroyBo(bo);
+            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.detail }) |bo| r.dev.destroyBo(bo);
             r.terrain.deinit(r.dev);
             r.terrain_bump.deinit(r.dev);
             r.terrain_blend.deinit(r.dev);
@@ -384,6 +455,7 @@ pub fn Renderer(comptime Device: type) type {
             c.* = .{
                 .bo = bo,
                 .quads = quads,
+                .face_quads = m.face_quads,
                 // Room for swaying and waves.
                 .min_y = min_y - 0.5,
                 .max_y = max_y + 0.5,
@@ -445,18 +517,27 @@ pub fn Renderer(comptime Device: type) type {
             for (&plain, r.albedo) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
             var normal: [blocks.Tile.strips]vc4.render.Texture = undefined;
             for (&normal, r.normals) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
+            const fine: vc4.render.Texture = .{ .handle = r.detail.handle, .config = detailConfig() };
             const target: Target(@TypeOf(sink)) = .{ .sink = sink, .viewport = viewport, .scissor = scissor, .indices = r.indices.handle, .stats = &r.stats };
 
             // 1. Solid blocks, near to far.
             for (visible) |o| {
                 const c = r.chunks[o.i];
+                const corner = chunkCorner(o.i);
+                const near = o.d < near_distance;
                 for (0..blocks.Tile.strips) |k| {
                     const sec = mesher.Section.solid(@intCast(k));
-                    const count = c.quads[@intFromEnum(sec)];
-                    if (v.bump) {
-                        try target.quads2(&r.terrain_bump, c.bo.?.handle, c.offset(sec), count, plain[k], normal[k]);
-                    } else {
-                        try target.quads(&r.terrain, c.bo.?.handle, c.offset(sec), count, tex[k]);
+                    var runs: [3][2]u32 = undefined;
+                    for (c.facing(k, corner, cam.eye, &runs)) |run| {
+                        const offset = c.offset(sec) + run[0] * 4 * @sizeOf(Vertex);
+                        if (!v.bump) {
+                            try target.quads(&r.terrain, c.bo.?.handle, offset, run[1], .{ tex[k], null, null });
+                        } else if (near) {
+                            try target.quads(&r.terrain_bump, c.bo.?.handle, offset, run[1], .{ plain[k], normal[k], fine });
+                            r.stats.detailed += 1;
+                        } else {
+                            try target.quads(&r.terrain, c.bo.?.handle, offset, run[1], .{ plain[k], null, null });
+                        }
                     }
                 }
             }
@@ -471,15 +552,15 @@ pub fn Renderer(comptime Device: type) type {
                 .horizon = .{ fog[0], fog[1], fog[2], 0 },
             };
             r.sky.setUniforms(std.mem.asBytes(&sky));
-            try target.quads(&r.sky, r.dome.handle, 0, r.dome_quads, null);
+            try target.quads(&r.sky, r.dome.handle, 0, r.dome_quads, .{ null, null, null });
             // 3. Water, far to near; the sea around the world first (it is
             // furthest).
-            try target.quads(&r.water, r.sea.handle, 0, r.sea_quads, null);
+            try target.quads(&r.water, r.sea.handle, 0, r.sea_quads, .{ null, null, null });
             var k = visible.len;
             while (k > 0) {
                 k -= 1;
                 const c = r.chunks[visible[k].i];
-                try target.quads(&r.water, c.bo.?.handle, c.offset(.water), c.quads[@intFromEnum(mesher.Section.water)], null);
+                try target.quads(&r.water, c.bo.?.handle, c.offset(.water), c.quads[@intFromEnum(mesher.Section.water)], .{ null, null, null });
             }
             // 4. Glass and plants, far to near.
             k = visible.len;
@@ -488,7 +569,7 @@ pub fn Renderer(comptime Device: type) type {
                 const c = r.chunks[visible[k].i];
                 for (0..blocks.Tile.strips) |sk| {
                     const sec = mesher.Section.clear(@intCast(sk));
-                    try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], tex[sk]);
+                    try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], .{ tex[sk], null, null });
                 }
             }
             // 5. The outline.
@@ -530,12 +611,7 @@ fn Target(comptime Sink: type) type {
         /// Draws `count` quads from `offset` in a buffer, in parts of up to
         /// `max_quads`. A frame that is full gets no more (it cannot be
         /// rendered and started again without losing its depth).
-        fn quads(t: @This(), p: *shader.Pipeline, handle: u32, offset: u32, count: u32, tex: ?vc4.render.Texture) !void {
-            try t.quads2(p, handle, offset, count, tex, null);
-        }
-
-        /// As `quads`, with a second texture (on unit 1).
-        fn quads2(t: @This(), p: *shader.Pipeline, handle: u32, offset: u32, count: u32, tex: ?vc4.render.Texture, tex1: ?vc4.render.Texture) !void {
+        fn quads(t: @This(), p: *shader.Pipeline, handle: u32, offset: u32, count: u32, tex: [3]?vc4.render.Texture) !void {
             var done: u32 = 0;
             while (done < count) {
                 const n: u32 = @min(count - done, max_quads);
@@ -545,8 +621,9 @@ fn Target(comptime Sink: type) type {
                     .vertex_offset = offset + done * 4 * @sizeOf(Vertex),
                     .count = n * 6,
                     .indices = .{ .handle = t.indices, .offset = 0, .max_index = n * 4 - 1 },
-                    .texture = tex,
-                    .texture1 = tex1,
+                    .texture = tex[0],
+                    .texture1 = tex[1],
+                    .texture2 = tex[2],
                     .viewport = t.viewport,
                     .scissor = t.scissor,
                 });
@@ -555,6 +632,15 @@ fn Target(comptime Sink: type) type {
                 done += n;
             }
         }
+    };
+}
+
+/// A chunk's corner nearest the origin (at y = 0).
+fn chunkCorner(i: usize) V3 {
+    return .{
+        @floatFromInt(i % world_mod.chunks_x * world_mod.chunk_size),
+        0,
+        @floatFromInt(i / world_mod.chunks_x * world_mod.chunk_size),
     };
 }
 
@@ -761,4 +847,47 @@ test "fixed geometry: the sea ring leaves the world's middle to its own water; t
         };
         try testing.expectEqual(@as(u32, 1), along);
     }
+}
+
+test "faces turned away are not drawn, and none that can be seen are left out" {
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    try w.generate(world_mod.default_seed);
+    var m: mesher.Mesh = .{};
+    defer m.deinit(testing.allocator);
+    const eyes = [_]V3{ w.spawn + V3{ 0, 1.6, 0 }, .{ 64, 100, 150 }, .{ 20, 30, 20 }, .{ 100, 5, 70 } };
+    var all: usize = 0;
+    var drawn: usize = 0;
+    for (0..world_mod.chunk_count) |i| {
+        try mesher.build(testing.allocator, w, i % world_mod.chunks_x, i / world_mod.chunks_x, &m);
+        for (0..blocks.Tile.strips) |k| {
+            const list = m.items(.solid(@intCast(k)));
+            var min_y: f32 = std.math.inf(f32);
+            var max_y: f32 = -std.math.inf(f32);
+            for (list) |v| {
+                min_y = @min(min_y, v.pos[1]);
+                max_y = @max(max_y, v.pos[1]);
+            }
+            const c: ChunkGpu = .{ .face_quads = m.face_quads, .min_y = min_y - 0.5, .max_y = max_y + 0.5 };
+            for (eyes) |eye| {
+                var runs: [3][2]u32 = undefined;
+                const got = c.facing(k, chunkCorner(i), eye, &runs);
+                for (got) |run| drawn += run[1];
+                all += list.len / 4;
+                for (0..list.len / 4) |q| {
+                    const v = list[q * 4];
+                    const n = mesher.Info.unpack(v.info).face.normal();
+                    const to = eye - v.pos;
+                    const front = @as(f32, @floatFromInt(n[0])) * to[0] + @as(f32, @floatFromInt(n[1])) * to[1] + @as(f32, @floatFromInt(n[2])) * to[2] > 0;
+                    if (!front) continue;
+                    var in = false;
+                    for (got) |run| in = in or (q >= run[0] and q < run[0] + run[1]);
+                    try testing.expect(in);
+                }
+            }
+        }
+    }
+    // About half are turned away from any one place.
+    try testing.expect(drawn * 10 < all * 7);
+    std.log.info("faces turned to the eye: {d} of {d} quads drawn", .{ drawn, all });
 }

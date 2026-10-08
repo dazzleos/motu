@@ -36,6 +36,8 @@ pub const Info = struct {
     sky: f32,
     lamp: f32,
     anim: f32,
+    /// blocks.Detail: 0 none, 1 grain, 2 streaks, 3 rough.
+    detail: f32,
 };
 
 /// The packed float, taken apart (each field is a power of two wide, so
@@ -46,13 +48,15 @@ pub fn unpack(info: f32) Info {
     const c = @floor(b * 0.125);
     const d = @floor(c * 0.0625);
     const e = @floor(d * 0.0625);
+    const f = @floor(e * 0.25);
     return .{
         .tile = info - a * 64,
         .ao = a - b * 4,
         .face = b - c * 8,
         .sky = c - d * 16,
         .lamp = d - e * 16,
-        .anim = e,
+        .anim = e - f * 4,
+        .detail = f,
     };
 }
 

@@ -545,6 +545,37 @@ pub fn tilePixels(t: Tile, out: *[tile_size * tile_size]Pixel) void {
     for (out, cols, ns) |*o, c, nm| o.* = pack(shaded(c.c, nm), c.a);
 }
 
+// --- Detail ---------------------------------------------------------------------------
+
+/// The detail texture's size: a patch of fine noise, repeating both ways,
+/// drawn over near faces several times a block (see terrain_bump.zig).
+pub const detail_size = 64;
+
+/// The detail texture, row by row: red and green, which way the noise's
+/// surface leans (across, down, as a normal map's x and y); blue, how
+/// light it is. All are 128 where it is level.
+pub fn detail(out: *[detail_size * detail_size]Pixel) void {
+    var h: [detail_size * detail_size]f32 = undefined;
+    for (0..detail_size) |y| for (0..detail_size) |x| {
+        const u = @as(f32, @floatFromInt(x)) / detail_size;
+        const v = @as(f32, @floatFromInt(y)) / detail_size;
+        // Grains of two sizes, and a texel's worth of grit.
+        h[y * detail_size + x] = fbm(u, v, 8, 3, 0xde7a11) * 0.6 + hash(@intCast(x), @intCast(y), 0x9417) * 0.4;
+    };
+    const at = struct {
+        fn f(hs: *const [detail_size * detail_size]f32, x: usize, y: usize) f32 {
+            return hs[(y % detail_size) * detail_size + x % detail_size];
+        }
+    }.f;
+    for (0..detail_size) |y| for (0..detail_size) |x| {
+        const dx = (at(&h, x + 1, y) - at(&h, x + detail_size - 1, y)) * 1.5;
+        const dy = (at(&h, x, y + 1) - at(&h, x, y + detail_size - 1)) * 1.5;
+        const l = @sqrt(dx * dx + dy * dy + 1);
+        const lum = 0.5 + (at(&h, x, y) - 0.5) * 0.8;
+        out[y * detail_size + x] = pack(.{ (-dx / l * 0.5 + 0.5) * 255, (-dy / l * 0.5 + 0.5) * 255, lum * 255 }, 1);
+    };
+}
+
 // --- Icons ------------------------------------------------------------------------------
 
 pub const icon_size = 48;

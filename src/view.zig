@@ -132,12 +132,13 @@ pub const Blocks = struct {
     fn statsPanel(self: *const Blocks, cx: *ui.Context) ui.Widget {
         const s = self.stats;
         const p = self.game.player.pos;
-        const text = cx.fmt("{d:.0} fps{s}{s}\n{d} chunks, {d} draws\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
+        const text = cx.fmt("{d:.0} fps{s}{s}\n{d} chunks, {d} draws ({d} detailed)\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
             self.fps,
             if (self.game.antialias) "  ·  4x antialiased" else "",
             if (self.game.bump) "  ·  bump mapped" else "",
             s.chunks,
             s.draws,
+            s.detailed,
             s.triangles / 1000,
             p[0],
             p[1],
