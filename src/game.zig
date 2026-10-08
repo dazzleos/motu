@@ -10,7 +10,9 @@
 //!     Space                                 jump (flying: rise)
 //!     Shift                                 flying: sink
 //!     F                                     fly, or walk
-//!     drag                                  look around
+//!     click                                 take the mouse (it turns the
+//!                                           view; Esc gives it back)
+//!     drag                                  look around (mouse not taken)
 //!     click                                 place a block
 //!     right click, or press and hold        take a block away
 //!     middle click                          take that kind of block
@@ -20,6 +22,7 @@
 //!     M                                     antialiasing on or off
 //!     N                                     bump mapping and ripples on or off
 //!     F1                                    help;  F3: what is drawn
+//!     F11                                   fullscreen, or not
 //!
 //! Every change to the world goes through `edit`, the one place a future
 //! network game would send and receive changes.
@@ -55,12 +58,18 @@ pub const keys = struct {
     pub const space = 57;
     pub const f1 = 59;
     pub const f3 = 61;
+    pub const f11 = 87;
     pub const right_ctrl = 97;
     pub const up = 103;
     pub const left = 105;
     pub const right = 106;
     pub const down = 108;
 };
+
+/// Mouse buttons (Linux button codes).
+const btn_left = 0x110;
+const btn_right = 0x111;
+const btn_middle = 0x112;
 
 /// How far away blocks can be built on.
 pub const reach: f32 = 24;
@@ -99,6 +108,14 @@ pub const Game = struct {
     target: ?player_mod.Hit = null,
     /// A press in the view: where, and whether it has become a drag.
     press: ?struct { at: [2]f32, last: [2]f32, dragging: bool } = null,
+    /// The mouse can be taken (the shell can lock the pointer), and is:
+    /// it turns the view, and its buttons act on the block in the middle.
+    can_capture: bool = false,
+    captured: bool = false,
+    /// For the window: take the mouse (true) or give it back (false).
+    capture_wanted: ?bool = null,
+    /// For the window: fullscreen, or not.
+    fullscreen_wanted: bool = false,
     /// What happened, shown for a moment.
     message: []const u8 = "",
     message_until: f32 = 0,
@@ -140,8 +157,16 @@ pub const Game = struct {
                 g.player.vel[1] = 0;
                 g.say(if (g.player.flying) "Flying" else "Walking");
             },
-            keys.e => g.palette_open = !g.palette_open,
-            keys.esc => g.palette_open = false,
+            keys.e => {
+                g.palette_open = !g.palette_open;
+                // Its blocks are chosen with the pointer.
+                if (g.palette_open and g.captured) g.capture_wanted = false;
+            },
+            keys.esc => {
+                if (g.captured) g.capture_wanted = false;
+                g.palette_open = false;
+            },
+            keys.f11 => g.fullscreen_wanted = true,
             keys.t => {
                 g.time_of_day = @mod(g.time_of_day + 0.125, 1);
                 g.say(timeName(g.time_of_day));
@@ -197,13 +222,37 @@ pub const Game = struct {
         g.help = false;
     }
 
-    /// The press let go: a click (not a drag) builds.
+    /// The press let go: a click (not a drag) takes the mouse, if it can
+    /// be; otherwise builds.
     pub fn pointerUp(g: *Game) void {
         const pr = g.press orelse return;
         g.press = null;
         if (pr.dragging) return;
+        if (g.can_capture and !g.captured) {
+            g.capture_wanted = true;
+            return;
+        }
         g.updateTarget();
         _ = g.place();
+    }
+
+    /// The mouse moved by (`dx`, `dy`) pixels while taken: the view turns.
+    pub fn mouseMoved(g: *Game, dx: f32, dy: f32) void {
+        g.player.look(dx * look_speed, -dy * look_speed);
+    }
+
+    /// A button pressed while the mouse is taken: on the block in the
+    /// middle, the left builds, the right takes away, the middle picks.
+    pub fn mouseButton(g: *Game, code: u32, pressed: bool) void {
+        if (!pressed) return;
+        g.help = false;
+        g.updateTarget();
+        switch (code) {
+            btn_left => _ = g.place(),
+            btn_right => _ = g.remove(),
+            btn_middle => g.pickAtPointer(),
+            else => {},
+        }
     }
 
     /// Right click, or a long press.
@@ -267,9 +316,11 @@ pub const Game = struct {
         return false;
     }
 
-    /// What the pointer is over.
+    /// What the pointer is over (with the mouse taken, what is in the
+    /// middle of the view).
     pub fn updateTarget(g: *Game) void {
-        const p = g.pointer orelse {
+        const middle: [2]f32 = .{ g.view_size[0] / 2, g.view_size[1] / 2 };
+        const p = (if (g.captured) middle else g.pointer) orelse {
             g.target = null;
             return;
         };
@@ -393,6 +444,36 @@ test "clicking places the block chosen on the face pointed at; right click takes
     g.pointerUp();
     try testing.expect(g.player.yaw > yaw);
     try testing.expectEqual(Block.air, g.world.get(t.before[0], t.before[1], t.before[2]));
+}
+
+test "with the mouse taken, it turns the view and builds on the middle of it" {
+    var g = try testGame();
+    defer g.world.destroy();
+    g.player.pitch = -0.8;
+    // A click asks for the mouse, and builds nothing.
+    g.can_capture = true;
+    g.pointerDown(.{ 10, 10 });
+    g.pointerUp();
+    try testing.expectEqual(@as(?bool, true), g.capture_wanted);
+    try testing.expect(!g.unsaved);
+    // Taken: the pointer's place no longer matters, the middle does.
+    g.capture_wanted = null;
+    g.captured = true;
+    g.pointer = .{ 10, 10 };
+    g.mouseButton(btn_left, true);
+    const t = g.target.?;
+    try testing.expectEqual(Block.grass, g.world.get(t.before[0], t.before[1], t.before[2]));
+    g.mouseButton(btn_right, true);
+    try testing.expectEqual(Block.air, g.world.get(t.before[0], t.before[1], t.before[2]));
+    // Moving it turns the view; Esc gives it back.
+    const yaw = g.player.yaw;
+    g.mouseMoved(100, 0);
+    try testing.expect(g.player.yaw > yaw);
+    g.key(keys.esc, true);
+    try testing.expectEqual(@as(?bool, false), g.capture_wanted);
+    // F11 asks for fullscreen.
+    g.key(keys.f11, true);
+    try testing.expect(g.fullscreen_wanted);
 }
 
 test "no block inside the player; plants only on the ground" {

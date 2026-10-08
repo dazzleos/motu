@@ -170,17 +170,44 @@ fn run(init: std.process.Init.Minimal) !void {
             }
         }
         window_ui.keyboard = win.layout;
+        // The mouse can be taken if the shell can lock the pointer.
+        game.can_capture = win.pointer_constraints != null and win.relative_pointer_manager != null;
         for (win.takeInput()) |e| switch (e) {
-            .motion => |pos| window_ui.pointerMotion(pos),
-            .button => |b| window_ui.pointerButton(b.pos, b.code, b.pressed),
+            // With the mouse taken, it turns the view and its buttons act
+            // on the middle of it; the widgets do not see it.
+            .motion => |pos| if (!game.captured) window_ui.pointerMotion(pos),
+            .button => |b| if (game.captured) game.mouseButton(b.code, b.pressed) else window_ui.pointerButton(b.pos, b.code, b.pressed),
             .key => |k| game.key(k.code, k.pressed),
-            .scroll => |sc| window_ui.pointerScroll(sc.pos, sc.dx, sc.dy),
-            .leave => window_ui.pointerLeave(),
+            .scroll => |sc| if (game.captured) {
+                if (sc.dy != 0) game.scroll(sc.dy);
+            } else window_ui.pointerScroll(sc.pos, sc.dx, sc.dy),
+            .leave => if (!game.captured) window_ui.pointerLeave(),
+            .relative_motion => |d| if (game.captured) game.mouseMoved(d[0], d[1]),
+            .pointer_locked => |locked| {
+                game.captured = locked;
+                // Given back (Esc, or the shell took it): a click takes it
+                // again.
+                if (!locked) win.unlockPointer();
+            },
             .touch_down => |t| window_ui.touchDown(t.id, t.pos),
             .touch_motion => |t| window_ui.touchMotion(t.id, t.pos),
             .touch_up => |id| window_ui.touchUp(id),
             .touch_cancel => window_ui.touchCancel(),
         };
+
+        if (game.capture_wanted) |take| {
+            game.capture_wanted = null;
+            if (take) {
+                if (!win.lockPointer()) game.can_capture = false;
+            } else {
+                win.unlockPointer();
+                game.captured = false;
+            }
+        }
+        if (game.fullscreen_wanted) {
+            game.fullscreen_wanted = false;
+            win.setFullscreen(!win.fullscreen);
+        }
 
         const now = sys.nowNs();
         const dt: f32 = @floatCast(@as(f64, @floatFromInt(now - last)) / std.time.ns_per_s);
@@ -205,6 +232,7 @@ fn run(init: std.process.Init.Minimal) !void {
             .on_maximize = .of(&controls, app.Controls.toggleMaximized),
             .on_drag = .of(&controls, app.Controls.drag),
             .maximized = win.maximized,
+            .fullscreen = win.fullscreen,
         });
         if (window_ui.changed()) {
             const target = try win.beginFrame();

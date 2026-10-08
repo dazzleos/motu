@@ -56,6 +56,8 @@ pub const Blocks = struct {
     on_maximize: ?ui.Callback = null,
     on_drag: ?ui.Callback = null,
     maximized: bool = true,
+    /// On the whole screen: no title bar.
+    fullscreen: bool = false,
 
     pub fn build(self: *const Blocks, cx: *ui.Context) ui.Widget {
         const g = self.game;
@@ -74,6 +76,10 @@ pub const Blocks = struct {
         if (g.help) layers.append(a, cx.make(ui.Align{ .alignment = .top_left, .child = cx.make(ui.Padding{ .padding = .all(14), .child = help(cx) }) })) catch {};
         if (g.stats) layers.append(a, cx.make(ui.Align{ .alignment = .top_right, .child = cx.make(ui.Padding{ .padding = .all(14), .child = self.statsPanel(cx) }) })) catch {};
         if (g.palette_open) layers.append(a, cx.make(ui.Align{ .alignment = .center, .child = self.palette(cx) })) catch {};
+        // With the mouse taken, a mark in the middle: what it acts on.
+        if (g.captured) layers.append(a, cx.make(ui.Center{ .child = crosshair(cx) })) catch {};
+        const world = cx.make(ui.Overlay{ .children = layers.items });
+        if (self.fullscreen) return world;
         return cx.make(ui.Column{ .cross_axis_alignment = .stretch, .children = &.{
             cx.make(ui.TitleBar{
                 .title = "Blocks",
@@ -82,7 +88,7 @@ pub const Blocks = struct {
                 .on_drag = self.on_drag,
                 .maximized = self.maximized,
             }),
-            cx.make(ui.Expanded{ .child = cx.make(ui.Overlay{ .children = layers.items }) }),
+            cx.make(ui.Expanded{ .child = world }),
         } });
     }
 
@@ -149,11 +155,29 @@ pub const Blocks = struct {
     }
 };
 
+/// A small cross, white with a dark edge so it shows on sky and snow.
+fn crosshair(cx: *ui.Context) ui.Widget {
+    const bar = struct {
+        fn f(c: *ui.Context, w: f32, h: f32) ui.Widget {
+            return c.make(ui.Decorated{
+                .color = gfx.Color.argb(0xeeffffff),
+                .border = .{ .width = 1, .color = gfx.Color.argb(0x88000000) },
+                .child = c.make(ui.SizedBox{ .width = w, .height = h, .child = c.make(ui.Empty{}) }),
+            });
+        }
+    }.f;
+    return cx.make(ui.Overlay{ .children = cx.ui.arena().dupe(ui.Widget, &.{
+        cx.make(ui.Center{ .child = bar(cx, 22, 4) }),
+        cx.make(ui.Center{ .child = bar(cx, 4, 22) }),
+    }) catch &.{} });
+}
+
 const help_text =
     \\W A S D  walk  ·  Space  jump  ·  F  fly (Space, Shift: up, down)
-    \\Drag  look around  ·  Click  build  ·  Right click or hold  take away
-    \\1–9 or wheel  choose  ·  Middle click  copy a block  ·  E  all blocks
-    \\T  later in the day  ·  M  antialiasing  ·  N  bump mapping, ripples
+    \\Click  take the mouse, to look around  ·  Esc  give it back
+    \\Click  build  ·  Right click  take away  ·  Middle click  copy a block
+    \\1–9 or wheel  choose  ·  E  all blocks  ·  T  later in the day
+    \\M  antialiasing  ·  N  bump mapping, ripples  ·  F11  fullscreen
     \\F3  what is drawn  ·  F1  this help
 ;
 
