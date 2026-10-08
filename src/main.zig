@@ -222,6 +222,8 @@ fn run(init: std.process.Init.Minimal) !void {
         }
         if (suspended) continue;
 
+        window_ui.fullscreen = win.fullscreen;
+
         window_ui.frame(width, height, now, view.Blocks{
             .game = &game,
             .icons = icons,
@@ -232,7 +234,6 @@ fn run(init: std.process.Init.Minimal) !void {
             .on_maximize = .of(&controls, app.Controls.toggleMaximized),
             .on_drag = .of(&controls, app.Controls.drag),
             .maximized = win.maximized,
-            .fullscreen = win.fullscreen,
         });
         if (window_ui.changed()) {
             const target = try win.beginFrame();

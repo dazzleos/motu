@@ -56,8 +56,6 @@ pub const Blocks = struct {
     on_maximize: ?ui.Callback = null,
     on_drag: ?ui.Callback = null,
     maximized: bool = true,
-    /// On the whole screen: no title bar.
-    fullscreen: bool = false,
 
     pub fn build(self: *const Blocks, cx: *ui.Context) ui.Widget {
         const g = self.game;
@@ -79,7 +77,6 @@ pub const Blocks = struct {
         // With the mouse taken, a mark in the middle: what it acts on.
         if (g.captured) layers.append(a, cx.make(ui.Center{ .child = crosshair(cx) })) catch {};
         const world = cx.make(ui.Overlay{ .children = layers.items });
-        if (self.fullscreen) return world;
         return cx.make(ui.Column{ .cross_axis_alignment = .stretch, .children = &.{
             cx.make(ui.TitleBar{
                 .title = "Blocks",
