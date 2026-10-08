@@ -132,9 +132,16 @@ pub const Blocks = struct {
     fn statsPanel(self: *const Blocks, cx: *ui.Context) ui.Widget {
         const s = self.stats;
         const p = self.game.player.pos;
-        const text = cx.fmt("{d:.0} fps\n{d} chunks, {d} draws\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
-            self.fps, s.chunks, s.draws, s.triangles / 1000,
-            p[0],     p[1],     p[2],    game_mod.timeName(self.game.time_of_day),
+        const text = cx.fmt("{d:.0} fps{s}\n{d} chunks, {d} draws\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
+            self.fps,
+            if (self.game.antialias) "  ·  4x antialiased" else "",
+            s.chunks,
+            s.draws,
+            s.triangles / 1000,
+            p[0],
+            p[1],
+            p[2],
+            game_mod.timeName(self.game.time_of_day),
         });
         return panel(cx, cx.make(ui.Text{ .text = text, .style = .{ .size = 15, .color = gfx.Color.argb(0xffffffff) } }));
     }
@@ -144,7 +151,7 @@ const help_text =
     \\W A S D  walk  ·  Space  jump  ·  F  fly (Space, Shift: up, down)
     \\Drag  look around  ·  Click  build  ·  Right click or hold  take away
     \\1–9 or wheel  choose  ·  Middle click  copy a block  ·  E  all blocks
-    \\T  later in the day  ·  F3  what is drawn  ·  F1  this help
+    \\T  later in the day  ·  M  antialiasing  ·  F3  what is drawn  ·  F1  this help
 ;
 
 fn help(cx: *ui.Context) ui.Widget {

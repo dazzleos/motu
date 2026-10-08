@@ -201,7 +201,8 @@ fn run(init: std.process.Init.Minimal) !void {
         if (window_ui.changed()) {
             const target = try win.beginFrame();
             const region = window_ui.repaint(win.bufferAge());
-            frame.begin(target, .{ .clear = 0xff000000 });
+            // Antialiased: 4x multisampled (see vc4.render.Frame).
+            if (game.antialias) frame.beginMultisampled(target, 0xff000000) else frame.begin(target, .{ .clear = 0xff000000 });
             ui.Ui.limit(&frame, &region);
             try window_ui.render(&frame, win.flusher());
             try win.render(&frame);
