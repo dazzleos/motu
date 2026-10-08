@@ -18,7 +18,7 @@
 //!     E                                     all the blocks
 //!     T                                     later in the day
 //!     M                                     antialiasing on or off
-//!     N                                     bump mapping on or off
+//!     N                                     bump mapping and ripples on or off
 //!     F1                                    help;  F3: what is drawn
 //!
 //! Every change to the world goes through `edit`, the one place a future
@@ -154,7 +154,7 @@ pub const Game = struct {
             },
             keys.n => {
                 g.bump = !g.bump;
-                g.say(if (g.bump) "Bump mapping on" else "Bump mapping off");
+                g.say(if (g.bump) "Bump mapping and ripples on" else "Bump mapping and ripples off");
             },
             else => {},
         }

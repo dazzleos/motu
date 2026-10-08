@@ -63,6 +63,15 @@ fn detailConfig() vc4.texture.Config {
 
 const detail_levels = 6;
 
+/// The ripple texture: as the detail texture.
+fn rippleConfig() vc4.texture.Config {
+    var c = detailConfig();
+    c.offset = vc4.texture.mipmapLayout(textures.ripple_size, textures.ripple_size, detail_levels).base;
+    c.width = textures.ripple_size;
+    c.height = textures.ripple_size;
+    return c;
+}
+
 /// How the strips are sampled: smoothly (bilinear) up close; further off,
 /// from the mipmap levels, the nearest texel of the two nearest levels
 /// mixed (so a texel of the next tile down never bleeds in); repeating
@@ -243,7 +252,8 @@ pub const View = struct {
     time: f32,
     env: Environment,
     underwater: bool = false,
-    /// Solid blocks lit per pixel from their normal maps.
+    /// Solid blocks lit per pixel from their normal maps, and water
+    /// rippled.
     bump: bool = true,
     /// The block to outline.
     outline: ?world_mod.Pos = null,
@@ -268,6 +278,7 @@ pub fn Renderer(comptime Device: type) type {
         terrain_bump: shader.Pipeline,
         terrain_blend: shader.Pipeline,
         water: shader.Pipeline,
+        water_ripples: shader.Pipeline,
         sky: shader.Pipeline,
         line: shader.Pipeline,
         /// The tiles, a strip each (see textures.zig), with mipmaps: shaded
@@ -278,6 +289,8 @@ pub fn Renderer(comptime Device: type) type {
         normals: [blocks.Tile.strips]vc4.Bo,
         /// Fine detail drawn over near faces.
         detail: vc4.Bo,
+        /// Ripples on water.
+        ripples: vc4.Bo,
         indices: vc4.Bo,
         sea: vc4.Bo,
         sea_quads: u32,
@@ -307,6 +320,8 @@ pub fn Renderer(comptime Device: type) type {
             errdefer terrain_blend.deinit(dev);
             var water = try shader.Pipeline.init(gpa, dev, prog(@embedFile("water.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
             errdefer water.deinit(dev);
+            var water_ripples = try shader.Pipeline.init(gpa, dev, prog(@embedFile("water_ripples.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
+            errdefer water_ripples.deinit(dev);
             var sky = try shader.Pipeline.init(gpa, dev, prog(@embedFile("sky.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .cull = .none, .early_z = true });
             errdefer sky.deinit(dev);
             var line = try shader.Pipeline.init(gpa, dev, prog(@embedFile("line.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .primitive = .lines, .early_z = true });
@@ -328,6 +343,13 @@ pub fn Renderer(comptime Device: type) type {
                 var fine: [textures.detail_size * textures.detail_size]u32 = undefined;
                 textures.detail(&fine);
                 try vc4.texture.uploadMipmaps(gpa, detail.map, &fine, textures.detail_size, textures.detail_size, detail_levels, .colour);
+            }
+            const ripples = try dev.createBo(vc4.texture.mipmapLayout(textures.ripple_size, textures.ripple_size, detail_levels).size);
+            errdefer dev.destroyBo(ripples);
+            {
+                var px: [textures.ripple_size * textures.ripple_size]u32 = undefined;
+                textures.ripples(&px);
+                try vc4.texture.uploadMipmaps(gpa, ripples.map, &px, textures.ripple_size, textures.ripple_size, detail_levels, .normal);
             }
             const px = try gpa.create([3][textures.strip_width * textures.strip_height]u32);
             defer gpa.destroy(px);
@@ -372,12 +394,14 @@ pub fn Renderer(comptime Device: type) type {
                 .terrain_bump = terrain_bump,
                 .terrain_blend = terrain_blend,
                 .water = water,
+                .water_ripples = water_ripples,
                 .sky = sky,
                 .line = line,
                 .strips = bos[0..blocks.Tile.strips].*,
                 .albedo = bos[blocks.Tile.strips..][0..blocks.Tile.strips].*,
                 .normals = bos[2 * blocks.Tile.strips ..][0..blocks.Tile.strips].*,
                 .detail = detail,
+                .ripples = ripples,
                 .indices = indices,
                 .sea = sea,
                 .sea_quads = @intCast(sea_verts.len / 4),
@@ -391,11 +415,12 @@ pub fn Renderer(comptime Device: type) type {
         pub fn deinit(r: *Self) void {
             for (&r.chunks) |*c| if (c.bo) |bo| r.dev.destroyBo(bo);
             for ([_][blocks.Tile.strips]vc4.Bo{ r.strips, r.albedo, r.normals }) |set| for (set) |bo| r.dev.destroyBo(bo);
-            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.detail }) |bo| r.dev.destroyBo(bo);
+            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.detail, r.ripples }) |bo| r.dev.destroyBo(bo);
             r.terrain.deinit(r.dev);
             r.terrain_bump.deinit(r.dev);
             r.terrain_blend.deinit(r.dev);
             r.water.deinit(r.dev);
+            r.water_ripples.deinit(r.dev);
             r.sky.deinit(r.dev);
             r.line.deinit(r.dev);
             r.mesh.deinit(r.gpa);
@@ -489,6 +514,7 @@ pub fn Renderer(comptime Device: type) type {
             r.terrain_bump.setUniforms(bytes);
             r.terrain_blend.setUniforms(bytes);
             r.water.setUniforms(bytes);
+            r.water_ripples.setUniforms(bytes);
 
             // The chunks in view, nearest first.
             const frustum = math.Frustum.of(vp);
@@ -555,12 +581,14 @@ pub fn Renderer(comptime Device: type) type {
             try target.quads(&r.sky, r.dome.handle, 0, r.dome_quads, .{ null, null, null });
             // 3. Water, far to near; the sea around the world first (it is
             // furthest).
-            try target.quads(&r.water, r.sea.handle, 0, r.sea_quads, .{ null, null, null });
+            const water = if (v.bump) &r.water_ripples else &r.water;
+            const ripple_tex: [3]?vc4.render.Texture = if (v.bump) .{ .{ .handle = r.ripples.handle, .config = rippleConfig() }, null, null } else .{ null, null, null };
+            try target.quads(water, r.sea.handle, 0, r.sea_quads, ripple_tex);
             var k = visible.len;
             while (k > 0) {
                 k -= 1;
                 const c = r.chunks[visible[k].i];
-                try target.quads(&r.water, c.bo.?.handle, c.offset(.water), c.quads[@intFromEnum(mesher.Section.water)], .{ null, null, null });
+                try target.quads(water, c.bo.?.handle, c.offset(.water), c.quads[@intFromEnum(mesher.Section.water)], ripple_tex);
             }
             // 4. Glass and plants, far to near.
             k = visible.len;
@@ -655,8 +683,10 @@ fn chunkDistance(i: usize, p: V3) f32 {
 // --- Fixed geometry ----------------------------------------------------------------------
 
 /// The sea around the world: quads a block across for 16 blocks out (where
-/// the waves die down), then 16 across, far enough to reach the fog from
-/// anywhere in the world.
+/// the waves die down), then 4 across to 48 out, then 16 across, far
+/// enough to reach the fog from anywhere in the world. (The sea is lit per
+/// vertex, and from one size of quad to one much bigger, the sun's glint
+/// on it would change suddenly.)
 fn seaRing(gpa: std.mem.Allocator) ![]Vertex {
     var out: std.ArrayList(Vertex) = .empty;
     errdefer out.deinit(gpa);
@@ -679,15 +709,20 @@ fn seaRing(gpa: std.mem.Allocator) ![]Vertex {
             try add(&out, gpa, @floatFromInt(x), @floatFromInt(z), 1, y, info);
         }
     }
-    const far = 160;
-    const step = 16;
-    z = -far;
-    while (z < s + far) : (z += step) {
-        var x: i32 = -far;
-        while (x < s + far) : (x += step) {
-            if (x >= -band and x < s + band and z >= -band and z < s + band) continue;
-            try add(&out, gpa, @floatFromInt(x), @floatFromInt(z), step, y, flat);
+    const rings = [_][2]i32{ .{ 48, 4 }, .{ 160, 16 } };
+    var inner: i32 = band;
+    for (rings) |ring| {
+        const far = ring[0];
+        const step = ring[1];
+        z = -far;
+        while (z < s + far) : (z += step) {
+            var x: i32 = -far;
+            while (x < s + far) : (x += step) {
+                if (x >= -inner and x < s + inner and z >= -inner and z < s + inner) continue;
+                try add(&out, gpa, @floatFromInt(x), @floatFromInt(z), @floatFromInt(step), y, flat);
+            }
         }
+        inner = far;
     }
     return out.toOwnedSlice(gpa);
 }

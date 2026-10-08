@@ -153,7 +153,7 @@ const help_text =
     \\W A S D  walk  ·  Space  jump  ·  F  fly (Space, Shift: up, down)
     \\Drag  look around  ·  Click  build  ·  Right click or hold  take away
     \\1–9 or wheel  choose  ·  Middle click  copy a block  ·  E  all blocks
-    \\T  later in the day  ·  M  antialiasing  ·  N  bump mapping
+    \\T  later in the day  ·  M  antialiasing  ·  N  bump mapping, ripples
     \\F3  what is drawn  ·  F1  this help
 ;
 

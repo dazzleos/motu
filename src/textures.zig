@@ -576,6 +576,38 @@ pub fn detail(out: *[detail_size * detail_size]Pixel) void {
     };
 }
 
+// --- Ripples ---------------------------------------------------------------------------
+
+/// The ripple texture's size: a normal map of small waves, repeating both
+/// ways, which water reads twice, moving different ways (see
+/// water_ripples.zig).
+pub const ripple_size = 64;
+
+/// The ripple texture, row by row: a normal map (x, y as across and down
+/// the texture, z up out of the water).
+pub fn ripples(out: *[ripple_size * ripple_size]Pixel) void {
+    var h: [ripple_size * ripple_size]f32 = undefined;
+    for (0..ripple_size) |y| for (0..ripple_size) |x| {
+        const u = @as(f32, @floatFromInt(x)) / ripple_size;
+        const v = @as(f32, @floatFromInt(y)) / ripple_size;
+        // Rounded crests: noise folded over (|n - 0.5|), at two sizes.
+        const a = @abs(fbm(u, v, 4, 2, 0x5ea) - 0.5);
+        const b = @abs(noise(u, v, 8, 0xc0a57) - 0.5);
+        h[y * ripple_size + x] = (0.5 - a) * 7 + (0.5 - b) * 3;
+    };
+    const at = struct {
+        fn f(hs: *const [ripple_size * ripple_size]f32, x: usize, y: usize) f32 {
+            return hs[(y % ripple_size) * ripple_size + x % ripple_size];
+        }
+    }.f;
+    for (0..ripple_size) |y| for (0..ripple_size) |x| {
+        const dx = (at(&h, x + 1, y) - at(&h, x + ripple_size - 1, y)) / 2;
+        const dy = (at(&h, x, y + 1) - at(&h, x, y + ripple_size - 1)) / 2;
+        const l = @sqrt(dx * dx + dy * dy + 1);
+        out[y * ripple_size + x] = packNormal(.{ -dx / l, -dy / l, 1 / l });
+    };
+}
+
 // --- Icons ------------------------------------------------------------------------------
 
 pub const icon_size = 48;
