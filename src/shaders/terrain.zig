@@ -5,6 +5,9 @@
 //!
 //! The fragment shader is kept to a texture read and a multiply-add: it
 //! runs for every pixel, where the vertex shader runs four times a quad.
+//! The texture unit does the rest: the tiles are 64 pixels, in strips one
+//! tile wide that it repeats across a face, filtered smoothly up close and
+//! from mipmaps further off (see textures.zig and mesher.zig).
 
 const gpu = @import("gpu");
 const common = @import("common.zig");
@@ -18,9 +21,8 @@ const in_uv = gpu.vertexInput(Vec2, 1);
 const in_info = gpu.vertexInput(f32, 2);
 
 const v_uv = gpu.vertexOutput(Vec2, 0);
-const v_tile = gpu.vertexOutput(Vec2, 1);
-const v_light = gpu.vertexOutput(Vec3, 2);
-const v_fog = gpu.vertexOutput(f32, 3);
+const v_light = gpu.vertexOutput(Vec3, 1);
+const v_fog = gpu.vertexOutput(f32, 2);
 
 export fn vertex() callconv(.spirv_vertex) void {
     const info = common.unpack(in_info.*);
@@ -44,22 +46,14 @@ export fn vertex() callconv(.spirv_vertex) void {
     v_light.* = .{ lit[0] * keep, lit[1] * keep, lit[2] * keep };
     v_fog.* = fog;
     v_uv.* = in_uv.*;
-    // The tile's corner in the atlas (8 tiles across).
-    const row = @floor(info.tile * 0.125);
-    v_tile.* = .{ (info.tile - row * 8) * 0.125, row * 0.125 };
 }
 
 const f_uv = gpu.fragmentInput(Vec2, 0);
-const f_tile = gpu.fragmentInput(Vec2, 1);
-const f_light = gpu.fragmentInput(Vec3, 2);
-const f_fog = gpu.fragmentInput(f32, 3);
+const f_light = gpu.fragmentInput(Vec3, 1);
+const f_fog = gpu.fragmentInput(f32, 2);
 
 export fn fragment() callconv(.spirv_fragment) void {
-    // The tile repeats a block at a time across merged faces.
-    const uv = f_uv.*;
-    const tile = f_tile.*;
-    const coord = Vec2{ tile[0] + (uv[0] - @floor(uv[0])) * 0.125, tile[1] + (uv[1] - @floor(uv[1])) * 0.125 };
-    const t = gpu.texture(coord);
+    const t = gpu.texture(f_uv.*);
     const l = f_light.*;
     const fog = f_fog.*;
     const fc = u.fog;

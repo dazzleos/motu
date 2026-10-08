@@ -237,13 +237,17 @@ pub const Face = enum(u3) {
     pub const all = std.enums.values(Face);
 };
 
-/// The atlas's tiles (see textures.zig), 8 by 8 of 16 pixels.
+/// The tiles (see textures.zig): 64 pixels square, in strips of 16, one
+/// tile across (so a tile repeats across a face by the texture unit's
+/// own wrapping). A tile's number is its strip times 16 plus its place.
+/// The first strip has everything the island is made of, so a chunk not
+/// built on is drawn with one texture.
 pub const Tile = enum(u6) {
-    grass_top,
+    // The island.
+    grass_top = 0,
     grass_side,
     dirt,
     stone,
-    cobblestone,
     sand,
     sandstone_top,
     sandstone_side,
@@ -252,8 +256,13 @@ pub const Tile = enum(u6) {
     snow,
     log_side,
     log_top,
-    planks,
     leaves,
+    tall_grass,
+    red_flower,
+    yellow_flower,
+    // Building.
+    cobblestone = 16,
+    planks,
     dark_planks,
     glass,
     bricks,
@@ -264,7 +273,10 @@ pub const Tile = enum(u6) {
     gold,
     lamp,
     bookshelf,
-    white,
+    /// For water's icon (the water itself is drawn by its own shader).
+    water,
+    // Colours.
+    white = 32,
     black,
     red,
     orange,
@@ -274,11 +286,18 @@ pub const Tile = enum(u6) {
     purple,
     pink,
     cyan,
-    tall_grass,
-    red_flower,
-    yellow_flower,
-    /// For water's icon (the water itself is drawn by its own shader).
-    water,
+
+    pub const per_strip = 16;
+    pub const strips = 3;
+
+    pub fn strip(t: Tile) u2 {
+        return @intCast(@intFromEnum(t) / per_strip);
+    }
+
+    /// Its place in its strip.
+    pub fn slot(t: Tile) u4 {
+        return @intCast(@intFromEnum(t) % per_strip);
+    }
 };
 
 test "every block that can be placed has a name and its own look" {
@@ -287,7 +306,10 @@ test "every block that can be placed has a name and its own look" {
         try std.testing.expect(!std.mem.eql(u8, b.name(), "?"));
         try std.testing.expect(b.shape() != .none);
     }
-    try std.testing.expect(std.enums.values(Tile).len <= 64);
+    for (std.enums.values(Tile)) |t| try std.testing.expect(t.strip() < Tile.strips);
+    // What the island is made of is all in the first strip.
+    for ([_]Block{ .grass, .dirt, .stone, .sand, .sandstone, .gravel, .clay, .snow, .log, .leaves, .tall_grass, .red_flower, .yellow_flower }) |b|
+        for (Face.all) |f| try std.testing.expectEqual(@as(u2, 0), b.tile(f).strip());
     try std.testing.expectEqual(Tile.grass_top, Block.grass.tile(.up));
     try std.testing.expectEqual(Tile.grass_side, Block.grass.tile(.north));
     try std.testing.expect(Block.leaves.isOpaque() and Block.leaves.passesLight());

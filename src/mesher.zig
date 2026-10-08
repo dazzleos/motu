@@ -3,23 +3,29 @@
 //! them), as quads of four vertices (the renderer's index buffer makes the
 //! two triangles of each).
 //!
-//! Three meshes for each chunk, drawn in turn: solid blocks; water (its
+//! Meshes for each chunk, drawn in turn: solid blocks; water (its
 //! surface, a quad a block so it can wave); and see-through things (glass
-//! and plants), drawn last, blended.
+//! and plants), drawn last, blended. Solid and see-through ones are split
+//! by the texture strip their tiles are in (see blocks.Tile), as a draw
+//! has one texture.
 //!
 //! Each corner has its ambient occlusion (how many of the three blocks
 //! around the corner, in front of the face, are solid: corners in nooks
 //! are darker) and its light, the average of the blocks around it in
 //! front of the face, so light and shade are smooth across faces. Solid
-//! faces next to each other that look the same all over (tile, shade and
-//! light) are merged into one bigger quad ("greedy meshing"), which cuts
-//! the vertices to draw by several times; the tile repeats across it
-//! (the fragment shader wraps the texture coordinates).
+//! faces side by side that look the same all over (tile, shade and light)
+//! are merged into one longer quad, which cuts the vertices to draw by
+//! more than half. They are merged only across the tile (along its s
+//! coordinate), where the texture unit repeats it: a tile is one strip
+//! wide, so s runs on in blocks and wraps by itself. Down the tile (t) a
+//! quad is one block, so t stays within the tile's place in its strip.
+//! Nothing is wrapped in the shader, so the texture unit's choice of
+//! mipmap level (from how fast s and t change between pixels) is right
+//! everywhere, merged or not.
 //!
-//! A vertex is six floats: its place, its texture coordinates (in blocks,
-//! wrapping each block) and the rest packed into one (see `Info`): the GPU
-//! reads vertex attributes only as floats, and fewer bytes a vertex are
-//! less to fetch.
+//! A vertex is six floats: its place, its texture coordinates and the
+//! rest packed into one (see `Info`): the GPU reads vertex attributes only
+//! as floats, and fewer bytes a vertex are less to fetch.
 
 const std = @import("std");
 const blocks = @import("blocks.zig");
@@ -80,25 +86,59 @@ pub const Info = struct {
 /// How high water's surface is in its block.
 pub const water_top: f32 = 0.875;
 
+/// A chunk's meshes, in the order they are drawn (and kept in its buffer).
+pub const Section = enum(u3) {
+    solid0,
+    solid1,
+    solid2,
+    water,
+    clear0,
+    clear1,
+    clear2,
+
+    pub fn solid(strip: u2) Section {
+        return @enumFromInt(@as(u3, strip));
+    }
+
+    pub fn clear(strip: u2) Section {
+        return @enumFromInt(@as(u3, 4) + strip);
+    }
+
+    pub const count = 7;
+};
+
 pub const Mesh = struct {
-    solid: std.ArrayList(Vertex) = .empty,
-    water: std.ArrayList(Vertex) = .empty,
-    clear: std.ArrayList(Vertex) = .empty,
+    lists: [Section.count]std.ArrayList(Vertex) = @splat(.empty),
 
     pub fn deinit(m: *Mesh, gpa: std.mem.Allocator) void {
-        m.solid.deinit(gpa);
-        m.water.deinit(gpa);
-        m.clear.deinit(gpa);
+        for (&m.lists) |*l| l.deinit(gpa);
     }
 
     pub fn clearRetainingCapacity(m: *Mesh) void {
-        m.solid.clearRetainingCapacity();
-        m.water.clearRetainingCapacity();
-        m.clear.clearRetainingCapacity();
+        for (&m.lists) |*l| l.clearRetainingCapacity();
+    }
+
+    pub fn list(m: *Mesh, s: Section) *std.ArrayList(Vertex) {
+        return &m.lists[@intFromEnum(s)];
+    }
+
+    pub fn items(m: *const Mesh, s: Section) []const Vertex {
+        return m.lists[@intFromEnum(s)].items;
+    }
+
+    /// All the solid (or see-through) vertices, whatever their strip.
+    pub fn solidCount(m: *const Mesh) usize {
+        return m.items(.solid0).len + m.items(.solid1).len + m.items(.solid2).len;
+    }
+
+    pub fn clearCount(m: *const Mesh) usize {
+        return m.items(.clear0).len + m.items(.clear1).len + m.items(.clear2).len;
     }
 
     pub fn quads(m: *const Mesh) usize {
-        return (m.solid.items.len + m.water.items.len + m.clear.items.len) / 4;
+        var n: usize = 0;
+        for (m.lists) |l| n += l.items.len;
+        return n / 4;
     }
 };
 
@@ -169,9 +209,17 @@ fn faceLook(w: *const World, p: P, face: Face, tile: blocks.Tile, sway: bool) Fa
     return out;
 }
 
-/// Texture coordinates for a place on a face: across and down the face as
-/// it is seen from outside (so the tiles are the right way round), in
-/// blocks.
+/// How far into a tile's texels its first and last rows are sampled: half
+/// a texel, so a row of the next tile in the strip is never mixed in.
+const inset: f32 = 0.5 / 64.0;
+
+/// t for a place `down` (0 to 1) down the tile `tile`, in its strip.
+pub fn stripT(tile: blocks.Tile, down: f32) f32 {
+    return (@as(f32, @floatFromInt(tile.slot())) + inset + down * (1 - 2 * inset)) / blocks.Tile.per_strip;
+}
+
+/// Where across and down a face a place is, as seen from outside (so the
+/// tiles are the right way round), in blocks.
 fn uvOf(face: Face, x: f32, y: f32, z: f32) [2]f32 {
     return switch (face) {
         .up, .down => .{ x, z },
@@ -188,11 +236,17 @@ fn emitQuad(list: *std.ArrayList(Vertex), gpa: std.mem.Allocator, face: Face, co
     const flip = @as(u32, look.ao[0]) + look.ao[2] < @as(u32, look.ao[1]) + look.ao[3];
     var order = [4]usize{ 0, 1, 2, 3 };
     if (flip) order = .{ 1, 2, 3, 0 };
+    // s runs on in blocks; down the quad (one block), t from the tile's
+    // top to its bottom.
+    var top: f32 = std.math.inf(f32);
+    for (corners) |c| top = @min(top, uvOf(face, c[0], c[1], c[2])[1]);
+    const tile: blocks.Tile = @enumFromInt(look.tile);
     for (order) |k| {
         const c = corners[k];
+        const uv = uvOf(face, c[0], c[1], c[2]);
         try list.append(gpa, .{
             .pos = c,
-            .uv = uvOf(face, c[0], c[1], c[2]),
+            .uv = .{ uv[0], stripT(tile, uv[1] - top) },
             .info = (Info{ .tile = look.tile, .ao = look.ao[k], .face = face, .sky = look.sky[k], .lamp = look.lamp[k], .anim = anims[k] }).pack(),
         });
     }
@@ -283,21 +337,25 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, mesh: *Mesh) !
                     var wb: usize = 1;
                     var hc: usize = 1;
                     if (look.uniform()) {
-                        while (i + wb < nb) : (wb += 1) {
-                            const o = mask[j * nb + i + wb] orelse break;
-                            if (!o.eql(look)) break;
-                        }
-                        grow: while (j + hc < nc) : (hc += 1) {
-                            for (0..wb) |k| {
-                                const o = mask[(j + hc) * nb + i + k] orelse break :grow;
-                                if (!o.eql(look)) break :grow;
+                        // Across the tile only (see the top of the file):
+                        // along b for the faces of z, along c for the rest.
+                        if (a == 2) {
+                            while (i + wb < nb) : (wb += 1) {
+                                const o = mask[j * nb + i + wb] orelse break;
+                                if (!o.eql(look)) break;
+                            }
+                        } else {
+                            while (j + hc < nc) : (hc += 1) {
+                                const o = mask[(j + hc) * nb + i] orelse break;
+                                if (!o.eql(look)) break;
                             }
                         }
                     }
                     for (0..hc) |dj| @memset(mask[(j + dj) * nb + i ..][0..wb], null);
                     const corners = rectCorners(face, plane, @floatFromInt(origin[b] + @as(i32, @intCast(i))), @floatFromInt(origin[c] + @as(i32, @intCast(j))), @floatFromInt(wb), @floatFromInt(hc));
                     const anim: Anim = if (look.sway) .sway else .none;
-                    try emitQuad(&mesh.solid, gpa, face, corners, cornerLooks(face, look), @splat(anim));
+                    const strip = (@as(blocks.Tile, @enumFromInt(look.tile))).strip();
+                    try emitQuad(mesh.list(.solid(strip)), gpa, face, corners, cornerLooks(face, look), @splat(anim));
                     i += wb;
                 }
             }
@@ -323,7 +381,7 @@ fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, mesh: *Mesh) !
                         if (other.isOpaque() or other == blk) continue;
                         const look = faceLook(w, p, face, blk.tile(face), false);
                         const corners = rectCorners(face, @floatFromInt(p[@intFromEnum(face) / 2] + @as(i32, if (@intFromEnum(face) % 2 == 0) 1 else 0)), @floatFromInt(p[(@intFromEnum(face) / 2 + 1) % 3]), @floatFromInt(p[(@intFromEnum(face) / 2 + 2) % 3]), 1, 1);
-                        try emitQuad(&mesh.clear, gpa, face, corners, cornerLooks(face, look), @splat(.none));
+                        try emitQuad(mesh.list(.clear(blk.tile(face).strip())), gpa, face, corners, cornerLooks(face, look), @splat(.none));
                     },
                     .plant => try plantQuads(gpa, w, p, blk, mesh),
                     else => {},
@@ -369,7 +427,7 @@ fn waterFaces(gpa: std.mem.Allocator, w: *const World, p: P, mesh: *Mesh) !void 
 }
 
 fn waterQuad(gpa: std.mem.Allocator, mesh: *Mesh, face: Face, corners: [4][3]f32, depth: u6, light: u8, anims: [4]Anim) !void {
-    for (corners, anims) |c, anim| try mesh.water.append(gpa, .{
+    for (corners, anims) |c, anim| try mesh.list(.water).append(gpa, .{
         .pos = c,
         .uv = .{ 0, 0 },
         .info = (Info{ .tile = depth, .face = face, .sky = world_mod.skyOf(light), .lamp = world_mod.lampOf(light), .anim = anim }).pack(),
@@ -384,19 +442,21 @@ fn plantQuads(gpa: std.mem.Allocator, w: *const World, p: P, blk: Block, mesh: *
     const y: f32 = @floatFromInt(p[1]);
     const z: f32 = @floatFromInt(p[2]);
     const l = w.lightAt(p[0], p[1], p[2]);
-    const tile: u6 = @intFromEnum(blk.tile(.north));
+    const t = blk.tile(.north);
+    const tile: u6 = @intFromEnum(t);
     const lo: f32 = 0.002;
     const hi: f32 = 0.998;
+    const list = mesh.list(.clear(t.strip()));
     const planes = [2][2][2]f32{ .{ .{ x, z }, .{ x + 1, z + 1 } }, .{ .{ x + 1, z }, .{ x, z + 1 } } };
     for (planes) |pl| {
         const a = pl[0];
         const b = pl[1];
         // Bottom left, bottom right, top right, top left; then the back.
         const front = [4][3]f32{ .{ a[0], y, a[1] }, .{ b[0], y, b[1] }, .{ b[0], y + 1, b[1] }, .{ a[0], y + 1, a[1] } };
-        const uvs = [4][2]f32{ .{ lo, hi }, .{ hi, hi }, .{ hi, lo }, .{ lo, lo } };
+        const uvs = [4][2]f32{ .{ lo, stripT(t, 1) }, .{ hi, stripT(t, 1) }, .{ hi, stripT(t, 0) }, .{ lo, stripT(t, 0) } };
         const anims = [4]Anim{ .none, .none, .plant, .plant };
         for ([2][4]usize{ .{ 0, 1, 2, 3 }, .{ 1, 0, 3, 2 } }) |order| {
-            for (order) |k| try mesh.clear.append(gpa, .{
+            for (order) |k| try list.append(gpa, .{
                 .pos = front[k],
                 .uv = uvs[k],
                 .info = (Info{ .tile = tile, .face = .up, .sky = world_mod.skyOf(l), .lamp = world_mod.lampOf(l), .anim = anims[k] }).pack(),
@@ -446,12 +506,15 @@ test "a lone block: six faces, wound to face out, lit and unshaded" {
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
-    try testing.expectEqual(@as(usize, 24), m.solid.items.len);
-    try expectWound(m.solid.items);
+    // Bricks are in the second strip.
+    const bricks = m.items(.solid1);
+    try testing.expectEqual(@as(usize, 24), bricks.len);
+    try testing.expectEqual(@as(usize, 24), m.solidCount());
+    try expectWound(bricks);
     var faces: u8 = 0;
     var q: usize = 0;
     while (q < 24) : (q += 4) {
-        const i = Info.unpack(m.solid.items[q].info);
+        const i = Info.unpack(bricks[q].info);
         faces |= @as(u8, 1) << @intFromEnum(i.face);
         try testing.expectEqual(@as(u2, 0), i.ao);
         try testing.expectEqual(@intFromEnum(Block.bricks.tile(i.face)), i.tile);
@@ -459,7 +522,7 @@ test "a lone block: six faces, wound to face out, lit and unshaded" {
     try testing.expectEqual(@as(u8, 63), faces);
     // Lit by the sky all round (under it, by what spreads in from the
     // sides, smoothed with the open air around).
-    for (m.solid.items) |v| try testing.expect(Info.unpack(v.info).sky >= 14);
+    for (bricks) |v| try testing.expect(Info.unpack(v.info).sky >= 14);
     try testing.expectEqual(@as(u4, 14), world_mod.skyOf(w.lightAt(5, 29, 5)));
 }
 
@@ -472,14 +535,23 @@ test "faces between blocks are hidden, and level faces alike are merged" {
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
     // Top, bottom, both long sides: one quad each; the two ends.
-    try testing.expectEqual(@as(usize, 6 * 4), m.solid.items.len);
-    try expectWound(m.solid.items);
-    // The tile still repeats a block at a time: the long faces' texture
-    // coordinates run 4 blocks.
-    for (m.solid.items) |v| {
+    const stone = m.items(.solid0);
+    try testing.expectEqual(@as(usize, 6 * 4), stone.len);
+    try expectWound(stone);
+    // The long faces' s runs the 4 blocks (the texture unit repeats the
+    // tile); t stays within stone's place in the strip, top to bottom.
+    const lo = stripT(.stone, 0);
+    const hi = stripT(.stone, 1);
+    for (stone) |v| {
         const i = Info.unpack(v.info);
-        if (i.face == .up) try testing.expect(v.pos[0] == 4 or v.pos[0] == 8);
+        if (i.face == .up) {
+            try testing.expect(v.pos[0] == 4 or v.pos[0] == 8);
+            try testing.expectEqual(v.pos[0], v.uv[0]);
+        }
+        try testing.expect(v.uv[1] == lo or v.uv[1] == hi);
+        if (i.face == .south) try testing.expectEqual(if (v.pos[1] == 31) lo else hi, v.uv[1]);
     }
+    try testing.expect(lo > @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.stone))) / 16 and hi < @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.stone) + 1)) / 16);
 }
 
 test "corners in nooks are shaded" {
@@ -494,10 +566,11 @@ test "corners in nooks are shaded" {
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
-    try expectWound(m.solid.items);
+    const solid = m.items(.solid0);
+    try expectWound(solid);
     // The floor's top next to the block: the corners against it shaded.
     var shaded: u32 = 0;
-    for (m.solid.items) |v| {
+    for (solid) |v| {
         const i = Info.unpack(v.info);
         // The floor's corners at the block's foot.
         if (i.face == .up and v.pos[1] == 31 and v.pos[0] == 8 and v.pos[2] == 8 and i.ao > 0) shaded += 1;
@@ -507,10 +580,11 @@ test "corners in nooks are shaded" {
     // than faces.
     var tops: usize = 0;
     var q: usize = 0;
-    while (q < m.solid.items.len) : (q += 4) {
-        if (Info.unpack(m.solid.items[q].info).face == .up and m.solid.items[q].pos[1] == 31) tops += 1;
+    while (q < solid.len) : (q += 4) {
+        if (Info.unpack(solid[q].info).face == .up and solid[q].pos[1] == 31) tops += 1;
     }
-    try testing.expect(tops < 24);
+    // Rows across the open floor merge: about a quad a row.
+    try testing.expect(tops < 40);
 }
 
 test "water: a surface quad a block, lower than the block's top, with its depth" {
@@ -528,9 +602,9 @@ test "water: a surface quad a block, lower than the block's top, with its depth"
     try build(testing.allocator, w, 0, 0, &m);
     // Only the surface: the chunk's edges are against water (or, at the
     // world's edge, the sea).
-    try testing.expectEqual(@as(usize, 256 * 4), m.water.items.len);
-    try expectWound(m.water.items);
-    for (m.water.items) |v| {
+    try testing.expectEqual(@as(usize, 256 * 4), m.items(.water).len);
+    try expectWound(m.items(.water));
+    for (m.items(.water)) |v| {
         try testing.expectEqual(@as(f32, 2 + water_top), v.pos[1]);
         const i = Info.unpack(v.info);
         try testing.expectEqual(@as(u6, 2), i.tile);
@@ -547,11 +621,13 @@ test "plants: two crossed planes, both ways round; glass: faces against air" {
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
-    try testing.expectEqual(@as(usize, 0), m.solid.items.len);
-    // 4 plant quads; 10 glass faces (none between the two panes).
-    try testing.expectEqual(@as(usize, (4 + 10) * 4), m.clear.items.len);
+    try testing.expectEqual(@as(usize, 0), m.solidCount());
+    // 4 plant quads (the island's strip); 10 glass faces (the building
+    // strip; none between the two panes).
+    try testing.expectEqual(@as(usize, 4 * 4), m.items(.clear0).len);
+    try testing.expectEqual(@as(usize, 10 * 4), m.items(.clear1).len);
     var tops: u32 = 0;
-    for (m.clear.items) |v| if (Info.unpack(v.info).anim == .plant) {
+    for (m.items(.clear0)) |v| if (Info.unpack(v.info).anim == .plant) {
         try testing.expectEqual(@as(f32, 21), v.pos[1]);
         tops += 1;
     };
@@ -578,14 +654,16 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
     var most: usize = 0;
     for (0..world_mod.chunks_z) |cz| for (0..world_mod.chunks_x) |cx| {
         try build(testing.allocator, w, cx, cz, &m);
-        solid += m.solid.items.len / 4;
-        water += m.water.items.len / 4;
-        clear += m.clear.items.len / 4;
+        solid += m.solidCount() / 4;
+        water += m.items(.water).len / 4;
+        clear += m.clearCount() / 4;
         most = @max(most, m.quads());
-        try expectWound(m.solid.items);
+        try expectWound(m.items(.solid0));
+        // Nothing built: the island's strip only.
+        try testing.expectEqual(m.items(.solid0).len, m.solidCount());
     };
     std.debug.print("island: {d} solid, {d} water, {d} see-through quads; at most {d} in a chunk\n", .{ solid, water, clear, most });
     // A chunk's meshes fit one index range (16384 quads).
     try testing.expect(most < 16384);
-    try testing.expect(solid < 60000);
+    try testing.expect(solid < 80000);
 }

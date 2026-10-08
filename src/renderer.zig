@@ -36,6 +36,28 @@ const Mat4 = math.Mat4;
 /// index.
 pub const max_quads = 16384;
 
+/// Mipmap levels after the first: down to a pixel a tile (64 to 1).
+const mip_levels = 6;
+
+/// How the strips are sampled: smoothly (bilinear) up close; further off,
+/// from the mipmap levels, the nearest texel of the two nearest levels
+/// mixed (so a texel of the next tile down never bleeds in); repeating
+/// across the tile, and not down it.
+fn stripConfig() vc4.texture.Config {
+    const layout = vc4.texture.mipmapLayout(textures.strip_width, textures.strip_height, mip_levels);
+    return .{
+        .offset = layout.base,
+        .width = textures.strip_width,
+        .height = textures.strip_height,
+        .mag_filter = .linear,
+        .min_filter = .nearest,
+        .mip_levels = mip_levels,
+        .mip_filter = .linear,
+        .wrap_s = .repeat,
+        .wrap_t = .clamp,
+    };
+}
+
 /// Where the fog starts, and how deep it is: past its far end nothing is
 /// drawn, so this is how far one can see.
 pub const fog_start: f32 = 55;
@@ -139,13 +161,19 @@ pub const Environment = struct {
 
 const ChunkGpu = struct {
     bo: ?vc4.Bo = null,
-    /// Quads in each of its meshes (one after another in `bo`).
-    solid: u32 = 0,
-    water: u32 = 0,
-    clear: u32 = 0,
+    /// Quads in each of its meshes (one after another in `bo`, in the
+    /// order of mesher.Section).
+    quads: [mesher.Section.count]u32 = @splat(0),
     /// How high its faces go, for culling.
     min_y: f32 = 0,
     max_y: f32 = 0,
+
+    /// Where a mesh starts in its buffer.
+    fn offset(c: ChunkGpu, s: mesher.Section) u32 {
+        var n: u32 = 0;
+        for (c.quads[0..@intFromEnum(s)]) |q| n += q;
+        return n * 4 * @sizeOf(Vertex);
+    }
 };
 
 /// What `draw` needs to know of the moment.
@@ -179,7 +207,8 @@ pub fn Renderer(comptime Device: type) type {
         water: shader.Pipeline,
         sky: shader.Pipeline,
         line: shader.Pipeline,
-        atlas: vc4.Bo,
+        /// The tiles, a strip each (see textures.zig), with mipmaps.
+        strips: [blocks.Tile.strips]vc4.Bo,
         indices: vc4.Bo,
         sea: vc4.Bo,
         sea_quads: u32,
@@ -212,13 +241,19 @@ pub fn Renderer(comptime Device: type) type {
             var line = try shader.Pipeline.init(gpa, dev, prog(@embedFile("line.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .primitive = .lines, .early_z = true });
             errdefer line.deinit(dev);
 
-            // The atlas.
-            const atlas_px = try gpa.create([textures.atlas_size * textures.atlas_size]u32);
-            defer gpa.destroy(atlas_px);
-            textures.atlas(atlas_px);
-            const atlas = try dev.createBo(vc4.texture.imageSize(textures.atlas_size, textures.atlas_size));
-            errdefer dev.destroyBo(atlas);
-            vc4.texture.upload(atlas.map, atlas_px, textures.atlas_size, textures.atlas_size);
+            // The tiles.
+            const px = try gpa.create([textures.strip_width * textures.strip_height]u32);
+            defer gpa.destroy(px);
+            var strips: [blocks.Tile.strips]vc4.Bo = undefined;
+            var made: usize = 0;
+            errdefer for (strips[0..made]) |bo| dev.destroyBo(bo);
+            const layout = vc4.texture.mipmapLayout(textures.strip_width, textures.strip_height, mip_levels);
+            for (&strips, 0..) |*bo, i| {
+                textures.stripPixels(@intCast(i), px);
+                bo.* = try dev.createBo(layout.size);
+                made += 1;
+                try vc4.texture.uploadMipmaps(gpa, bo.map, px, textures.strip_width, textures.strip_height, mip_levels);
+            }
 
             // Every quad's triangles.
             const indices = try dev.createBo(max_quads * 6 * 2);
@@ -253,7 +288,7 @@ pub fn Renderer(comptime Device: type) type {
                 .water = water,
                 .sky = sky,
                 .line = line,
-                .atlas = atlas,
+                .strips = strips,
                 .indices = indices,
                 .sea = sea,
                 .sea_quads = @intCast(sea_verts.len / 4),
@@ -266,7 +301,8 @@ pub fn Renderer(comptime Device: type) type {
 
         pub fn deinit(r: *Self) void {
             for (&r.chunks) |*c| if (c.bo) |bo| r.dev.destroyBo(bo);
-            for ([_]vc4.Bo{ r.atlas, r.indices, r.sea, r.dome, r.cube_lines }) |bo| r.dev.destroyBo(bo);
+            for (r.strips) |bo| r.dev.destroyBo(bo);
+            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines }) |bo| r.dev.destroyBo(bo);
             r.terrain.deinit(r.dev);
             r.terrain_blend.deinit(r.dev);
             r.water.deinit(r.dev);
@@ -305,7 +341,7 @@ pub fn Renderer(comptime Device: type) type {
             try mesher.build(r.gpa, w, cx, cz, &r.mesh);
             const c = &r.chunks[i];
             const m = &r.mesh;
-            const total = m.solid.items.len + m.water.items.len + m.clear.items.len;
+            const total = m.quads() * 4;
             // A new buffer: the old one may still be in a frame the GPU is
             // drawing (it keeps it until then).
             if (c.bo) |bo| r.dev.destroyBo(bo);
@@ -315,7 +351,10 @@ pub fn Renderer(comptime Device: type) type {
             var at: usize = 0;
             var min_y: f32 = std.math.inf(f32);
             var max_y: f32 = -std.math.inf(f32);
-            for ([_][]const Vertex{ m.solid.items, m.water.items, m.clear.items }) |list| {
+            var quads: [mesher.Section.count]u32 = undefined;
+            for (m.lists, &quads) |l, *q| {
+                const list = l.items;
+                q.* = @intCast(list.len / 4);
                 @memcpy(bo.map[at..][0 .. list.len * @sizeOf(Vertex)], std.mem.sliceAsBytes(list));
                 at += list.len * @sizeOf(Vertex);
                 for (list) |v| {
@@ -325,9 +364,7 @@ pub fn Renderer(comptime Device: type) type {
             }
             c.* = .{
                 .bo = bo,
-                .solid = @intCast(m.solid.items.len / 4),
-                .water = @intCast(m.water.items.len / 4),
-                .clear = @intCast(m.clear.items.len / 4),
+                .quads = quads,
                 // Room for swaying and waves.
                 .min_y = min_y - 0.5,
                 .max_y = max_y + 0.5,
@@ -382,20 +419,17 @@ pub fn Renderer(comptime Device: type) type {
                 }
             }.less);
             r.stats.chunks = @intCast(n);
-            const tex: vc4.render.Texture = .{ .handle = r.atlas.handle, .config = .{
-                .width = textures.atlas_size,
-                .height = textures.atlas_size,
-                .mag_filter = .nearest,
-                .min_filter = .nearest,
-                .wrap_s = .clamp,
-                .wrap_t = .clamp,
-            } };
+            var tex: [blocks.Tile.strips]vc4.render.Texture = undefined;
+            for (&tex, r.strips) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
             const target: Target(@TypeOf(sink)) = .{ .sink = sink, .viewport = viewport, .scissor = scissor, .indices = r.indices.handle, .stats = &r.stats };
 
             // 1. Solid blocks, near to far.
             for (visible) |o| {
                 const c = r.chunks[o.i];
-                try target.quads(&r.terrain, c.bo.?.handle, 0, c.solid, tex);
+                for (0..blocks.Tile.strips) |k| {
+                    const sec = mesher.Section.solid(@intCast(k));
+                    try target.quads(&r.terrain, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], tex[k]);
+                }
             }
             // 2. The sky.
             const env_sun = env.sun_dir;
@@ -416,14 +450,17 @@ pub fn Renderer(comptime Device: type) type {
             while (k > 0) {
                 k -= 1;
                 const c = r.chunks[visible[k].i];
-                try target.quads(&r.water, c.bo.?.handle, c.solid * 4 * @sizeOf(Vertex), c.water, null);
+                try target.quads(&r.water, c.bo.?.handle, c.offset(.water), c.quads[@intFromEnum(mesher.Section.water)], null);
             }
             // 4. Glass and plants, far to near.
             k = visible.len;
             while (k > 0) {
                 k -= 1;
                 const c = r.chunks[visible[k].i];
-                try target.quads(&r.terrain_blend, c.bo.?.handle, (c.solid + c.water) * 4 * @sizeOf(Vertex), c.clear, tex);
+                for (0..blocks.Tile.strips) |sk| {
+                    const sec = mesher.Section.clear(@intCast(sk));
+                    try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], tex[sk]);
+                }
             }
             // 5. The outline.
             if (v.outline) |cell| {

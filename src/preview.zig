@@ -318,11 +318,14 @@ pub fn picture(gpa: std.mem.Allocator, w: *world_mod.World, view: renderer.View,
     var rec: Recorder = .{ .gpa = gpa };
     defer rec.deinit();
     try r.draw(&rec, .{ .x = 0, .y = 0, .width = width, .height = height }, null, view);
-    const img: Image = .{ .width = width, .height = height, .pixels = try gpa.alloc(u32, width * height), .depth = try gpa.alloc(f32, width * height) };
+    const pixels = try gpa.alloc(u32, width * height);
+    errdefer gpa.free(pixels);
+    const depth = try gpa.alloc(f32, width * height);
+    defer gpa.free(depth);
+    const img: Image = .{ .width = width, .height = height, .pixels = pixels, .depth = depth };
     @memset(img.pixels, 0xff000000);
     @memset(img.depth, 1);
     try render(gpa, &rec, &state, img);
-    gpa.free(img.depth);
     return img;
 }
 
