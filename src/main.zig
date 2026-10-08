@@ -110,6 +110,10 @@ fn run(init: std.process.Init.Minimal) !void {
     };
     const window_ui = try ui.Ui.create(gpa, if (f) |*fnt| fnt else null);
     try window_ui.attachGpu(dev);
+    // A frame in flight: the next is recorded while the GPU renders this
+    // one (with a third buffer, while the GPU's memory allows).
+    try win.setPipelined(true);
+    window_ui.setPipelined(win.pipelined);
 
     // The world: as it was left, or a new island.
     const world = try world_mod.World.create(gpa);
@@ -160,7 +164,10 @@ fn run(init: std.process.Init.Minimal) !void {
         }
         if (win.suspended != suspended) {
             suspended = win.suspended;
-            if (suspended) win.releaseSpareBuffers();
+            if (suspended) {
+                try win.finishInFlight();
+                win.releaseSpareBuffers();
+            }
         }
         window_ui.keyboard = win.layout;
         for (win.takeInput()) |e| switch (e) {
@@ -206,11 +213,11 @@ fn run(init: std.process.Init.Minimal) !void {
             if (game.antialias) frame.beginMultisampled(target, 0xff000000) else frame.begin(target, .{ .clear = 0xff000000 });
             ui.Ui.limit(&frame, &region);
             try window_ui.render(&frame, win.flusher());
-            try win.render(&frame);
             var damage: [ui.damage.Region.max_rects]vc4.render.Viewport = undefined;
             const changed = window_ui.damaged();
             for (changed, damage[0..changed.len]) |r, *v| v.* = .{ .x = @intFromFloat(r.x), .y = @intFromFloat(r.y), .width = @intFromFloat(r.w), .height = @intFromFloat(r.h) };
-            try win.showDamaged(damage[0..changed.len]);
+            // To the GPU, showing the frame before while it renders this.
+            try win.submit(&frame, damage[0..changed.len]);
             frames += 1;
         }
         if (now - fps_since >= std.time.ns_per_s) {
