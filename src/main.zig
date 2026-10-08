@@ -55,6 +55,7 @@ const Scene = struct {
             .time = g.clock,
             .env = renderer_mod.Environment.at(g.time_of_day),
             .underwater = g.player.underwater(g.world),
+            .bump = g.bump,
             .outline = if (g.target) |t| t.cell else null,
         });
     }

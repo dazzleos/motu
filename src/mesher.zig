@@ -662,7 +662,7 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
         // Nothing built: the island's strip only.
         try testing.expectEqual(m.items(.solid0).len, m.solidCount());
     };
-    std.debug.print("island: {d} solid, {d} water, {d} see-through quads; at most {d} in a chunk\n", .{ solid, water, clear, most });
+    std.log.info("island: {d} solid, {d} water, {d} see-through quads; at most {d} in a chunk", .{ solid, water, clear, most });
     // A chunk's meshes fit one index range (16384 quads).
     try testing.expect(most < 16384);
     try testing.expect(solid < 80000);

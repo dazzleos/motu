@@ -61,12 +61,12 @@ const Shaded = struct {
     vary: [shader.program.max_varyings]f32,
 };
 
-fn streamOf(c: *const vc4.compiler.Compiled, values: []const u32, tex: ?vc4.render.Texture, buf: []u32) []const u32 {
+fn streamOf(c: *const vc4.compiler.Compiled, values: []const u32, tex: [2]?vc4.render.Texture, buf: []u32) []const u32 {
     const kinds = c.uniforms();
     for (kinds, buf[0..kinds.len]) |k, *o| o.* = switch (k) {
         .user => |i| values[i],
-        .tex_p0 => vc4.texture.p0(tex.?.config),
-        .tex_p1 => vc4.texture.p1(tex.?.config),
+        .tex_p0 => |unit| vc4.texture.p0(tex[unit].?.config),
+        .tex_p1 => |unit| vc4.texture.p1(tex[unit].?.config),
     };
     return buf[0..kinds.len];
 }
@@ -111,8 +111,8 @@ fn renderDraw(gpa: std.mem.Allocator, d: *const Recorded, dev: *const renderer.F
     // The vertex and coordinate shaders, sixteen vertices at a time.
     var vs_buf: [256]u32 = undefined;
     var cs_buf: [256]u32 = undefined;
-    const vs_uniforms = streamOf(&prog.vs, d.values, draw.texture, &vs_buf);
-    const cs_uniforms = streamOf(&prog.cs, d.values, draw.texture, &cs_buf);
+    const vs_uniforms = streamOf(&prog.vs, d.values, .{ draw.texture, draw.texture1 }, &vs_buf);
+    const cs_uniforms = streamOf(&prog.cs, d.values, .{ draw.texture, draw.texture1 }, &cs_buf);
     var batch: [lanes]u32 = undefined;
     var n: usize = 0;
     var v: u32 = 0;
@@ -128,9 +128,10 @@ fn renderDraw(gpa: std.mem.Allocator, d: *const Recorded, dev: *const renderer.F
     if (n > 0) try shadeVertices(prog, p, draw, mem, batch[0..n], vs_uniforms, cs_uniforms, shaded);
 
     var fs_buf: [256]u32 = undefined;
-    const fs_uniforms = streamOf(&prog.fs, d.values, draw.texture, &fs_buf);
+    const fs_uniforms = streamOf(&prog.fs, d.values, .{ draw.texture, draw.texture1 }, &fs_buf);
     const tex_mem: []const u8 = if (draw.texture) |t| dev.memory(t.handle) else &.{};
-    var frags: Fragments = .{ .prog = prog, .uniforms = fs_uniforms, .texture = tex_mem, .img = img };
+    const tex1_mem: []const u8 = if (draw.texture1) |t| dev.memory(t.handle) else &.{};
+    var frags: Fragments = .{ .prog = prog, .uniforms = fs_uniforms, .texture = tex_mem, .texture1 = tex1_mem, .img = img };
     const vp = draw.viewport.?;
     var t: usize = 0;
     while (t + 3 <= count) : (t += 3) {
@@ -179,6 +180,7 @@ const Fragments = struct {
     prog: *const shader.Program,
     uniforms: []const u32,
     texture: []const u8,
+    texture1: []const u8,
     img: Image,
     index: [lanes]usize = undefined,
     vary: [shader.program.max_varyings]sim.Vec = undefined,
@@ -206,7 +208,7 @@ const Fragments = struct {
         }
         var tile: sim.Vec = undefined;
         for (&tile, f.index) |*c, i| c.* = f.img.pixels[i];
-        const r = try sim.run(f.prog.fs.code(), .{ .uniforms = f.uniforms, .varyings = f.vary[0..nv], .tlb_color_in = tile, .texture_memory = f.texture });
+        const r = try sim.run(f.prog.fs.code(), .{ .uniforms = f.uniforms, .varyings = f.vary[0..nv], .tlb_color_in = tile, .texture_memory = f.texture, .texture_memory1 = f.texture1 });
         for (f.index[0..f.n], 0..) |i, lane| f.img.pixels[i] = r.tlb_color.?[lane];
         f.n = 0;
     }

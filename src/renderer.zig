@@ -185,6 +185,8 @@ pub const View = struct {
     time: f32,
     env: Environment,
     underwater: bool = false,
+    /// Solid blocks lit per pixel from their normal maps.
+    bump: bool = true,
     /// The block to outline.
     outline: ?world_mod.Pos = null,
 };
@@ -203,12 +205,17 @@ pub fn Renderer(comptime Device: type) type {
         gpa: std.mem.Allocator,
         dev: Device,
         terrain: shader.Pipeline,
+        terrain_bump: shader.Pipeline,
         terrain_blend: shader.Pipeline,
         water: shader.Pipeline,
         sky: shader.Pipeline,
         line: shader.Pipeline,
-        /// The tiles, a strip each (see textures.zig), with mipmaps.
+        /// The tiles, a strip each (see textures.zig), with mipmaps: shaded
+        /// for drawing without normal maps, their plain colours for
+        /// drawing with them, and the normal maps.
         strips: [blocks.Tile.strips]vc4.Bo,
+        albedo: [blocks.Tile.strips]vc4.Bo,
+        normals: [blocks.Tile.strips]vc4.Bo,
         indices: vc4.Bo,
         sea: vc4.Bo,
         sea_quads: u32,
@@ -232,6 +239,8 @@ pub fn Renderer(comptime Device: type) type {
             const prog = shader.Program.decode;
             var terrain = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
             errdefer terrain.deinit(dev);
+            var terrain_bump = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain_bump.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
+            errdefer terrain_bump.deinit(dev);
             var terrain_blend = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain_blend.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
             errdefer terrain_blend.deinit(dev);
             var water = try shader.Pipeline.init(gpa, dev, prog(@embedFile("water.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
@@ -241,18 +250,24 @@ pub fn Renderer(comptime Device: type) type {
             var line = try shader.Pipeline.init(gpa, dev, prog(@embedFile("line.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .primitive = .lines, .early_z = true });
             errdefer line.deinit(dev);
 
-            // The tiles.
-            const px = try gpa.create([textures.strip_width * textures.strip_height]u32);
-            defer gpa.destroy(px);
-            var strips: [blocks.Tile.strips]vc4.Bo = undefined;
-            var made: usize = 0;
-            errdefer for (strips[0..made]) |bo| dev.destroyBo(bo);
+            // The tiles: shaded, plain and normal maps (see `strips`).
             const layout = vc4.texture.mipmapLayout(textures.strip_width, textures.strip_height, mip_levels);
-            for (&strips, 0..) |*bo, i| {
-                textures.stripPixels(@intCast(i), px);
+            var bos: [3 * blocks.Tile.strips]vc4.Bo = undefined;
+            var made: usize = 0;
+            errdefer for (bos[0..made]) |bo| dev.destroyBo(bo);
+            for (&bos) |*bo| {
                 bo.* = try dev.createBo(layout.size);
                 made += 1;
-                try vc4.texture.uploadMipmaps(gpa, bo.map, px, textures.strip_width, textures.strip_height, mip_levels);
+            }
+            const px = try gpa.create([3][textures.strip_width * textures.strip_height]u32);
+            defer gpa.destroy(px);
+            for (0..blocks.Tile.strips) |i| {
+                textures.strips(@intCast(i), &px[0], null, true);
+                textures.strips(@intCast(i), &px[1], &px[2], false);
+                for (0..3) |set| {
+                    const bo = bos[set * blocks.Tile.strips + i];
+                    try vc4.texture.uploadMipmaps(gpa, bo.map, &px[set], textures.strip_width, textures.strip_height, mip_levels, if (set == 2) .normal else .colour);
+                }
             }
 
             // Every quad's triangles.
@@ -284,11 +299,14 @@ pub fn Renderer(comptime Device: type) type {
                 .gpa = gpa,
                 .dev = dev,
                 .terrain = terrain,
+                .terrain_bump = terrain_bump,
                 .terrain_blend = terrain_blend,
                 .water = water,
                 .sky = sky,
                 .line = line,
-                .strips = strips,
+                .strips = bos[0..blocks.Tile.strips].*,
+                .albedo = bos[blocks.Tile.strips..][0..blocks.Tile.strips].*,
+                .normals = bos[2 * blocks.Tile.strips ..][0..blocks.Tile.strips].*,
                 .indices = indices,
                 .sea = sea,
                 .sea_quads = @intCast(sea_verts.len / 4),
@@ -301,9 +319,10 @@ pub fn Renderer(comptime Device: type) type {
 
         pub fn deinit(r: *Self) void {
             for (&r.chunks) |*c| if (c.bo) |bo| r.dev.destroyBo(bo);
-            for (r.strips) |bo| r.dev.destroyBo(bo);
+            for ([_][blocks.Tile.strips]vc4.Bo{ r.strips, r.albedo, r.normals }) |set| for (set) |bo| r.dev.destroyBo(bo);
             for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines }) |bo| r.dev.destroyBo(bo);
             r.terrain.deinit(r.dev);
+            r.terrain_bump.deinit(r.dev);
             r.terrain_blend.deinit(r.dev);
             r.water.deinit(r.dev);
             r.sky.deinit(r.dev);
@@ -395,6 +414,7 @@ pub fn Renderer(comptime Device: type) type {
             };
             const bytes = std.mem.asBytes(&scene);
             r.terrain.setUniforms(bytes);
+            r.terrain_bump.setUniforms(bytes);
             r.terrain_blend.setUniforms(bytes);
             r.water.setUniforms(bytes);
 
@@ -421,6 +441,10 @@ pub fn Renderer(comptime Device: type) type {
             r.stats.chunks = @intCast(n);
             var tex: [blocks.Tile.strips]vc4.render.Texture = undefined;
             for (&tex, r.strips) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
+            var plain: [blocks.Tile.strips]vc4.render.Texture = undefined;
+            for (&plain, r.albedo) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
+            var normal: [blocks.Tile.strips]vc4.render.Texture = undefined;
+            for (&normal, r.normals) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
             const target: Target(@TypeOf(sink)) = .{ .sink = sink, .viewport = viewport, .scissor = scissor, .indices = r.indices.handle, .stats = &r.stats };
 
             // 1. Solid blocks, near to far.
@@ -428,7 +452,12 @@ pub fn Renderer(comptime Device: type) type {
                 const c = r.chunks[o.i];
                 for (0..blocks.Tile.strips) |k| {
                     const sec = mesher.Section.solid(@intCast(k));
-                    try target.quads(&r.terrain, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], tex[k]);
+                    const count = c.quads[@intFromEnum(sec)];
+                    if (v.bump) {
+                        try target.quads2(&r.terrain_bump, c.bo.?.handle, c.offset(sec), count, plain[k], normal[k]);
+                    } else {
+                        try target.quads(&r.terrain, c.bo.?.handle, c.offset(sec), count, tex[k]);
+                    }
                 }
             }
             // 2. The sky.
@@ -502,6 +531,11 @@ fn Target(comptime Sink: type) type {
         /// `max_quads`. A frame that is full gets no more (it cannot be
         /// rendered and started again without losing its depth).
         fn quads(t: @This(), p: *shader.Pipeline, handle: u32, offset: u32, count: u32, tex: ?vc4.render.Texture) !void {
+            try t.quads2(p, handle, offset, count, tex, null);
+        }
+
+        /// As `quads`, with a second texture (on unit 1).
+        fn quads2(t: @This(), p: *shader.Pipeline, handle: u32, offset: u32, count: u32, tex: ?vc4.render.Texture, tex1: ?vc4.render.Texture) !void {
             var done: u32 = 0;
             while (done < count) {
                 const n: u32 = @min(count - done, max_quads);
@@ -512,6 +546,7 @@ fn Target(comptime Sink: type) type {
                     .count = n * 6,
                     .indices = .{ .handle = t.indices, .offset = 0, .max_index = n * 4 - 1 },
                     .texture = tex,
+                    .texture1 = tex1,
                     .viewport = t.viewport,
                     .scissor = t.scissor,
                 });
@@ -682,7 +717,7 @@ test "the whole island in view fits one frame, the near chunks first" {
         .env = Environment.at(0.4),
         .outline = .{ 10, 30, 10 },
     });
-    std.debug.print("{d} chunks, {d} draws, {d} triangles; {d} bytes of control list, {d} uniform words, {d} buffers\n", .{ r.stats.chunks, r.stats.draws, r.stats.triangles, frame.bin.w.len, frame.uniforms_len, frame.bo_count });
+    std.log.info("{d} chunks, {d} draws, {d} triangles; {d} bytes of control list, {d} uniform words, {d} buffers", .{ r.stats.chunks, r.stats.draws, r.stats.triangles, frame.bin.w.len, frame.uniforms_len, frame.bo_count });
     try testing.expect(r.stats.chunks > 30);
     // Everything drawn: room to spare for the UI over it.
     try testing.expect(frame.hasRoom(4096));

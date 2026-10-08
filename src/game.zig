@@ -18,6 +18,7 @@
 //!     E                                     all the blocks
 //!     T                                     later in the day
 //!     M                                     antialiasing on or off
+//!     N                                     bump mapping on or off
 //!     F1                                    help;  F3: what is drawn
 //!
 //! Every change to the world goes through `edit`, the one place a future
@@ -48,6 +49,7 @@ pub const keys = struct {
     pub const d = 32;
     pub const f = 33;
     pub const m = 50;
+    pub const n = 49;
     pub const left_shift = 42;
     pub const right_shift = 54;
     pub const space = 57;
@@ -88,6 +90,8 @@ pub const Game = struct {
     stats: bool = false,
     /// Edges antialiased (the GPU's 4x multisampling).
     antialias: bool = true,
+    /// Solid blocks lit per pixel from their normal maps.
+    bump: bool = true,
     /// The view's size, and the pointer in it (if it is there).
     view_size: [2]f32 = .{ 1, 1 },
     pointer: ?[2]f32 = null,
@@ -147,6 +151,10 @@ pub const Game = struct {
             keys.m => {
                 g.antialias = !g.antialias;
                 g.say(if (g.antialias) "Antialiasing on" else "Antialiasing off");
+            },
+            keys.n => {
+                g.bump = !g.bump;
+                g.say(if (g.bump) "Bump mapping on" else "Bump mapping off");
             },
             else => {},
         }
