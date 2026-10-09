@@ -17,6 +17,9 @@ const Game = game_mod.Game;
 
 pub const min_size = [2]u32{ 640, 400 };
 
+/// The size the window opens at: a 16:9 view of the world.
+pub const open_size = [2]u32{ 1280, 720 };
+
 /// The middle button (a Linux button code).
 const btn_middle = 0x112;
 
