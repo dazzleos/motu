@@ -34,7 +34,7 @@ var frame: vc4.render.Frame = undefined;
 pub fn main(init: std.process.Init.Minimal) u8 {
     sys.logToKmsgIfStderr();
     run(init) catch |err| {
-        print("dazzle-blocks: error: {s}\n", .{@errorName(err)});
+        print(sys.log_error ++ "dazzle-blocks: error: {s}\n", .{@errorName(err)});
         return 1;
     };
     return 0;
@@ -63,7 +63,7 @@ const Scene = struct {
 
 fn load(gpa: std.mem.Allocator, g: *game_mod.Game) !void {
     const data = sys.readFileAlloc(gpa, save_path, 64 * 1024 * 1024) catch |err| {
-        if (err != error.FileNotFound) print("dazzle-blocks: cannot read {s} ({s}): a new island\n", .{ save_path, @errorName(err) });
+        if (err != error.FileNotFound) print(sys.log_warning ++ "dazzle-blocks: cannot read {s} ({s}): a new island\n", .{ save_path, @errorName(err) });
         return error.NoSave;
     };
     defer gpa.free(data);
@@ -77,14 +77,14 @@ fn save(gpa: std.mem.Allocator, g: *game_mod.Game) void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     g.encode(&out) catch |err| {
-        print("dazzle-blocks: cannot save: {s}\n", .{@errorName(err)});
+        print(sys.log_warning ++ "dazzle-blocks: cannot save: {s}\n", .{@errorName(err)});
         return;
     };
     // Written whole, then put in place of the old.
     const tmp = save_path ++ ".new";
     _ = linux.unlink(tmp);
     sys.files.writeNew(tmp, out.items) catch |err| {
-        print("dazzle-blocks: cannot save {s}: {s}\n", .{ save_path, @errorName(err) });
+        print(sys.log_warning ++ "dazzle-blocks: cannot save {s}: {s}\n", .{ save_path, @errorName(err) });
         return;
     };
     _ = linux.rename(tmp, save_path);
@@ -96,7 +96,7 @@ fn run(init: std.process.Init.Minimal) !void {
     locale.current = locale.load().language;
     const gpa = std.heap.page_allocator;
     var dev = vc4.device.openRender() catch |err| {
-        print("dazzle-blocks: no GPU ({s})\n", .{@errorName(err)});
+        print(sys.log_error ++ "dazzle-blocks: no GPU ({s})\n", .{@errorName(err)});
         return err;
     };
     const win = try openWindow(gpa, init, &dev);
@@ -151,7 +151,7 @@ fn run(init: std.process.Init.Minimal) !void {
         // nothing to do but wait.
         const waited = if (suspended) win.wait(std.time.ns_per_s) else win.poll();
         waited catch |err| {
-            if (err == error.ServerError) print("dazzle-blocks: compositor error: {s}\n", .{win.conn.errorMessage()});
+            if (err == error.ServerError) print(sys.log_error ++ "dazzle-blocks: compositor error: {s}\n", .{win.conn.errorMessage()});
             return err;
         };
         if (win.closed or controls.quit) {
@@ -270,7 +270,7 @@ fn openWindow(gpa: std.mem.Allocator, init: std.process.Init.Minimal, dev: *vc4.
         return error.NoCompositor;
     };
     const win = app.Window.open(gpa, .device(dev), path, "Blocks") catch |err| {
-        print("dazzle-blocks: cannot open a window on {s} ({s})\n", .{ path, @errorName(err) });
+        print(sys.log_warning ++ "dazzle-blocks: cannot open a window on {s} ({s})\n", .{ path, @errorName(err) });
         return err;
     };
     try win.setAppId("dazzle-blocks");
