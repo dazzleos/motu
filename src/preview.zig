@@ -69,6 +69,7 @@ fn streamOf(c: *const vc4.compiler.Compiled, values: []const u32, tex: [3]?vc4.r
         .user => |i| values[i],
         .tex_p0 => |slot| vc4.texture.p0(tex[slot].?.config) + slot * sim.texture_base,
         .tex_p1 => |slot| vc4.texture.p1(tex[slot].?.config),
+        .constant => |v| v,
     };
     return buf[0..kinds.len];
 }
