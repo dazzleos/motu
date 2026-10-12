@@ -11,11 +11,8 @@ const std = @import("std");
 const linux = std.os.linux;
 const sys = @import("sys");
 const locale = @import("locale");
-const font = @import("font");
 const vc4 = @import("vc4");
-const app = @import("app");
 const ui = @import("ui");
-const wayland = @import("wayland");
 const world_mod = @import("world.zig");
 const game_mod = @import("game.zig");
 const renderer_mod = @import("renderer.zig");
@@ -28,8 +25,6 @@ const Renderer = renderer_mod.Renderer(vc4.Device);
 pub const save_path = sys.system.user_dir ++ "/Island.blocks";
 /// How often a changed world is saved, in seconds.
 const save_every = 60;
-
-var frame: vc4.render.Frame = undefined;
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     sys.logToKmsgIfStderr();
@@ -95,25 +90,16 @@ fn save(gpa: std.mem.Allocator, g: *game_mod.Game) void {
 fn run(init: std.process.Init.Minimal) !void {
     locale.current = locale.load().language;
     const gpa = std.heap.page_allocator;
-    var dev = vc4.device.openRender() catch |err| {
-        print(sys.log_error ++ "dazzle-blocks: no GPU ({s})\n", .{@errorName(err)});
-        return err;
-    };
-    const win = try openWindow(gpa, init, &dev);
-    var width = win.width;
-    var height = win.height;
-
-    var font_buf: [512]u8 = undefined;
-    var f: ?font.Font = blk: {
-        const data = sys.readFileAlloc(gpa, sys.fontFile(&font_buf, font.default_font_file), 32 * 1024 * 1024) catch break :blk null;
-        break :blk font.Font.init(data) catch null;
-    };
-    const window_ui = try ui.Ui.create(gpa, if (f) |*fnt| fnt else null);
-    try window_ui.attachGpu(dev);
     // A frame in flight: the next is recorded while the GPU renders this
     // one (with a third buffer, while the GPU's memory allows).
-    try win.setPipelined(true);
-    window_ui.setPipelined(win.pipelined);
+    const a = try ui.App.open(gpa, init.environ, .{
+        .title = "Blocks",
+        .app_id = "dazzle-blocks",
+        .size = view.open_size,
+        .min_size = view.min_size,
+        .pipelined = true,
+    });
+    defer a.close();
 
     // The world: as it was left, or a new island.
     const world = try world_mod.World.create(gpa);
@@ -124,7 +110,7 @@ fn run(init: std.process.Init.Minimal) !void {
         game = game_mod.Game.init(gpa, world);
         print("dazzle-blocks: made an island in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
     };
-    const renderer = try Renderer.init(gpa, dev);
+    const renderer = try Renderer.init(gpa, a.dev);
     {
         // The chunks around the player now; the rest a few a frame, from
         // the nearest (they are further off, in the fog, at first).
@@ -136,10 +122,6 @@ fn run(init: std.process.Init.Minimal) !void {
     const icons = try gpa.create(view.Icons);
     icons.init();
 
-    var controls: app.Controls = .{ .win = win };
-    win.setMinSize(view.min_size[0], view.min_size[1]);
-
-    var suspended = false;
     var last = sys.nowNs();
     var last_save = last;
     var fps: f32 = 0;
@@ -149,64 +131,45 @@ fn run(init: std.process.Init.Minimal) !void {
     while (true) {
         // While shown, a frame as often as the shell takes them; covered,
         // nothing to do but wait.
-        const waited = if (suspended) win.wait(std.time.ns_per_s) else win.poll();
-        waited catch |err| {
-            if (err == error.ServerError) print(sys.log_error ++ "dazzle-blocks: compositor error: {s}\n", .{win.conn.errorMessage()});
-            return err;
-        };
-        if (win.closed or controls.quit) {
+        a.idle = a.suspended;
+        if (!try a.step(std.time.ns_per_s)) {
             if (game.unsaved) save(gpa, &game);
             return;
         }
-        if (try win.applyConfigure()) |size| {
-            width = size[0];
-            height = size[1];
-        }
-        if (win.suspended != suspended) {
-            suspended = win.suspended;
-            if (suspended) {
-                try win.finishInFlight();
-                win.releaseSpareBuffers();
-            }
-        }
-        window_ui.keyboard = win.layout;
         // The mouse can be taken if the shell can lock the pointer.
-        game.can_capture = win.pointer_constraints != null and win.relative_pointer_manager != null;
-        for (win.takeInput()) |e| switch (e) {
+        game.can_capture = a.win.pointer_constraints != null and a.win.relative_pointer_manager != null;
+        for (a.win.takeInput()) |e| switch (e) {
             // With the mouse taken, it turns the view and its buttons act
             // on the middle of it; the widgets do not see it.
-            .motion => |pos| if (!game.captured) window_ui.pointerMotion(pos),
-            .button => |b| if (game.captured) game.mouseButton(b.code, b.pressed) else window_ui.pointerButton(b.pos, b.code, b.pressed),
+            .motion => |pos| if (!game.captured) a.ui.pointerMotion(pos),
+            .button => |b| if (game.captured) game.mouseButton(b.code, b.pressed) else a.ui.pointerButton(b.pos, b.code, b.pressed),
             .key => |k| game.key(k.code, k.pressed),
             .scroll => |sc| if (game.captured) {
                 if (sc.dy != 0) game.scroll(sc.dy);
-            } else window_ui.pointerScroll(sc.pos, sc.dx, sc.dy),
-            .leave => if (!game.captured) window_ui.pointerLeave(),
+            } else a.ui.pointerScroll(sc.pos, sc.dx, sc.dy),
+            .leave => if (!game.captured) a.ui.pointerLeave(),
             .relative_motion => |d| if (game.captured) game.mouseMoved(d[0], d[1]),
             .pointer_locked => |locked| {
                 game.captured = locked;
                 // Given back (Esc, or the shell took it): a click takes it
                 // again.
-                if (!locked) win.unlockPointer();
+                if (!locked) a.win.unlockPointer();
             },
-            .touch_down => |t| window_ui.touchDown(t.id, t.pos),
-            .touch_motion => |t| window_ui.touchMotion(t.id, t.pos),
-            .touch_up => |id| window_ui.touchUp(id),
-            .touch_cancel => window_ui.touchCancel(),
+            else => a.ui.handleInput(e),
         };
 
         if (game.capture_wanted) |take| {
             game.capture_wanted = null;
             if (take) {
-                if (!win.lockPointer()) game.can_capture = false;
+                if (!a.win.lockPointer()) game.can_capture = false;
             } else {
-                win.unlockPointer();
+                a.win.unlockPointer();
                 game.captured = false;
             }
         }
         if (game.fullscreen_wanted) {
             game.fullscreen_wanted = false;
-            win.setFullscreen(!win.fullscreen);
+            a.win.setFullscreen(!a.win.fullscreen);
         }
 
         const now = sys.nowNs();
@@ -220,33 +183,25 @@ fn run(init: std.process.Init.Minimal) !void {
             save(gpa, &game);
             last_save = now;
         }
-        if (suspended) continue;
+        if (a.suspended) continue;
 
-        window_ui.fullscreen = win.fullscreen;
-
-        window_ui.frame(width, height, now, view.Blocks{
+        a.ui.frame(a.width, a.height, now, view.Blocks{
             .game = &game,
             .icons = icons,
             .draw = .{ .ctx = &scene, .f = Scene.draw },
             .stats = renderer.stats,
             .fps = fps,
-            .on_close = .of(&controls, app.Controls.close),
-            .on_maximize = .of(&controls, app.Controls.toggleMaximized),
-            .on_drag = .of(&controls, app.Controls.drag),
-            .maximized = win.maximized,
         });
-        if (window_ui.changed()) {
-            const target = try win.beginFrame();
-            const region = window_ui.repaint(win.bufferAge());
+        if (a.ui.changed()) {
+            const target = try a.win.beginFrame();
+            const region = a.ui.repaint(a.win.bufferAge());
             // Antialiased: 4x multisampled (see vc4.render.Frame).
-            if (game.antialias) frame.beginMultisampled(target, 0xff000000) else frame.begin(target, .{ .clear = 0xff000000 });
-            ui.Ui.limit(&frame, &region);
-            try window_ui.render(&frame, win.flusher());
+            if (game.antialias) a.frame.beginMultisampled(target, 0xff000000) else a.frame.begin(target, .{ .clear = 0xff000000 });
+            ui.Ui.limit(&a.frame, &region);
+            try a.ui.render(&a.frame, a.win.flusher());
             var damage: [ui.damage.Region.max_rects]vc4.render.Viewport = undefined;
-            const changed = window_ui.damaged();
-            for (changed, damage[0..changed.len]) |r, *v| v.* = .{ .x = @intFromFloat(r.x), .y = @intFromFloat(r.y), .width = @intFromFloat(r.w), .height = @intFromFloat(r.h) };
             // To the GPU, showing the frame before while it renders this.
-            try win.submit(&frame, damage[0..changed.len]);
+            try a.win.submit(&a.frame, a.ui.damagedViewports(&damage));
             frames += 1;
         }
         if (now - fps_since >= std.time.ns_per_s) {
@@ -260,21 +215,6 @@ fn run(init: std.process.Init.Minimal) !void {
             log_since = now;
         }
     }
-}
-
-fn openWindow(gpa: std.mem.Allocator, init: std.process.Init.Minimal, dev: *vc4.Device) !*app.Window {
-    const Environ = std.process.Environ;
-    var path_buf: [128]u8 = undefined;
-    const path = wayland.client.socketPath(&path_buf, Environ.getPosix(init.environ, "XDG_RUNTIME_DIR"), Environ.getPosix(init.environ, "WAYLAND_DISPLAY")) catch {
-        print("dazzle-blocks: WAYLAND_DISPLAY needs XDG_RUNTIME_DIR\n", .{});
-        return error.NoCompositor;
-    };
-    const win = app.Window.open(gpa, .device(dev), path, .{ .title = "Blocks", .size = view.open_size }) catch |err| {
-        print(sys.log_warning ++ "dazzle-blocks: cannot open a window on {s} ({s})\n", .{ path, @errorName(err) });
-        return err;
-    };
-    try win.setAppId("dazzle-blocks");
-    return win;
 }
 
 test {
