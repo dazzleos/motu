@@ -66,7 +66,7 @@ const f_shimmer = gpu.fragmentInput(f32, 3);
 export fn fragment() callconv(.spirv_fragment) void {
     const rc = f_ripples.*;
     const a = gpu.texture(.{ rc[0], rc[1] });
-    const b = gpu.texture(.{ rc[2], rc[3] });
+    const b = gpu.texture1(.{ rc[2], rc[3] });
     // The two normals' lean, averaged ((a * 2 - 1 + b * 2 - 1) / 2), and
     // gentled.
     const rx = (a[0] + b[0] - 1) * 0.6;

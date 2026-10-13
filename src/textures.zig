@@ -537,6 +537,51 @@ pub fn strips(strip: u2, colours: *[strip_width * strip_height]Pixel, normal_map
     }
 }
 
+/// Strip `strip` in all three forms at once (shaded colours, plain
+/// colours and normal map), evaluating each tile's procedural texels only
+/// once.
+pub fn allStrips(
+    strip: u2,
+    shaded_colours: *[strip_width * strip_height]Pixel,
+    plain_colours: *[strip_width * strip_height]Pixel,
+    normal_map: *[strip_width * strip_height]Pixel,
+) void {
+    @memset(shaded_colours, 0);
+    @memset(plain_colours, 0);
+    @memset(normal_map, packNormal(.{ 0, 0, 1 }));
+    var cols: [tile_size * tile_size]Texel = undefined;
+    const h = struct {
+        fn at(c: *const [tile_size * tile_size]Texel, x: i32, y: i32) f32 {
+            return c[@intCast(@mod(y, tile_size) * tile_size + @mod(x, tile_size))].h;
+        }
+    }.at;
+    for (std.enums.values(Tile)) |t| {
+        if (t.strip() != strip) continue;
+        for (0..tile_size) |y| for (0..tile_size) |x| {
+            cols[y * tile_size + x] = texel(t, @intCast(x), @intCast(y));
+        };
+        const oy = @as(u32, t.slot()) * tile_size;
+        for (0..tile_size) |yu| for (0..tile_size) |xu| {
+            const x: i32 = @intCast(xu);
+            const y: i32 = @intCast(yu);
+            const dx = (h(&cols, x + 1, y) - h(&cols, x - 1, y)) * 0.5;
+            const dy = (h(&cols, x, y + 1) - h(&cols, x, y - 1)) * 0.5;
+            const l1 = @sqrt(dx * dx + dy * dy + 1);
+            const nm1 = [3]f32{ -dx / l1, -dy / l1, 1 / l1 };
+            const bdx = dx * bump_steep;
+            const bdy = dy * bump_steep;
+            const lb = @sqrt(bdx * bdx + bdy * bdy + 1);
+            const nmb = [3]f32{ -bdx / lb, -bdy / lb, 1 / lb };
+            const i = yu * tile_size + xu;
+            const at = (oy + yu) * strip_width + xu;
+            const c = cols[i];
+            shaded_colours[at] = pack(shaded(c.c, nm1), c.a);
+            plain_colours[at] = pack(c.c, c.a);
+            normal_map[at] = packNormal(nmb);
+        };
+    }
+}
+
 /// A tile as icons show it (shaded), row by row.
 pub fn tilePixels(t: Tile, out: *[tile_size * tile_size]Pixel) void {
     var ns: [tile_size * tile_size][3]f32 = undefined;
@@ -633,7 +678,19 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
         .{ .o = .{ 0, top_y + n * 0.24 }, .e1 = .{ n / 2, n * 0.24 }, .e2 = .{ 0, n * 0.48 }, .light = 0.78 },
         .{ .o = .{ n / 2, top_y + n * 0.48 }, .e1 = .{ n / 2, -n * 0.24 }, .e2 = .{ 0, n * 0.48 }, .light = 0.6 },
     };
-    for ([_]blocks.Face{ .up, .north, .east }, &px) |f, *p| tilePixels(b.tile(f), p);
+    const face_tiles = [3]Tile{ b.tile(.up), b.tile(.north), b.tile(.east) };
+    var face_px: [3]*const [tile_size * tile_size]Pixel = undefined;
+    for (face_tiles, 0..) |ft, fi| {
+        const prev = for (0..fi) |pi| {
+            if (face_tiles[pi] == ft) break face_px[pi];
+        } else null;
+        if (prev) |existing| {
+            face_px[fi] = existing;
+        } else {
+            tilePixels(ft, &px[fi]);
+            face_px[fi] = &px[fi];
+        }
+    }
     for (0..icon_size) |y| for (0..icon_size) |x| {
         const p = [2]f32{ @as(f32, @floatFromInt(x)) + 0.5, @as(f32, @floatFromInt(y)) + 0.5 };
         for (faces, 0..) |f, fi| {
@@ -644,7 +701,7 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             const a = (dx * f.e2[1] - dy * f.e2[0]) / det;
             const c = (f.e1[0] * dy - f.e1[1] * dx) / det;
             if (a < 0 or a >= 1 or c < 0 or c >= 1) continue;
-            const t = px[fi][@as(usize, @intFromFloat(c * tile_size)) * tile_size + @as(usize, @intFromFloat(a * tile_size))];
+            const t = face_px[fi][@as(usize, @intFromFloat(c * tile_size)) * tile_size + @as(usize, @intFromFloat(a * tile_size))];
             const alpha: f32 = @floatFromInt(t >> 24);
             if (alpha == 0) continue;
             const col = Rgb{ @floatFromInt(t >> 16 & 0xff), @floatFromInt(t >> 8 & 0xff), @floatFromInt(t & 0xff) };

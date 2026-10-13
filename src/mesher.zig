@@ -298,18 +298,33 @@ fn cornerLooks(face: Face, look: FaceLook) FaceLook {
     return out;
 }
 
-/// Size of a chunk along each axis.
-const dims = [3]i32{ world_mod.chunk_size, world_mod.size_y, world_mod.chunk_size };
+/// How many layers from the bottom of the chunk have anything in them (0
+/// if the chunk is all air).
+fn chunkTopY(w: *const World, origin: P) i32 {
+    var y: i32 = world_mod.size_y;
+    while (y > 0) {
+        y -= 1;
+        var lz: i32 = 0;
+        while (lz < world_mod.chunk_size) : (lz += 1) {
+            const row = w.blocks[World.index(origin[0], y, origin[2] + lz)..][0..world_mod.chunk_size];
+            if (std.mem.indexOfNone(Block, row, &.{.air}) != null) return y + 1;
+        }
+    }
+    return 0;
+}
 
 /// Meshes chunk (cx, cz) into `mesh` (cleared first).
 pub fn build(gpa: std.mem.Allocator, w: *const World, cx: usize, cz: usize, mesh: *Mesh) !void {
     mesh.clearRetainingCapacity();
     const origin = P{ @intCast(cx * world_mod.chunk_size), 0, @intCast(cz * world_mod.chunk_size) };
-    try solidFaces(gpa, w, origin, mesh);
-    try otherFaces(gpa, w, origin, mesh);
+    const top_y = chunkTopY(w, origin);
+    if (top_y == 0) return;
+    try solidFaces(gpa, w, origin, top_y, mesh);
+    try otherFaces(gpa, w, origin, top_y, mesh);
 }
 
-fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, mesh: *Mesh) !void {
+fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, mesh: *Mesh) !void {
+    const local_dims = [3]i32{ world_mod.chunk_size, top_y, world_mod.chunk_size };
     // The faces in one slice, waiting to be merged: the biggest slice is
     // 16 by 64.
     var mask: [world_mod.chunk_size * world_mod.size_y]?FaceLook = undefined;
@@ -323,10 +338,10 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, mesh: *Mesh) !
         const b = (a + 1) % 3;
         const c = (a + 2) % 3;
         const n = face.normal();
-        const nb: usize = @intCast(dims[b]);
-        const nc: usize = @intCast(dims[c]);
+        const nb: usize = @intCast(local_dims[b]);
+        const nc: usize = @intCast(local_dims[c]);
         var s: i32 = 0;
-        while (s < dims[a]) : (s += 1) {
+        while (s < local_dims[a]) : (s += 1) {
             var any = false;
             for (0..nc) |j| for (0..nb) |i| {
                 var p = origin;
@@ -382,15 +397,15 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, mesh: *Mesh) !
 }
 
 /// Water, glass and plants.
-fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, mesh: *Mesh) !void {
+fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, mesh: *Mesh) !void {
     var y: i32 = 0;
-    while (y < world_mod.size_y) : (y += 1) {
+    while (y < top_y) : (y += 1) {
         var lz: i32 = 0;
         while (lz < world_mod.chunk_size) : (lz += 1) {
-            var lx: i32 = 0;
-            while (lx < world_mod.chunk_size) : (lx += 1) {
-                const p = P{ origin[0] + lx, y, origin[2] + lz };
-                const blk = w.blocks[World.index(p[0], p[1], p[2])];
+            const row = w.blocks[World.index(origin[0], y, origin[2] + lz)..][0..world_mod.chunk_size];
+            for (row, 0..) |blk, lx| {
+                if (blk == .air) continue;
+                const p = P{ origin[0] + @as(i32, @intCast(lx)), y, origin[2] + lz };
                 switch (blk.shape()) {
                     .water => try waterFaces(gpa, w, p, mesh),
                     .clear => for (Face.all) |face| {
@@ -413,15 +428,25 @@ fn waterFaces(gpa: std.mem.Allocator, w: *const World, p: P, mesh: *Mesh) !void 
     const above = w.get(p[0], p[1] + 1, p[2]);
     const surface = above != .water;
     const top: f32 = @as(f32, @floatFromInt(p[1])) + (if (surface) water_top else 1);
-    // How deep: water down to the bottom.
-    var depth: u32 = 1;
-    while (depth < 63 and w.get(p[0], p[1] - @as(i32, @intCast(depth)), p[2]) == .water) depth += 1;
+    // How deep: water down to the bottom (at most 7 blocks, where the
+    // shader reaches its deepest blue). Worked out only if a face shows.
+    var depth: u6 = 0;
+    const getDepth = struct {
+        fn f(world: *const World, pos: P, d: *u6) u6 {
+            if (d.* == 0) {
+                var n: u6 = 1;
+                while (n < 7 and world.get(pos[0], pos[1] - @as(i32, n), pos[2]) == .water) n += 1;
+                d.* = n;
+            }
+            return d.*;
+        }
+    }.f;
     const x: f32 = @floatFromInt(p[0]);
     const y: f32 = @floatFromInt(p[1]);
     const z: f32 = @floatFromInt(p[2]);
     if (surface and !above.isOpaque()) {
         const l = w.lightAt(p[0], p[1] + 1, p[2]);
-        try waterQuad(gpa, mesh, .up, .{ .{ x, top, z + 1 }, .{ x + 1, top, z + 1 }, .{ x + 1, top, z }, .{ x, top, z } }, @intCast(depth), l, @splat(.wave));
+        try waterQuad(gpa, mesh, .up, .{ .{ x, top, z + 1 }, .{ x + 1, top, z + 1 }, .{ x + 1, top, z }, .{ x, top, z } }, getDepth(w, p, &depth), l, @splat(.wave));
     }
     // Sides against air (not into the sea beyond the world), and the
     // bottom if it is over air.
@@ -440,7 +465,7 @@ fn waterFaces(gpa: std.mem.Allocator, w: *const World, p: P, mesh: *Mesh) !void 
             else => .{ .{ x, y, z }, .{ x + 1, y, z }, .{ x + 1, y, z + 1 }, .{ x, y, z + 1 } },
         };
         const anims: [4]Anim = if (face == .down) @splat(.none) else .{ .none, .none, top_anim, top_anim };
-        try waterQuad(gpa, mesh, face, corners, @intCast(@min(depth, 63)), l, anims);
+        try waterQuad(gpa, mesh, face, corners, getDepth(w, p, &depth), l, anims);
     }
 }
 

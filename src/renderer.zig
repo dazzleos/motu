@@ -294,6 +294,7 @@ pub fn Renderer(comptime Device: type) type {
         indices: vc4.Bo,
         sea: vc4.Bo,
         sea_quads: u32,
+        sea_patches: [sea_patch_count]SeaPatch,
         dome: vc4.Bo,
         dome_quads: u32,
         cube_lines: vc4.Bo,
@@ -354,8 +355,7 @@ pub fn Renderer(comptime Device: type) type {
             const px = try gpa.create([3][textures.strip_width * textures.strip_height]u32);
             defer gpa.destroy(px);
             for (0..blocks.Tile.strips) |i| {
-                textures.strips(@intCast(i), &px[0], null, true);
-                textures.strips(@intCast(i), &px[1], &px[2], false);
+                textures.allStrips(@intCast(i), &px[0], &px[1], &px[2]);
                 for (0..3) |set| {
                     const bo = bos[set * blocks.Tile.strips + i];
                     try vc4.texture.uploadMipmaps(gpa, bo.map, &px[set], textures.strip_width, textures.strip_height, mip_levels, if (set == 2) .normal else .colour);
@@ -371,7 +371,8 @@ pub fn Renderer(comptime Device: type) type {
                 idx[q * 6 ..][0..6].* = .{ v, v + 1, v + 2, v, v + 2, v + 3 };
             }
 
-            const sea_verts = try seaRing(gpa);
+            var sea_patches: [sea_patch_count]SeaPatch = undefined;
+            const sea_verts = try seaRingPatches(gpa, &sea_patches);
             defer gpa.free(sea_verts);
             const sea = try dev.createBo(@intCast(sea_verts.len * @sizeOf(Vertex)));
             errdefer dev.destroyBo(sea);
@@ -405,6 +406,7 @@ pub fn Renderer(comptime Device: type) type {
                 .indices = indices,
                 .sea = sea,
                 .sea_quads = @intCast(sea_verts.len / 4),
+                .sea_patches = sea_patches,
                 .dome = dome,
                 .dome_quads = @intCast(dome_verts.len / 4),
                 .cube_lines = cube_lines,
@@ -580,10 +582,34 @@ pub fn Renderer(comptime Device: type) type {
             r.sky.setUniforms(std.mem.asBytes(&sky));
             try target.quads(&r.sky, r.dome.handle, 0, r.dome_quads, .{ null, null, null });
             // 3. Water, far to near; the sea around the world first (it is
-            // furthest).
+            // furthest), culled in 64x64 patches.
             const water = if (v.bump) &r.water_ripples else &r.water;
-            const ripple_tex: [3]?vc4.render.Texture = if (v.bump) .{ .{ .handle = r.ripples.handle, .config = rippleConfig() }, null, null } else .{ null, null, null };
-            try target.quads(water, r.sea.handle, 0, r.sea_quads, ripple_tex);
+            const ripple_one: ?vc4.render.Texture = if (v.bump) .{ .handle = r.ripples.handle, .config = rippleConfig() } else null;
+            const ripple_tex: [3]?vc4.render.Texture = .{ ripple_one, ripple_one, null };
+            const sea_y: f32 = world_mod.sea_level - 1 + mesher.water_top;
+            const max_sea_d = depth + start + 16;
+            var sea_run_first: u32 = 0;
+            var sea_run_count: u32 = 0;
+            for (r.sea_patches) |sp| {
+                const dx = @max(@max(sp.x0 - cam.eye[0], cam.eye[0] - (sp.x0 + sea_patch_size)), 0);
+                const dz = @max(@max(sp.z0 - cam.eye[2], cam.eye[2] - (sp.z0 + sea_patch_size)), 0);
+                const in_view = dx * dx + dz * dz <= max_sea_d * max_sea_d and
+                    frustum.sees(.{ sp.x0, sea_y - 0.5, sp.z0 }, .{ sp.x0 + sea_patch_size, sea_y + 0.5, sp.z0 + sea_patch_size });
+                if (in_view) {
+                    if (sea_run_count > 0 and sea_run_first + sea_run_count == sp.first_quad) {
+                        sea_run_count += sp.quad_count;
+                    } else {
+                        if (sea_run_count > 0) {
+                            try target.quads(water, r.sea.handle, sea_run_first * 4 * @sizeOf(Vertex), sea_run_count, ripple_tex);
+                        }
+                        sea_run_first = sp.first_quad;
+                        sea_run_count = sp.quad_count;
+                    }
+                }
+            }
+            if (sea_run_count > 0) {
+                try target.quads(water, r.sea.handle, sea_run_first * 4 * @sizeOf(Vertex), sea_run_count, ripple_tex);
+            }
             var k = visible.len;
             while (k > 0) {
                 k -= 1;
@@ -682,17 +708,29 @@ fn chunkDistance(i: usize, p: V3) f32 {
 
 // --- Fixed geometry ----------------------------------------------------------------------
 
-/// The sea around the world: quads a block across for 16 blocks out (where
-/// the waves die down), then 4 across to 48 out, then 16 across, far
-/// enough to reach the fog from anywhere in the world. (The sea is lit per
-/// vertex, and from one size of quad to one much bigger, the sun's glint
-/// on it would change suddenly.)
-fn seaRing(gpa: std.mem.Allocator) ![]Vertex {
+const sea_patch_size = 64;
+const sea_grid = 7;
+/// Of the 7x7 grid of 64x64 patches across -160..288, the middle one
+/// (32..96) is wholly inside the island.
+const sea_patch_count = sea_grid * sea_grid - 1;
+
+const SeaPatch = struct {
+    x0: f32,
+    z0: f32,
+    first_quad: u32,
+    quad_count: u32,
+};
+
+/// The sea around the world, grouped into 64x64 patches for culling: quads
+/// a block across for 4 blocks out (matching the island's edge), 2 across to
+/// 16 out (where the waves die down), then 4 across to 48 out, then 16
+/// across, far enough to reach the fog from anywhere in the world.
+fn seaRingPatches(gpa: std.mem.Allocator, patches: *[sea_patch_count]SeaPatch) ![]Vertex {
     var out: std.ArrayList(Vertex) = .empty;
     errdefer out.deinit(gpa);
     const y = world_mod.sea_level - 1 + mesher.water_top;
     const s = world_mod.size_x;
-    const info = (mesher.Info{ .tile = 63, .face = .up, .sky = 15, .lamp = 0, .anim = .wave }).pack();
+    const wave = (mesher.Info{ .tile = 63, .face = .up, .sky = 15, .lamp = 0, .anim = .wave }).pack();
     const flat = (mesher.Info{ .tile = 63, .face = .up, .sky = 15, .lamp = 0 }).pack();
     const add = struct {
         fn quad(list: *std.ArrayList(Vertex), g: std.mem.Allocator, x0: f32, z0: f32, size: f32, yy: f32, inf: f32) !void {
@@ -700,31 +738,48 @@ fn seaRing(gpa: std.mem.Allocator) ![]Vertex {
                 try list.append(g, .{ .pos = .{ c[0], yy, c[1] }, .uv = .{ 0, 0 }, .info = inf });
         }
     }.quad;
-    const band = 16;
-    var z: i32 = -band;
-    while (z < s + band) : (z += 1) {
-        var x: i32 = -band;
-        while (x < s + band) : (x += 1) {
-            if (x >= 0 and x < s and z >= 0 and z < s) continue;
-            try add(&out, gpa, @floatFromInt(x), @floatFromInt(z), 1, y, info);
-        }
-    }
-    const rings = [_][2]i32{ .{ 48, 4 }, .{ 160, 16 } };
-    var inner: i32 = band;
-    for (rings) |ring| {
-        const far = ring[0];
-        const step = ring[1];
-        z = -far;
-        while (z < s + far) : (z += step) {
-            var x: i32 = -far;
-            while (x < s + far) : (x += step) {
-                if (x >= -inner and x < s + inner and z >= -inner and z < s + inner) continue;
-                try add(&out, gpa, @floatFromInt(x), @floatFromInt(z), @floatFromInt(step), y, flat);
+    const Ring = struct { inner: i32, far: i32, step: i32, info: f32 };
+    const rings = [_]Ring{
+        .{ .inner = 0, .far = 4, .step = 1, .info = wave },
+        .{ .inner = 4, .far = 16, .step = 2, .info = wave },
+        .{ .inner = 16, .far = 48, .step = 4, .info = flat },
+        .{ .inner = 48, .far = 160, .step = 16, .info = flat },
+    };
+    var pi: usize = 0;
+    for (0..sea_grid) |gz| for (0..sea_grid) |gx| {
+        const px0: i32 = -160 + @as(i32, @intCast(gx)) * sea_patch_size;
+        const pz0: i32 = -160 + @as(i32, @intCast(gz)) * sea_patch_size;
+        const first: u32 = @intCast(out.items.len / 4);
+        for (rings) |ring| {
+            var z: i32 = @max(pz0, -ring.far);
+            const z_end: i32 = @min(pz0 + sea_patch_size, s + ring.far);
+            while (z < z_end) : (z += ring.step) {
+                var x: i32 = @max(px0, -ring.far);
+                const x_end: i32 = @min(px0 + sea_patch_size, s + ring.far);
+                while (x < x_end) : (x += ring.step) {
+                    if (x >= -ring.inner and x < s + ring.inner and z >= -ring.inner and z < s + ring.inner) continue;
+                    try add(&out, gpa, @floatFromInt(x), @floatFromInt(z), @floatFromInt(ring.step), y, ring.info);
+                }
             }
         }
-        inner = far;
-    }
+        const count: u32 = @as(u32, @intCast(out.items.len / 4)) - first;
+        if (count > 0) {
+            patches[pi] = .{
+                .x0 = @floatFromInt(px0),
+                .z0 = @floatFromInt(pz0),
+                .first_quad = first,
+                .quad_count = count,
+            };
+            pi += 1;
+        }
+    };
+    std.debug.assert(pi == sea_patch_count);
     return out.toOwnedSlice(gpa);
+}
+
+fn seaRing(gpa: std.mem.Allocator) ![]Vertex {
+    var patches: [sea_patch_count]SeaPatch = undefined;
+    return seaRingPatches(gpa, &patches);
 }
 
 const dome_rings = 8;
