@@ -4,6 +4,7 @@
 //! word on what just happened.
 
 const std = @import("std");
+const app = @import("app");
 const ui = @import("ui");
 const gfx = @import("gfx");
 const vc4 = @import("vc4");
@@ -19,6 +20,8 @@ pub const min_size = [2]u32{ 640, 400 };
 
 /// The size the window opens at: a 16:9 view of the world.
 pub const open_size = [2]u32{ 1280, 720 };
+
+pub const button_bg = gfx.Color.argb(0xd8182232);
 
 /// The middle button (a Linux button code).
 const btn_middle = 0x112;
@@ -57,12 +60,18 @@ pub const Blocks = struct {
     fps: f32 = 0,
     on_close: ?ui.Callback = null,
     on_maximize: ?ui.Callback = null,
+    on_fullscreen: ?ui.Callback = null,
     on_drag: ?ui.Callback = null,
     maximized: bool = true,
+    fullscreen: bool = false,
 
     pub fn build(self: *const Blocks, cx: *ui.Context) ui.Widget {
         const g = self.game;
         const a = cx.ui.arena();
+        const is_fullscreen = self.fullscreen or cx.ui.fullscreen;
+        const on_fullscreen = self.on_fullscreen orelse
+            if (cx.ui.controls) |c| ui.Callback.of(c, app.Controls.toggleFullscreen) else null;
+
         var layers: std.ArrayList(ui.Widget) = .empty;
         layers.append(a, cx.make(WorldView{ .game = g, .draw = self.draw })) catch {};
         // The hotbar, at the bottom; what happened, above it.
@@ -75,11 +84,31 @@ pub const Blocks = struct {
             .children = bottom.items,
         }) }) })) catch {};
         if (g.help) layers.append(a, cx.make(ui.Align{ .alignment = .top_left, .child = cx.make(ui.Padding{ .padding = .all(14), .child = help(cx) }) })) catch {};
-        if (g.stats) layers.append(a, cx.make(ui.Align{ .alignment = .top_right, .child = cx.make(ui.Padding{ .padding = .all(14), .child = self.statsPanel(cx) }) })) catch {};
+        const fullscreen_button = cx.make(ui.Decorated{
+            .color = button_bg,
+            .radius = gfx.Radii.all(20),
+            .child = cx.make(ui.IconButton{
+                .icon = if (is_fullscreen) .fullscreen_exit else .fullscreen,
+                .on_press = on_fullscreen,
+            }),
+        });
+        layers.append(a, cx.make(ui.Align{
+            .alignment = .top_right,
+            .child = cx.make(ui.Padding{
+                .padding = .{ .top = 12, .right = 12 },
+                .child = if (g.stats) cx.make(ui.Column{
+                    .main_axis_size = .min,
+                    .cross_axis_alignment = .end,
+                    .spacing = 8,
+                    .children = &.{ fullscreen_button, self.statsPanel(cx) },
+                }) else fullscreen_button,
+            }),
+        })) catch {};
         if (g.palette_open) layers.append(a, cx.make(ui.Align{ .alignment = .center, .child = self.palette(cx) })) catch {};
         // With the mouse taken, a mark in the middle: what it acts on.
         if (g.captured) layers.append(a, cx.make(ui.Center{ .child = crosshair(cx) })) catch {};
         const world = cx.make(ui.Overlay{ .children = layers.items });
+        if (is_fullscreen) return world;
         return cx.make(ui.Column{ .cross_axis_alignment = .stretch, .children = &.{
             cx.make(ui.TitleBar{
                 .title = "Blocks",
@@ -321,3 +350,44 @@ test "the hotbar, palette, help and stats fit from the smallest window up; click
     // The world's view is the window below the title bar.
     try testing.expect(g.view_size[0] == 1920 and g.view_size[1] > 900);
 }
+
+test "the top-right fullscreen button toggles fullscreen" {
+    const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
+    const u = try ui.Ui.create(testing.allocator, &f);
+    defer u.destroy();
+    const w = try world_mod.World.create(testing.allocator);
+    defer w.destroy();
+    var g = Game.init(testing.allocator, w);
+    const icons = try testing.allocator.create(Icons);
+    defer testing.allocator.destroy(icons);
+    icons.init();
+    const Toggle = struct {
+        toggled: bool = false,
+        fn call(t: *@This()) void {
+            t.toggled = !t.toggled;
+        }
+    };
+    var toggle: Toggle = .{};
+    u.frame(800, 600, 0, Blocks{
+        .game = &g,
+        .icons = icons,
+        .on_fullscreen = .of(&toggle, Toggle.call),
+    });
+    const Find = struct {
+        fn first(node: *ui.Node, comptime T: type) ?*ui.Node {
+            if (node.widget.is(T)) return node;
+            for (node.children.items) |ch| if (first(ch, T)) |n| return n;
+            return null;
+        }
+    };
+    const btn = Find.first(u.root.?, ui.IconButton).?;
+    const at = btn.position();
+    // Top right of the world view (below the title bar).
+    try testing.expect(at[0] > 700 and at[1] < 100);
+    const p: ui.Point = .{ at[0] + 10, at[1] + 10 };
+    u.pointerMotion(p);
+    u.pointerButton(p, ui.btn_left, true);
+    u.pointerButton(p, ui.btn_left, false);
+    try testing.expect(toggle.toggled);
+}
+
