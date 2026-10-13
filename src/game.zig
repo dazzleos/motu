@@ -147,8 +147,9 @@ pub const Game = struct {
 
     pub fn key(g: *Game, code: u32, pressed: bool) void {
         if (code >= 256) return;
+        const was_held = g.held.isSet(code);
         g.held.setValue(code, pressed);
-        if (!pressed) return;
+        if (!pressed or was_held) return;
         g.help = g.help and (code == keys.f1);
         switch (code) {
             keys.digit_1...keys.digit_9 => g.choose(@intCast(code - keys.digit_1)),
@@ -510,6 +511,10 @@ test "keys: walking, choosing, flying, the palette" {
     try testing.expectEqual(@as(u8, 0), g.slot);
     g.key(keys.f, true);
     try testing.expect(g.player.flying);
+    // Holding the key (repeat presses) does not toggle it back off.
+    g.key(keys.f, true);
+    try testing.expect(g.player.flying);
+    g.key(keys.f, false);
     g.key(keys.e, true);
     try testing.expect(g.palette_open);
     g.pickFromPalette(.gold);
