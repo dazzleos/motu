@@ -22,7 +22,8 @@ const Uniforms = extern struct {
 const u = gpu.uniforms(Uniforms);
 
 const in_dir = gpu.vertexInput(Vec3, 0);
-const v_dir = gpu.vertexOutput(Vec3, 0);
+const v_sun = gpu.vertexOutput(Vec3, 0);
+const v_color = gpu.vertexOutput(Vec3, 1);
 
 /// How far away the dome is (within the camera's far plane).
 const radius = 150.0;
@@ -31,45 +32,43 @@ export fn vertex() callconv(.spirv_vertex) void {
     const d = in_dir.*;
     const m = u.turn;
     gpu.position.* = m[0] * gpu.splat4(d[0] * radius) + m[1] * gpu.splat4(d[1] * radius) + m[2] * gpu.splat4(d[2] * radius) + m[3];
-    v_dir.* = d;
-}
 
-/// Stars: a few of the sky's tiny cells (by direction), lit at random.
-fn stars(d: Vec3) f32 {
-    const k = 260.0;
-    const c = Vec3{ @floor(d[0] * k), @floor(d[1] * k), @floor(d[2] * k) };
-    // A hash of the cell (fractions of products: cheap, and random enough
-    // to look it).
-    var p = Vec3{ c[0] * 0.1031, c[1] * 0.1030, c[2] * 0.0973 };
-    p = p - Vec3{ @floor(p[0]), @floor(p[1]), @floor(p[2]) };
-    const q = p[0] * (p[1] + 33.33) + p[1] * (p[2] + 33.33) + p[2] * (p[0] + 33.33);
-    const h0 = (p[0] + q) * (p[2] + q);
-    const h = h0 - @floor(h0);
-    // One cell in a hundred or so, brighter or dimmer, above the horizon.
-    return gpu.clamp((h - 0.988) * 70, 0, 0.9) * gpu.clamp(d[1] * 4, 0, 1);
-}
+    const sun = u.sun;
+    const moon = u.moon;
+    const body = if (sun[3] >= moon[3]) Vec3{ sun[0], sun[1], sun[2] } else Vec3{ moon[0], moon[1], moon[2] };
+    v_sun.* = .{ d[0] - body[0], d[1] - body[1], d[2] - body[2] };
 
-const f_dir = gpu.fragmentInput(Vec3, 0);
-
-export fn fragment() callconv(.spirv_fragment) void {
-    const d = gpu.normalize(f_dir.*);
     const up = @sqrt(gpu.clamp(d[1], 0, 1));
     const z = u.zenith;
     const h = u.horizon;
-    const sun = u.sun;
     const cs = d[0] * sun[0] + d[1] * sun[1] + d[2] * sun[2];
-    // A wide glow, and the disc itself.
-    const glow = @exp2((cs - 1) * 12) * 0.45 + @exp2((cs - 1) * 300) * 0.5;
-    const disc = gpu.clamp((cs - 0.9993) * 3000, 0, 1) * 3;
-    const s = (glow + disc) * sun[3];
-    const moon = u.moon;
-    const cm = d[0] * moon[0] + d[1] * moon[1] + d[2] * moon[2];
-    const m = gpu.clamp((cm - 0.9995) * 4000, 0, 1) * moon[3] * 0.9 + stars(d) * moon[3];
+    const glow = @exp2((cs - 1) * 12) * 0.45 * sun[3];
+    const sc = u.sun_color;
+    v_color.* = .{
+        h[0] + (z[0] - h[0]) * up + sc[0] * glow,
+        h[1] + (z[1] - h[1]) * up + sc[1] * glow,
+        h[2] + (z[2] - h[2]) * up + sc[2] * glow,
+    };
+}
+
+const f_sun = gpu.fragmentInput(Vec3, 0);
+const f_color = gpu.fragmentInput(Vec3, 1);
+
+export fn fragment() callconv(.spirv_fragment) void {
+    const ds = f_sun.*;
+    const d2 = ds[0] * ds[0] + ds[1] * ds[1] + ds[2] * ds[2];
+    // Tight corona and the sun or moon's disc, from squared chord distance
+    // (d2 = 2 * (1 - cos(angle))).
+    const corona = gpu.clamp(1 - d2 * 33, 0, 1);
+    const disc = gpu.clamp((0.0014 - d2) * 1500, 0, 1);
+    const s = (disc * 3 + corona * corona * 0.5) * u.sun[3];
+    const m = disc * u.moon[3] * 0.9;
+    const base = f_color.*;
     const sc = u.sun_color;
     gpu.color.* = .{
-        h[0] + (z[0] - h[0]) * up + sc[0] * s + m,
-        h[1] + (z[1] - h[1]) * up + sc[1] * s + m,
-        h[2] + (z[2] - h[2]) * up + sc[2] * s + m * 0.95,
+        base[0] + sc[0] * s + m,
+        base[1] + sc[1] * s + m,
+        base[2] + sc[2] * s + m * 0.95,
         1,
     };
 }
