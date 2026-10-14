@@ -1,7 +1,7 @@
 //! The window, as widgets: the world filling it (drawn straight into the
 //! frame by the renderer), and over it the hotbar of blocks to hand, the
-//! palette of every block (E), the help (F1), what is drawn (F3), a word
-//! on what just happened, and the menu (Esc).
+//! palette of every block (E), the controls, what is drawn, a word on what
+//! just happened, and the menu (Esc), which the game starts in.
 
 const std = @import("std");
 const app = @import("app");
@@ -22,6 +22,9 @@ pub const min_size = [2]u32{ 640, 400 };
 pub const open_size = [2]u32{ 1280, 720 };
 
 pub const button_bg = gfx.Color.argb(0xd8182232);
+
+/// How big the fullscreen button is.
+const fullscreen_size = 40;
 
 /// The middle button (a Linux button code).
 const btn_middle = 0x112;
@@ -86,28 +89,27 @@ pub const Blocks = struct {
         if (g.help) layers.append(a, cx.make(ui.Align{ .alignment = .top_left, .child = cx.make(ui.Padding{ .padding = .all(14), .child = help(cx) }) })) catch {};
         const fullscreen_button = cx.make(ui.Decorated{
             .color = button_bg,
-            .radius = gfx.Radii.all(20),
+            .radius = gfx.Radii.all(fullscreen_size / 2),
             .child = cx.make(ui.IconButton{
+                .size = fullscreen_size,
                 .icon = if (is_fullscreen) .fullscreen_exit else .fullscreen,
                 .on_press = on_fullscreen,
             }),
         });
-        layers.append(a, cx.make(ui.Align{
+        // What is drawn, below the fullscreen button.
+        if (g.stats) layers.append(a, cx.make(ui.Align{
             .alignment = .top_right,
-            .child = cx.make(ui.Padding{
-                .padding = .{ .top = 12, .right = 12 },
-                .child = if (g.stats) cx.make(ui.Column{
-                    .main_axis_size = .min,
-                    .cross_axis_alignment = .end,
-                    .spacing = 8,
-                    .children = &.{ fullscreen_button, self.statsPanel(cx) },
-                }) else fullscreen_button,
-            }),
+            .child = cx.make(ui.Padding{ .padding = .{ .top = 12 + fullscreen_size + 8, .right = 12 }, .child = self.statsPanel(cx) }),
         })) catch {};
         if (g.palette_open) layers.append(a, cx.make(ui.Align{ .alignment = .center, .child = self.palette(cx) })) catch {};
         // With the mouse taken, a mark in the middle: what it acts on.
         if (g.captured and !g.menu_open) layers.append(a, cx.make(ui.Center{ .child = crosshair(cx) })) catch {};
-        if (g.menu_open) layers.append(a, self.menu(cx, is_fullscreen, on_fullscreen)) catch {};
+        if (g.menu_open) layers.append(a, self.menu(cx)) catch {};
+        // Fullscreen, top right as in the other apps; over the menu too.
+        layers.append(a, cx.make(ui.Align{
+            .alignment = .top_right,
+            .child = cx.make(ui.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = fullscreen_button }),
+        })) catch {};
         const world = cx.make(ui.Overlay{ .children = layers.items });
         if (is_fullscreen) return world;
         return cx.make(ui.Column{ .cross_axis_alignment = .stretch, .children = &.{
@@ -167,11 +169,9 @@ pub const Blocks = struct {
 
     /// The menu: the game's options, over the world darkened behind it
     /// (which waits); clicking beside it, Resume or Esc go back.
-    fn menu(self: *const Blocks, cx: *ui.Context, is_fullscreen: bool, on_fullscreen: ?ui.Callback) ui.Widget {
+    fn menu(self: *const Blocks, cx: *ui.Context) ui.Widget {
         const g = self.game;
         const t = cx.theme();
-        const on_quit = self.on_close orelse
-            if (cx.ui.controls) |c| ui.Callback.of(c, app.Controls.close) else null;
         const time = cx.make(ui.Row{
             .spacing = 12,
             .cross_axis_alignment = .center,
@@ -186,14 +186,6 @@ pub const Blocks = struct {
             }) catch &.{},
         });
         const arena = cx.ui.arena();
-        const Fullscreen = struct {
-            cb: ?ui.Callback,
-            fn set(f: *const @This(), _: bool) void {
-                if (f.cb) |c| c.call();
-            }
-        };
-        const fs = arena.create(Fullscreen) catch return cx.make(ui.Empty{});
-        fs.* = .{ .cb = on_fullscreen };
         const column = struct {
             fn f(c: *ui.Context, children: []const ui.Widget) ui.Widget {
                 return c.make(ui.Expanded{ .child = c.make(ui.Column{
@@ -209,13 +201,12 @@ pub const Blocks = struct {
             .children = arena.dupe(ui.Widget, &.{
                 column(cx, &.{
                     cx.make(ui.Switch{ .value = g.antialias, .on_changed = .of(g, Game.setAntialias), .label = "Antialiasing" }),
-                    cx.make(ui.Switch{ .value = g.bump, .on_changed = .of(g, Game.setBump), .label = "Bumps, ripples" }),
-                    cx.make(ui.Switch{ .value = g.player.flying, .on_changed = .of(g, Game.setFlying), .label = "Flying" }),
+                    cx.make(ui.Switch{ .value = g.bump, .on_changed = .of(g, Game.setBump), .label = "Bumps and ripples" }),
+                    cx.make(ui.Switch{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
                 }),
                 column(cx, &.{
-                    cx.make(ui.Switch{ .value = is_fullscreen, .on_changed = if (on_fullscreen != null) .of(fs, Fullscreen.set) else null, .label = "Fullscreen" }),
+                    cx.make(ui.Switch{ .value = g.player.flying, .on_changed = .of(g, Game.setFlying), .label = "Flying" }),
                     cx.make(ui.Switch{ .value = g.help, .on_changed = .of(g, Game.setHelp), .label = "The controls" }),
-                    cx.make(ui.Switch{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
                 }),
             }) catch &.{},
         });
@@ -233,10 +224,8 @@ pub const Blocks = struct {
             }),
             .confirm_label = "Resume",
             .on_confirm = .of(g, Game.closeMenu),
-            .dismiss_label = "Quit",
-            .on_dismiss = on_quit,
             // Clicking beside it goes back to the game too.
-            .on_scrim = .of(g, Game.closeMenu),
+            .on_dismiss = .of(g, Game.closeMenu),
         });
     }
 
@@ -279,11 +268,9 @@ fn crosshair(cx: *ui.Context) ui.Widget {
 
 const help_text =
     \\W A S D  walk  ·  Space  jump  ·  Space twice  fly (Space, Shift: up, down)
-    \\Click  take the mouse, to look around  ·  Esc  menu
-    \\Click  build  ·  Right click  take away  ·  Middle click  copy a block
-    \\1–9 or wheel  choose  ·  E  all blocks  ·  T  later in the day
-    \\M  antialiasing  ·  N  bump mapping, ripples  ·  F11  fullscreen
-    \\F3  what is drawn  ·  F1  this help
+    \\Mouse  look around  ·  Click  build  ·  Right click  take away
+    \\Middle click  copy a block  ·  1–9 or wheel  choose  ·  E  all blocks
+    \\T  later in the day  ·  Esc  menu
 ;
 
 fn help(cx: *ui.Context) ui.Widget {
@@ -444,7 +431,7 @@ test "the menu fits from the smallest window up, and its switches set the option
         try testing.expect(!overflows(u.root.?));
     }
     try testing.expect(findText(u.root.?, "Paused") != null);
-    try testing.expect(findText(u.root.?, "Quit") != null);
+    try testing.expect(findText(u.root.?, "Resume") != null);
     // Its antialiasing switch turns it off.
     try testing.expect(g.antialias);
     const label_node = findText(u.root.?, "Antialiasing").?;

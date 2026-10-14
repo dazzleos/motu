@@ -150,9 +150,8 @@ fn run(init: std.process.Init.Minimal) !void {
             .leave => if (!game.captured) a.ui.pointerLeave(),
             .relative_motion => |d| if (game.captured) game.mouseMoved(d[0], d[1]),
             .pointer_locked => |locked| {
-                game.captured = locked;
-                // Given back (Esc, or the shell took it): a click takes it
-                // again.
+                // Given back (the shell took it): the menu.
+                game.pointerLocked(locked);
                 if (!locked) a.win.unlockPointer();
             },
             else => a.ui.handleInput(e),
@@ -166,10 +165,6 @@ fn run(init: std.process.Init.Minimal) !void {
                 a.win.unlockPointer();
                 game.captured = false;
             }
-        }
-        if (game.fullscreen_wanted) {
-            game.fullscreen_wanted = false;
-            a.win.setFullscreen(!a.win.fullscreen);
         }
 
         const now = sys.nowNs();

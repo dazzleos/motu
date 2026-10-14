@@ -10,21 +10,19 @@
 //!     Space                                 jump (flying: rise)
 //!     Space twice, quickly                  fly, or walk
 //!     Shift                                 flying: sink
-//!     click                                 take the mouse (it turns the
-//!                                           view)
-//!     Esc                                   the menu (the game waits, and
-//!                                           the mouse is given back)
-//!     drag                                  look around (mouse not taken)
+//!     the mouse                             look around
 //!     click                                 place a block
-//!     right click, or press and hold        take a block away
+//!     right click                           take a block away
 //!     middle click                          take that kind of block
 //!     1 to 9, or the wheel                  choose a block from the hotbar
 //!     E                                     all the blocks
 //!     T                                     later in the day
-//!     M                                     antialiasing on or off
-//!     N                                     bump mapping and ripples on or off
-//!     F1                                    help;  F3: what is drawn
-//!     F11                                   fullscreen, or not
+//!     Esc                                   the menu (the game waits)
+//!
+//! The game starts in the menu, which has the options; leaving it takes
+//! the mouse (it turns the view), and Esc gives it back with the menu.
+//! Where the mouse cannot be taken, dragging looks around, a click builds
+//! and pressing and holding takes away.
 //!
 //! Every change to the world goes through `edit`, the one place a future
 //! network game would send and receive changes.
@@ -52,14 +50,9 @@ pub const keys = struct {
     pub const a = 30;
     pub const s = 31;
     pub const d = 32;
-    pub const m = 50;
-    pub const n = 49;
     pub const left_shift = 42;
     pub const right_shift = 54;
     pub const space = 57;
-    pub const f1 = 59;
-    pub const f3 = 61;
-    pub const f11 = 87;
     pub const right_ctrl = 97;
     pub const up = 103;
     pub const left = 105;
@@ -101,8 +94,9 @@ pub const Game = struct {
     /// double tap.
     space_at: ?f32 = null,
     palette_open: bool = false,
-    /// The menu: the game's options, and the game paused behind it.
-    menu_open: bool = false,
+    /// The menu: the game's options, and the game paused behind it. The
+    /// game starts in it, so the mouse is not taken before it is wanted.
+    menu_open: bool = true,
     help: bool = true,
     stats: bool = false,
     /// Edges antialiased (the GPU's 4x multisampling).
@@ -122,8 +116,6 @@ pub const Game = struct {
     captured: bool = false,
     /// For the window: take the mouse (true) or give it back (false).
     capture_wanted: ?bool = null,
-    /// For the window: fullscreen, or not.
-    fullscreen_wanted: bool = false,
     /// What happened, shown for a moment.
     message: []const u8 = "",
     message_until: f32 = 0,
@@ -158,17 +150,12 @@ pub const Game = struct {
         const was_held = g.held.isSet(code);
         g.held.setValue(code, pressed);
         if (!pressed or was_held) return;
-        // Behind the menu, the game waits: only Esc (back to it) and F11
-        // do anything.
+        // Behind the menu, the game waits: only Esc (back to it) does
+        // anything.
         if (g.menu_open) {
-            switch (code) {
-                keys.esc => g.closeMenu(),
-                keys.f11 => g.fullscreen_wanted = true,
-                else => {},
-            }
+            if (code == keys.esc) g.closeMenu();
             return;
         }
-        g.help = g.help and (code == keys.f1);
         switch (code) {
             keys.digit_1...keys.digit_9 => g.choose(@intCast(code - keys.digit_1)),
             keys.space => {
@@ -181,30 +168,15 @@ pub const Game = struct {
                 };
                 g.space_at = g.clock;
             },
-            keys.e => {
-                g.palette_open = !g.palette_open;
+            keys.e => if (g.palette_open) g.closePalette() else {
+                g.palette_open = true;
                 // Its blocks are chosen with the pointer.
-                if (g.palette_open and g.captured) g.capture_wanted = false;
+                if (g.captured) g.capture_wanted = false;
             },
-            keys.esc => {
-                if (g.palette_open) {
-                    g.palette_open = false;
-                } else g.openMenu();
-            },
-            keys.f11 => g.fullscreen_wanted = true,
+            keys.esc => if (g.palette_open) g.closePalette() else g.openMenu(),
             keys.t => {
                 g.time_of_day = @mod(g.time_of_day + 0.125, 1);
                 g.say(timeName(g.time_of_day));
-            },
-            keys.f1 => g.help = !g.help,
-            keys.f3 => g.stats = !g.stats,
-            keys.m => {
-                g.setAntialias(!g.antialias);
-                g.say(if (g.antialias) "Antialiasing on" else "Antialiasing off");
-            },
-            keys.n => {
-                g.setBump(!g.bump);
-                g.say(if (g.bump) "Bump mapping and ripples on" else "Bump mapping and ripples off");
             },
             else => {},
         }
@@ -215,16 +187,34 @@ pub const Game = struct {
     pub fn openMenu(g: *Game) void {
         g.menu_open = true;
         g.palette_open = false;
-        g.help = false;
         g.press = null;
         if (g.captured) g.capture_wanted = false;
     }
 
+    /// Back to the game, which takes the mouse.
     pub fn closeMenu(g: *Game) void {
         g.menu_open = false;
+        g.takeMouse();
     }
 
-    // The options (the menu's, and their keys').
+    fn closePalette(g: *Game) void {
+        g.palette_open = false;
+        g.takeMouse();
+    }
+
+    /// In the game, the mouse is taken if it can be.
+    fn takeMouse(g: *Game) void {
+        if (g.can_capture and !g.captured) g.capture_wanted = true;
+    }
+
+    /// The window took the mouse, or gave it back. Given back while
+    /// playing (the shell took it): the menu, as Esc would.
+    pub fn pointerLocked(g: *Game, locked: bool) void {
+        g.captured = locked;
+        if (!locked and !g.menu_open and !g.palette_open) g.openMenu();
+    }
+
+    // The options, set from the menu.
 
     pub fn setAntialias(g: *Game, on: bool) void {
         g.antialias = on;
@@ -267,7 +257,7 @@ pub const Game = struct {
     /// From the palette: puts `b` in the hotbar's slot chosen.
     pub fn pickFromPalette(g: *Game, b: Block) void {
         g.hotbar[g.slot] = b;
-        g.palette_open = false;
+        g.closePalette();
         g.say(b.name());
     }
 
@@ -286,7 +276,6 @@ pub const Game = struct {
     pub fn pointerDown(g: *Game, pos: [2]f32) void {
         g.press = .{ .at = pos, .last = pos, .dragging = false };
         g.pointer = pos;
-        g.help = false;
     }
 
     /// The press let go: a click (not a drag) takes the mouse, if it can
@@ -312,7 +301,6 @@ pub const Game = struct {
     /// middle, the left builds, the right takes away, the middle picks.
     pub fn mouseButton(g: *Game, code: u32, pressed: bool) void {
         if (!pressed) return;
-        g.help = false;
         g.updateTarget();
         switch (code) {
             btn_left => _ = g.place(),
@@ -489,6 +477,8 @@ fn testGame() !Game {
     w.spawn = .{ 64.5, 31, 64.5 };
     var g = Game.init(testing.allocator, w);
     g.view_size = .{ 800, 600 };
+    // Playing, not in the menu it starts in.
+    g.menu_open = false;
     return g;
 }
 
@@ -540,9 +530,6 @@ test "with the mouse taken, it turns the view and builds on the middle of it" {
     try testing.expect(g.player.yaw > yaw);
     g.key(keys.esc, true);
     try testing.expectEqual(@as(?bool, false), g.capture_wanted);
-    // F11 asks for fullscreen.
-    g.key(keys.f11, true);
-    try testing.expect(g.fullscreen_wanted);
 }
 
 test "no block inside the player; plants only on the ground" {
@@ -614,15 +601,27 @@ test "keys: walking, choosing, flying, the palette" {
     try testing.expectApproxEqAbs(@mod(t + 0.25, 1), g.time_of_day, 1e-3);
 }
 
-test "Esc: the menu, with the game waiting behind it" {
+test "the game starts in the menu; leaving it takes the mouse, and Esc gives it back with the menu" {
     var g = try testGame();
     defer g.world.destroy();
-    g.captured = true;
+    const fresh = Game.init(testing.allocator, g.world);
+    try testing.expect(fresh.menu_open);
+    g.can_capture = true;
+    g.menu_open = true;
+    // Esc on the menu: back to the game, which takes the mouse.
+    g.key(keys.esc, true);
+    g.key(keys.esc, false);
+    try testing.expect(!g.menu_open);
+    try testing.expectEqual(@as(?bool, true), g.capture_wanted);
+    g.capture_wanted = null;
+    g.pointerLocked(true);
+    // Esc in the game: the menu, and the mouse given back.
     g.key(keys.esc, true);
     g.key(keys.esc, false);
     try testing.expect(g.menu_open);
-    // The mouse is given back, to use the menu with.
     try testing.expectEqual(@as(?bool, false), g.capture_wanted);
+    g.capture_wanted = null;
+    g.pointerLocked(false);
     // The game waits: time stands still, and keys do nothing.
     const t = g.time_of_day;
     const pos = g.player.pos;
@@ -634,17 +633,30 @@ test "Esc: the menu, with the game waiting behind it" {
     try testing.expect(!g.palette_open);
     g.key(keys.w, false);
     g.key(keys.e, false);
-    // Esc again: back to the game.
-    g.key(keys.esc, true);
-    g.key(keys.esc, false);
-    try testing.expect(!g.menu_open);
+    // Resume.
+    g.closeMenu();
+    try testing.expectEqual(@as(?bool, true), g.capture_wanted);
+    g.capture_wanted = null;
+    g.pointerLocked(true);
     g.tick(1);
     try testing.expect(g.time_of_day != t);
-    // With the palette open, Esc closes that, not opening the menu.
+    // The palette gives the mouse back to pick with; Esc closes it (not
+    // opening the menu) and takes the mouse again.
     g.key(keys.e, true);
     g.key(keys.e, false);
+    try testing.expectEqual(@as(?bool, false), g.capture_wanted);
+    g.capture_wanted = null;
+    g.pointerLocked(false);
+    try testing.expect(g.palette_open and !g.menu_open);
     g.key(keys.esc, true);
+    g.key(keys.esc, false);
     try testing.expect(!g.palette_open and !g.menu_open);
+    try testing.expectEqual(@as(?bool, true), g.capture_wanted);
+    g.capture_wanted = null;
+    g.pointerLocked(true);
+    // The mouse taken away while playing (by the shell): the menu.
+    g.pointerLocked(false);
+    try testing.expect(g.menu_open);
 }
 
 test "saving and loading keep the world, the player and the hotbar" {
