@@ -16,7 +16,6 @@
 //!     middle click                          take that kind of block
 //!     1 to 9, or the wheel                  choose a block from the hotbar
 //!     E                                     all the blocks
-//!     T                                     later in the day
 //!     Esc                                   the menu (the game waits)
 //!
 //! The game starts in the menu, which has the options; leaving it takes
@@ -45,7 +44,6 @@ pub const keys = struct {
     pub const digit_9 = 10;
     pub const w = 17;
     pub const e = 18;
-    pub const t = 20;
     pub const left_ctrl = 29;
     pub const a = 30;
     pub const s = 31;
@@ -160,7 +158,8 @@ pub const Game = struct {
             keys.digit_1...keys.digit_9 => g.choose(@intCast(code - keys.digit_1)),
             keys.space => {
                 if (g.space_at) |at| if (g.clock - at <= double_tap) {
-                    g.setFlying(!g.player.flying);
+                    g.player.flying = !g.player.flying;
+                    g.player.vel[1] = 0;
                     g.say(if (g.player.flying) "Flying" else "Walking");
                     // A third press starts again.
                     g.space_at = null;
@@ -174,10 +173,6 @@ pub const Game = struct {
                 if (g.captured) g.capture_wanted = false;
             },
             keys.esc => if (g.palette_open) g.closePalette() else g.openMenu(),
-            keys.t => {
-                g.time_of_day = @mod(g.time_of_day + 0.125, 1);
-                g.say(timeName(g.time_of_day));
-            },
             else => {},
         }
     }
@@ -214,7 +209,7 @@ pub const Game = struct {
         if (!locked and !g.menu_open and !g.palette_open) g.openMenu();
     }
 
-    // The options, set from the menu.
+    // The options, set from the menu (and only there: they have no keys).
 
     pub fn setAntialias(g: *Game, on: bool) void {
         g.antialias = on;
@@ -222,11 +217,6 @@ pub const Game = struct {
 
     pub fn setBump(g: *Game, on: bool) void {
         g.bump = on;
-    }
-
-    pub fn setFlying(g: *Game, on: bool) void {
-        g.player.flying = on;
-        g.player.vel[1] = 0;
     }
 
     pub fn setHelp(g: *Game, on: bool) void {

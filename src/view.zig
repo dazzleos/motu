@@ -202,11 +202,10 @@ pub const Blocks = struct {
                 column(cx, &.{
                     cx.make(ui.Switch{ .value = g.antialias, .on_changed = .of(g, Game.setAntialias), .label = "Antialiasing" }),
                     cx.make(ui.Switch{ .value = g.bump, .on_changed = .of(g, Game.setBump), .label = "Bumps and ripples" }),
-                    cx.make(ui.Switch{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
                 }),
                 column(cx, &.{
-                    cx.make(ui.Switch{ .value = g.player.flying, .on_changed = .of(g, Game.setFlying), .label = "Flying" }),
                     cx.make(ui.Switch{ .value = g.help, .on_changed = .of(g, Game.setHelp), .label = "The controls" }),
+                    cx.make(ui.Switch{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
                 }),
             }) catch &.{},
         });
@@ -270,7 +269,7 @@ const help_text =
     \\W A S D  walk  ·  Space  jump  ·  Space twice  fly (Space, Shift: up, down)
     \\Mouse  look around  ·  Click  build  ·  Right click  take away
     \\Middle click  copy a block  ·  1–9 or wheel  choose  ·  E  all blocks
-    \\T  later in the day  ·  Esc  menu
+    \\Esc  menu
 ;
 
 fn help(cx: *ui.Context) ui.Widget {
