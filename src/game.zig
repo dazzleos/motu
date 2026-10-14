@@ -8,8 +8,8 @@
 //!     W A S D (or the arrows up and down)   walk (Ctrl: faster)
 //!     the arrows left and right             turn
 //!     Space                                 jump (flying: rise)
+//!     Space twice, quickly                  fly, or walk
 //!     Shift                                 flying: sink
-//!     F                                     fly, or walk
 //!     click                                 take the mouse (it turns the
 //!                                           view; Esc gives it back)
 //!     drag                                  look around (mouse not taken)
@@ -50,7 +50,6 @@ pub const keys = struct {
     pub const a = 30;
     pub const s = 31;
     pub const d = 32;
-    pub const f = 33;
     pub const m = 50;
     pub const n = 49;
     pub const left_shift = 42;
@@ -81,6 +80,8 @@ const look_speed: f32 = 0.006;
 const turn_speed: f32 = 2.2;
 /// Pixels a press can move and still be a click.
 const click_slop: f32 = 8;
+/// Seconds between two presses of Space that fly (or walk).
+const double_tap: f32 = 0.3;
 
 pub const Game = struct {
     gpa: std.mem.Allocator,
@@ -94,6 +95,9 @@ pub const Game = struct {
     clock: f32 = 0,
     /// Keys held, by code.
     held: std.StaticBitSet(256) = .initEmpty(),
+    /// When Space was last pressed, if a second press now would be a
+    /// double tap.
+    space_at: ?f32 = null,
     palette_open: bool = false,
     help: bool = true,
     stats: bool = false,
@@ -153,10 +157,16 @@ pub const Game = struct {
         g.help = g.help and (code == keys.f1);
         switch (code) {
             keys.digit_1...keys.digit_9 => g.choose(@intCast(code - keys.digit_1)),
-            keys.f => {
-                g.player.flying = !g.player.flying;
-                g.player.vel[1] = 0;
-                g.say(if (g.player.flying) "Flying" else "Walking");
+            keys.space => {
+                if (g.space_at) |at| if (g.clock - at <= double_tap) {
+                    g.player.flying = !g.player.flying;
+                    g.player.vel[1] = 0;
+                    g.say(if (g.player.flying) "Flying" else "Walking");
+                    // A third press starts again.
+                    g.space_at = null;
+                    return;
+                };
+                g.space_at = g.clock;
             },
             keys.e => {
                 g.palette_open = !g.palette_open;
@@ -509,12 +519,32 @@ test "keys: walking, choosing, flying, the palette" {
     g.slot = 8;
     g.scroll(1);
     try testing.expectEqual(@as(u8, 0), g.slot);
-    g.key(keys.f, true);
+    // Space twice, quickly, flies.
+    g.key(keys.space, true);
+    g.key(keys.space, false);
+    try testing.expect(!g.player.flying);
+    g.tick(0.1);
+    g.key(keys.space, true);
     try testing.expect(g.player.flying);
-    // Holding the key (repeat presses) does not toggle it back off.
-    g.key(keys.f, true);
+    // Holding it (repeat presses) does not toggle it back off.
+    g.key(keys.space, true);
     try testing.expect(g.player.flying);
-    g.key(keys.f, false);
+    g.key(keys.space, false);
+    // A third press soon after is the first of the next double tap.
+    g.tick(0.1);
+    g.key(keys.space, true);
+    g.key(keys.space, false);
+    try testing.expect(g.player.flying);
+    // Twice, but slowly: still flying.
+    g.tick(0.5);
+    g.key(keys.space, true);
+    g.key(keys.space, false);
+    try testing.expect(g.player.flying);
+    // Then twice quickly: walking again.
+    g.tick(0.1);
+    g.key(keys.space, true);
+    g.key(keys.space, false);
+    try testing.expect(!g.player.flying);
     g.key(keys.e, true);
     try testing.expect(g.palette_open);
     g.pickFromPalette(.gold);

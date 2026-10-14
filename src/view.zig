@@ -202,7 +202,7 @@ fn crosshair(cx: *ui.Context) ui.Widget {
 }
 
 const help_text =
-    \\W A S D  walk  ·  Space  jump  ·  F  fly (Space, Shift: up, down)
+    \\W A S D  walk  ·  Space  jump  ·  Space twice  fly (Space, Shift: up, down)
     \\Click  take the mouse, to look around  ·  Esc  give it back
     \\Click  build  ·  Right click  take away  ·  Middle click  copy a block
     \\1–9 or wheel  choose  ·  E  all blocks  ·  T  later in the day
