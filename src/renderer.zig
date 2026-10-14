@@ -28,6 +28,7 @@ const mesher = @import("mesher.zig");
 const math = @import("math.zig");
 const textures = @import("textures.zig");
 const player_mod = @import("player.zig");
+const creatures = @import("creatures.zig");
 
 const World = world_mod.World;
 const Vertex = mesher.Vertex;
@@ -314,6 +315,12 @@ pub fn Renderer(comptime Device: type) type {
         cube_lines: vc4.Bo,
         /// The other players' figures, one for each colour.
         avatars: vc4.Bo,
+        /// Double-buffered vertices for birds and fish (so a pipelined
+        /// frame in flight on the GPU is not overwritten).
+        creatures_bo: [2]vc4.Bo,
+        creatures_frame: u1 = 0,
+        creatures: creatures.Creatures = .{},
+        world: ?*const World = null,
         chunks: [world_mod.chunk_count]ChunkGpu = @splat(.{}),
         mesh: mesher.Mesh = .{},
         stats: Stats = .{},
@@ -408,6 +415,11 @@ pub fn Renderer(comptime Device: type) type {
             const figures = avatarMeshes();
             const avatars = try dev.createBo(@sizeOf(@TypeOf(figures)));
             @memcpy(avatars.map[0..@sizeOf(@TypeOf(figures))], std.mem.asBytes(&figures));
+            const creatures_bytes: u32 = creatures.max_quads * 4 * @sizeOf(Vertex);
+            const creatures_bo0 = try dev.createBo(creatures_bytes);
+            errdefer dev.destroyBo(creatures_bo0);
+            const creatures_bo1 = try dev.createBo(creatures_bytes);
+            errdefer dev.destroyBo(creatures_bo1);
 
             r.* = .{
                 .gpa = gpa,
@@ -432,6 +444,7 @@ pub fn Renderer(comptime Device: type) type {
                 .dome_quads = @intCast(dome_verts.len / 4),
                 .cube_lines = cube_lines,
                 .avatars = avatars,
+                .creatures_bo = .{ creatures_bo0, creatures_bo1 },
             };
             return r;
         }
@@ -439,7 +452,7 @@ pub fn Renderer(comptime Device: type) type {
         pub fn deinit(r: *Self) void {
             for (&r.chunks) |*c| if (c.bo) |bo| r.dev.destroyBo(bo);
             for ([_][blocks.Tile.strips]vc4.Bo{ r.strips, r.albedo, r.normals }) |set| for (set) |bo| r.dev.destroyBo(bo);
-            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.detail, r.ripples }) |bo| r.dev.destroyBo(bo);
+            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.detail, r.ripples, r.creatures_bo[0], r.creatures_bo[1] }) |bo| r.dev.destroyBo(bo);
             r.terrain.deinit(r.dev);
             r.terrain_bump.deinit(r.dev);
             r.terrain_blend.deinit(r.dev);
@@ -455,6 +468,7 @@ pub fn Renderer(comptime Device: type) type {
         /// nearest to `near` first (so what is close catches up first).
         /// Returns how many are left.
         pub fn update(r: *Self, w: *World, near: V3, limit: usize) !usize {
+            r.world = w;
             var done: usize = 0;
             while (done < limit) : (done += 1) {
                 var best: ?usize = null;
@@ -610,6 +624,16 @@ pub fn Renderer(comptime Device: type) type {
                 try target.quads(&r.terrain, r.avatars.handle, offset, avatar_quads, .{ if (v.bump) plain[figure_strip] else tex[figure_strip], null, null });
             }
             if (v.avatars.len > 0) r.terrain.setUniforms(bytes);
+            if (r.world) |w| {
+                r.creatures.sync(w, v.time);
+                const cbo = r.creatures_bo[r.creatures_frame];
+                r.creatures_frame ^= 1;
+                const cverts = std.mem.bytesAsSlice(Vertex, cbo.map[0 .. creatures.max_quads * 4 * @sizeOf(Vertex)]);
+                const cquads = r.creatures.buildMesh(w, &frustum, cam.eye, depth + start + 12, cverts);
+                if (cquads > 0) {
+                    try target.quads(&r.terrain, cbo.handle, 0, cquads, .{ if (v.bump) plain[2] else tex[2], null, null });
+                }
+            }
             // 2. The sky.
             const env_sun = env.sun_dir;
             var sky: SkyUniforms = .{

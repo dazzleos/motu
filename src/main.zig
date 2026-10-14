@@ -261,6 +261,7 @@ test {
     _ = @import("mesher.zig");
     _ = @import("math.zig");
     _ = @import("player.zig");
+    _ = @import("creatures.zig");
     _ = @import("renderer.zig");
     _ = @import("preview.zig");
     _ = @import("game.zig");
