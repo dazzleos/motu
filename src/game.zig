@@ -11,7 +11,9 @@
 //!     Space twice, quickly                  fly, or walk
 //!     Shift                                 flying: sink
 //!     click                                 take the mouse (it turns the
-//!                                           view; Esc gives it back)
+//!                                           view)
+//!     Esc                                   the menu (the game waits, and
+//!                                           the mouse is given back)
 //!     drag                                  look around (mouse not taken)
 //!     click                                 place a block
 //!     right click, or press and hold        take a block away
@@ -99,6 +101,8 @@ pub const Game = struct {
     /// double tap.
     space_at: ?f32 = null,
     palette_open: bool = false,
+    /// The menu: the game's options, and the game paused behind it.
+    menu_open: bool = false,
     help: bool = true,
     stats: bool = false,
     /// Edges antialiased (the GPU's 4x multisampling).
@@ -154,13 +158,22 @@ pub const Game = struct {
         const was_held = g.held.isSet(code);
         g.held.setValue(code, pressed);
         if (!pressed or was_held) return;
+        // Behind the menu, the game waits: only Esc (back to it) and F11
+        // do anything.
+        if (g.menu_open) {
+            switch (code) {
+                keys.esc => g.closeMenu(),
+                keys.f11 => g.fullscreen_wanted = true,
+                else => {},
+            }
+            return;
+        }
         g.help = g.help and (code == keys.f1);
         switch (code) {
             keys.digit_1...keys.digit_9 => g.choose(@intCast(code - keys.digit_1)),
             keys.space => {
                 if (g.space_at) |at| if (g.clock - at <= double_tap) {
-                    g.player.flying = !g.player.flying;
-                    g.player.vel[1] = 0;
+                    g.setFlying(!g.player.flying);
                     g.say(if (g.player.flying) "Flying" else "Walking");
                     // A third press starts again.
                     g.space_at = null;
@@ -174,8 +187,9 @@ pub const Game = struct {
                 if (g.palette_open and g.captured) g.capture_wanted = false;
             },
             keys.esc => {
-                if (g.captured) g.capture_wanted = false;
-                g.palette_open = false;
+                if (g.palette_open) {
+                    g.palette_open = false;
+                } else g.openMenu();
             },
             keys.f11 => g.fullscreen_wanted = true,
             keys.t => {
@@ -185,15 +199,57 @@ pub const Game = struct {
             keys.f1 => g.help = !g.help,
             keys.f3 => g.stats = !g.stats,
             keys.m => {
-                g.antialias = !g.antialias;
+                g.setAntialias(!g.antialias);
                 g.say(if (g.antialias) "Antialiasing on" else "Antialiasing off");
             },
             keys.n => {
-                g.bump = !g.bump;
+                g.setBump(!g.bump);
                 g.say(if (g.bump) "Bump mapping and ripples on" else "Bump mapping and ripples off");
             },
             else => {},
         }
+    }
+
+    /// The menu, over the game: it waits, and the mouse is given back to
+    /// use the menu with.
+    pub fn openMenu(g: *Game) void {
+        g.menu_open = true;
+        g.palette_open = false;
+        g.help = false;
+        g.press = null;
+        if (g.captured) g.capture_wanted = false;
+    }
+
+    pub fn closeMenu(g: *Game) void {
+        g.menu_open = false;
+    }
+
+    // The options (the menu's, and their keys').
+
+    pub fn setAntialias(g: *Game, on: bool) void {
+        g.antialias = on;
+    }
+
+    pub fn setBump(g: *Game, on: bool) void {
+        g.bump = on;
+    }
+
+    pub fn setFlying(g: *Game, on: bool) void {
+        g.player.flying = on;
+        g.player.vel[1] = 0;
+    }
+
+    pub fn setHelp(g: *Game, on: bool) void {
+        g.help = on;
+    }
+
+    pub fn setStats(g: *Game, on: bool) void {
+        g.stats = on;
+    }
+
+    /// Through the day, 0 (midnight) to 1.
+    pub fn setTimeOfDay(g: *Game, t: f32) void {
+        g.time_of_day = @mod(t, 1);
     }
 
     pub fn choose(g: *Game, slot: u8) void {
@@ -365,6 +421,8 @@ pub const Game = struct {
 
     /// Moves everything on by `dt` seconds.
     pub fn tick(g: *Game, dt: f32) void {
+        // Paused behind the menu.
+        if (g.menu_open) return;
         g.clock += dt;
         g.time_of_day = @mod(g.time_of_day + dt / day_length, 1);
         var turn: f32 = 0;
@@ -476,7 +534,7 @@ test "with the mouse taken, it turns the view and builds on the middle of it" {
     try testing.expectEqual(Block.grass, g.world.get(t.before[0], t.before[1], t.before[2]));
     g.mouseButton(btn_right, true);
     try testing.expectEqual(Block.air, g.world.get(t.before[0], t.before[1], t.before[2]));
-    // Moving it turns the view; Esc gives it back.
+    // Moving it turns the view; Esc gives it back (and opens the menu).
     const yaw = g.player.yaw;
     g.mouseMoved(100, 0);
     try testing.expect(g.player.yaw > yaw);
@@ -554,6 +612,39 @@ test "keys: walking, choosing, flying, the palette" {
     const t = g.time_of_day;
     g.tick(day_length / 4);
     try testing.expectApproxEqAbs(@mod(t + 0.25, 1), g.time_of_day, 1e-3);
+}
+
+test "Esc: the menu, with the game waiting behind it" {
+    var g = try testGame();
+    defer g.world.destroy();
+    g.captured = true;
+    g.key(keys.esc, true);
+    g.key(keys.esc, false);
+    try testing.expect(g.menu_open);
+    // The mouse is given back, to use the menu with.
+    try testing.expectEqual(@as(?bool, false), g.capture_wanted);
+    // The game waits: time stands still, and keys do nothing.
+    const t = g.time_of_day;
+    const pos = g.player.pos;
+    g.key(keys.w, true);
+    g.key(keys.e, true);
+    for (0..30) |_| g.tick(1.0 / 30.0);
+    try testing.expectEqual(t, g.time_of_day);
+    try testing.expectEqual(pos, g.player.pos);
+    try testing.expect(!g.palette_open);
+    g.key(keys.w, false);
+    g.key(keys.e, false);
+    // Esc again: back to the game.
+    g.key(keys.esc, true);
+    g.key(keys.esc, false);
+    try testing.expect(!g.menu_open);
+    g.tick(1);
+    try testing.expect(g.time_of_day != t);
+    // With the palette open, Esc closes that, not opening the menu.
+    g.key(keys.e, true);
+    g.key(keys.e, false);
+    g.key(keys.esc, true);
+    try testing.expect(!g.palette_open and !g.menu_open);
 }
 
 test "saving and loading keep the world, the player and the hotbar" {
