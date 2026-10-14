@@ -1,12 +1,13 @@
 //! Draws the world with the GPU, straight into the frame: the chunks'
 //! meshes (each chunk's three in one buffer), the sea around the world,
-//! the sky and the outline of the block picked.
+//! the sky, the other players and the outline of the block picked.
 //!
 //! What is drawn, in order, and why:
 //!
 //! 1. Solid blocks, the nearest chunks first, with early Z: the GPU then
 //!    skips shading what is behind what it has drawn, so the cost is about
-//!    a pixel's shading once each.
+//!    a pixel's shading once each. Then the other players (on the
+//!    network), as block figures, one draw each.
 //! 2. The sky, behind everything (only where nothing was drawn, again
 //!    thanks to early Z): its gradient and sun are per pixel.
 //! 3. Water and the sea, blended, the furthest first.
@@ -26,6 +27,7 @@ const world_mod = @import("world.zig");
 const mesher = @import("mesher.zig");
 const math = @import("math.zig");
 const textures = @import("textures.zig");
+const player_mod = @import("player.zig");
 
 const World = world_mod.World;
 const Vertex = mesher.Vertex;
@@ -267,6 +269,8 @@ pub const View = struct {
     bump: bool = true,
     /// The block to outline.
     outline: ?world_mod.Pos = null,
+    /// The other players.
+    avatars: []const player_mod.Other = &.{},
 };
 
 /// What the last frame drew.
@@ -308,6 +312,8 @@ pub fn Renderer(comptime Device: type) type {
         dome: vc4.Bo,
         dome_quads: u32,
         cube_lines: vc4.Bo,
+        /// The other players' figures, one for each colour.
+        avatars: vc4.Bo,
         chunks: [world_mod.chunk_count]ChunkGpu = @splat(.{}),
         mesh: mesher.Mesh = .{},
         stats: Stats = .{},
@@ -396,7 +402,12 @@ pub fn Renderer(comptime Device: type) type {
 
             const edges = cubeEdges();
             const cube_lines = try dev.createBo(edges.len * 12);
+            errdefer dev.destroyBo(cube_lines);
             @memcpy(cube_lines.map[0 .. edges.len * 12], std.mem.sliceAsBytes(&edges));
+
+            const figures = avatarMeshes();
+            const avatars = try dev.createBo(@sizeOf(@TypeOf(figures)));
+            @memcpy(avatars.map[0..@sizeOf(@TypeOf(figures))], std.mem.asBytes(&figures));
 
             r.* = .{
                 .gpa = gpa,
@@ -420,6 +431,7 @@ pub fn Renderer(comptime Device: type) type {
                 .dome = dome,
                 .dome_quads = @intCast(dome_verts.len / 4),
                 .cube_lines = cube_lines,
+                .avatars = avatars,
             };
             return r;
         }
@@ -427,7 +439,7 @@ pub fn Renderer(comptime Device: type) type {
         pub fn deinit(r: *Self) void {
             for (&r.chunks) |*c| if (c.bo) |bo| r.dev.destroyBo(bo);
             for ([_][blocks.Tile.strips]vc4.Bo{ r.strips, r.albedo, r.normals }) |set| for (set) |bo| r.dev.destroyBo(bo);
-            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.detail, r.ripples }) |bo| r.dev.destroyBo(bo);
+            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.detail, r.ripples }) |bo| r.dev.destroyBo(bo);
             r.terrain.deinit(r.dev);
             r.terrain_bump.deinit(r.dev);
             r.terrain_blend.deinit(r.dev);
@@ -579,6 +591,25 @@ pub fn Renderer(comptime Device: type) type {
                     }
                 }
             }
+            // The other players: each its figure, turned and moved to them
+            // (with the eye and the sun turned into its frame, for the fog
+            // and the light).
+            const figure_strip = blocks.Tile.red.strip();
+            for (v.avatars) |o| {
+                if (math.length(o.pos - cam.eye) > depth + start) continue;
+                if (!frustum.sees(o.pos - V3{ 1, 0, 1 }, o.pos + V3{ 1, 2, 1 })) continue;
+                const turn = math.rotationY(o.yaw);
+                var at = scene;
+                at.mvp = math.mul(vp, math.mul(math.translation(o.pos), math.rotationY(-o.yaw)));
+                const eye = math.transform(turn, cam.eye - o.pos);
+                at.camera = .{ eye[0], eye[1], eye[2], scene.camera[3] };
+                const sun = math.transform(turn, light);
+                at.sun = .{ sun[0], sun[1], sun[2], scene.sun[3] };
+                r.terrain.setUniforms(std.mem.asBytes(&at));
+                const offset = @as(u32, o.colour) * avatar_quads * 4 * @sizeOf(Vertex);
+                try target.quads(&r.terrain, r.avatars.handle, offset, avatar_quads, .{ if (v.bump) plain[figure_strip] else tex[figure_strip], null, null });
+            }
+            if (v.avatars.len > 0) r.terrain.setUniforms(bytes);
             // 2. The sky.
             const env_sun = env.sun_dir;
             var sky: SkyUniforms = .{
@@ -706,6 +737,76 @@ fn Target(comptime Sink: type) type {
                 done += n;
             }
         }
+    };
+}
+
+// --- The other players ----------------------------------------------------------------
+
+/// The colours players are told apart by (their bodies'), by id.
+const avatar_colours = [player_mod.colours]blocks.Tile{ .red, .green, .yellow, .purple, .orange, .cyan, .pink, .black };
+/// Quads in a figure: legs, body and head, six faces each.
+const avatar_quads = 18;
+
+const AvatarMeshes = [player_mod.colours][avatar_quads * 4]Vertex;
+
+/// The figures, one for each colour: standing on the origin, facing north
+/// (-z) as a player with no yaw does; legs, the body in the colour, and a
+/// head with a face on its front. Their tiles are all in one strip, so each
+/// is one draw; lit as in the open.
+fn avatarMeshes() AvatarMeshes {
+    var out: AvatarMeshes = undefined;
+    for (&out, avatar_colours) |*mesh, colour| {
+        var n: usize = 0;
+        const boxes = [_]struct { min: V3, max: V3, tile: blocks.Tile, front: blocks.Tile }{
+            .{ .min = .{ -0.2, 0, -0.12 }, .max = .{ 0.2, 0.75, 0.12 }, .tile = .blue, .front = .blue },
+            .{ .min = .{ -0.26, 0.75, -0.15 }, .max = .{ 0.26, 1.4, 0.15 }, .tile = colour, .front = colour },
+            .{ .min = .{ -0.22, 1.4, -0.22 }, .max = .{ 0.22, 1.84, 0.22 }, .tile = .white, .front = .black },
+        };
+        for (boxes) |b| for (blocks.Face.all) |face| {
+            const tile = if (face == .north) b.front else b.tile;
+            for (boxFace(face, b.min, b.max)) |c| {
+                mesh[n] = .{
+                    .pos = c,
+                    .uv = boxUv(face, b.min, b.max, c, tile),
+                    .info = (mesher.Info{ .tile = @intFromEnum(tile), .face = face, .sky = 15, .lamp = 0 }).pack(),
+                };
+                n += 1;
+            }
+        };
+    }
+    return out;
+}
+
+/// A box's face `face`: its corners, wound counter-clockwise seen from
+/// outside (as mesher.zig's faces).
+fn boxFace(face: blocks.Face, min_v: V3, max_v: V3) [4][3]f32 {
+    const min: [3]f32 = min_v;
+    const max: [3]f32 = max_v;
+    const a: usize = @intFromEnum(face) / 2;
+    const b = (a + 1) % 3;
+    const c = (a + 2) % 3;
+    const plane = if (@intFromEnum(face) % 2 == 0) max[a] else min[a];
+    const bc = [4][2]f32{ .{ min[b], min[c] }, .{ max[b], min[c] }, .{ max[b], max[c] }, .{ min[b], max[c] } };
+    var out: [4][3]f32 = undefined;
+    for (bc, 0..) |q, k| {
+        out[k][a] = plane;
+        out[k][b] = q[0];
+        out[k][c] = q[1];
+    }
+    // e_b × e_c is +e_a: a face looking the other way goes round the other
+    // way.
+    if (@intFromEnum(face) % 2 == 1) return .{ out[0], out[3], out[2], out[1] };
+    return out;
+}
+
+/// Where corner `c` of a box's face is on its tile: across in blocks, and
+/// down the tile from the face's top (or, on top and below, its north edge)
+/// to its bottom.
+fn boxUv(face: blocks.Face, min: V3, max: V3, c: [3]f32, tile: blocks.Tile) [2]f32 {
+    return switch (face) {
+        .up, .down => .{ c[0] - min[0], mesher.stripT(tile, (c[2] - min[2]) / (max[2] - min[2])) },
+        .east, .west => .{ c[2] - min[2], mesher.stripT(tile, (max[1] - c[1]) / (max[1] - min[1])) },
+        .south, .north => .{ c[0] - min[0], mesher.stripT(tile, (max[1] - c[1]) / (max[1] - min[1])) },
     };
 }
 
@@ -891,6 +992,26 @@ pub const FakeDevice = struct {
         return 7;
     }
 };
+
+test "the other players' figures face outwards, each in one strip, standing on the origin" {
+    const figures = avatarMeshes();
+    for (figures, avatar_colours) |mesh, colour| {
+        var lowest: f32 = std.math.inf(f32);
+        for (0..avatar_quads) |q| {
+            const v = mesh[q * 4 ..][0..4];
+            const info = mesher.Info.unpack(v[0].info);
+            const tile: blocks.Tile = @enumFromInt(info.tile);
+            try std.testing.expectEqual(colour.strip(), tile.strip());
+            // Counter-clockwise from outside: the winding's normal is the face's.
+            const p0: V3 = v[0].pos;
+            const n = math.cross(@as(V3, v[1].pos) - p0, @as(V3, v[2].pos) - p0);
+            const want = info.face.normal();
+            try std.testing.expect(math.dot(n, .{ @floatFromInt(want[0]), @floatFromInt(want[1]), @floatFromInt(want[2]) }) > 0);
+            for (v) |c| lowest = @min(lowest, c.pos[1]);
+        }
+        try std.testing.expectEqual(@as(f32, 0), lowest);
+    }
+}
 
 test "the whole island in view fits one frame, the near chunks first" {
     const w = try World.create(testing.allocator);

@@ -32,6 +32,17 @@ pub const Controls = struct {
     sprint: bool = false,
 };
 
+/// Colours players are told apart by (one for each in a game).
+pub const colours = 8;
+
+/// Another player (on the network), as drawn: their feet, the way they
+/// face (as `Player.yaw`) and their colour.
+pub const Other = struct {
+    pos: V3,
+    yaw: f32,
+    colour: u3,
+};
+
 pub const Player = struct {
     /// Feet, in the middle.
     pos: V3,

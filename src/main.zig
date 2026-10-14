@@ -5,7 +5,9 @@
 //!
 //! The world is kept in the user's files (`save_path`): loaded when the
 //! game starts (or a new island made), and saved every minute it has
-//! changed and when the window closes.
+//! changed and when the window closes. Playing in another's game (see
+//! net.zig), their world is not saved here: this island is saved before
+//! joining, and loaded again on leaving.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -17,6 +19,7 @@ const world_mod = @import("world.zig");
 const game_mod = @import("game.zig");
 const renderer_mod = @import("renderer.zig");
 const view = @import("view.zig");
+const net = @import("net.zig");
 
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(vc4.Device);
@@ -52,6 +55,7 @@ const Scene = struct {
             .underwater = g.player.underwater(g.world),
             .bump = g.bump,
             .outline = if (g.target) |t| t.cell else null,
+            .avatars = g.net.others,
         });
     }
 };
@@ -66,6 +70,15 @@ fn load(gpa: std.mem.Allocator, g: *game_mod.Game) !void {
         print("dazzle-blocks: {s} is not a world this can read ({s}): a new island\n", .{ save_path, @errorName(err) });
         return error.NoSave;
     };
+}
+
+/// Back from another's game: this island, as saved before joining.
+fn backHome(gpa: std.mem.Allocator, g: *game_mod.Game) void {
+    load(gpa, g) catch {
+        g.world.generate(world_mod.default_seed) catch {};
+        g.player = .{ .pos = g.world.spawn, .yaw = g.world.spawn_yaw };
+    };
+    g.unsaved = false;
 }
 
 fn save(gpa: std.mem.Allocator, g: *game_mod.Game) void {
@@ -104,6 +117,7 @@ fn run(init: std.process.Init.Minimal) !void {
     // The world: as it was left, or a new island.
     const world = try world_mod.World.create(gpa);
     var game = game_mod.Game.init(gpa, world);
+    defer game.deinit();
     load(gpa, &game) catch {
         const started = sys.nowNs();
         try world.generate(world_mod.default_seed);
@@ -122,6 +136,14 @@ fn run(init: std.process.Init.Minimal) !void {
     const icons = try gpa.create(view.Icons);
     icons.init();
 
+    // Playing together: said to be here, and joinable, on the network.
+    var name_buf: [64]u8 = undefined;
+    var session: ?net.Session = net.Session.init(gpa, .{ .name = net.hostname(&name_buf) }) catch |err| blk: {
+        print(sys.log_warning ++ "dazzle-blocks: no playing together ({s})\n", .{@errorName(err)});
+        break :blk null;
+    };
+    defer if (session) |*s| s.deinit();
+
     var last = sys.nowNs();
     var last_save = last;
     var fps: f32 = 0;
@@ -133,7 +155,7 @@ fn run(init: std.process.Init.Minimal) !void {
         // nothing to do but wait.
         a.idle = a.suspended;
         if (!try a.step(std.time.ns_per_s)) {
-            if (game.unsaved) save(gpa, &game);
+            if (game.unsaved and game.net.status != .joined) save(gpa, &game);
             return;
         }
         // The mouse can be taken if the shell can lock the pointer.
@@ -170,11 +192,30 @@ fn run(init: std.process.Init.Minimal) !void {
         const now = sys.nowNs();
         const dt: f32 = @floatCast(@as(f64, @floatFromInt(now - last)) / std.time.ns_per_s);
         last = now;
+        // The others, even behind the menu (they play on).
+        if (session) |*s| if (s.poll(&game, now)) |event| switch (event) {
+            .joined => |j| {
+                // This island, kept for coming back to.
+                save(gpa, &game);
+                game.joinWorld(j.world, j.pos, j.yaw, j.time) catch |err| {
+                    print(sys.log_warning ++ "dazzle-blocks: cannot play in that world ({s})\n", .{@errorName(err)});
+                    game.leaveGame();
+                };
+                _ = try renderer.update(world, game.player.eye(), 12);
+            },
+            .left => {
+                backHome(gpa, &game);
+                _ = try renderer.update(world, game.player.eye(), 12);
+                game.say("Back on your island");
+            },
+            .denied => game.say("They said no"),
+            .failed => game.say("Cannot reach that game"),
+        };
         game.tick(dt);
         // What changed, meshed again (a few chunks a frame, so a big change
         // does not stall a frame).
         _ = try renderer.update(world, game.player.eye(), 3);
-        if (game.unsaved and now - last_save > save_every * std.time.ns_per_s) {
+        if (game.unsaved and game.net.status != .joined and now - last_save > save_every * std.time.ns_per_s) {
             save(gpa, &game);
             last_save = now;
         }
@@ -223,4 +264,5 @@ test {
     _ = @import("preview.zig");
     _ = @import("game.zig");
     _ = @import("view.zig");
+    _ = @import("net.zig");
 }

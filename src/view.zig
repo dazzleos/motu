@@ -1,7 +1,8 @@
 //! The window, as widgets: the world filling it (drawn straight into the
 //! frame by the renderer), and over it the hotbar of blocks to hand, the
 //! palette of every block (E), the controls, what is drawn, a word on what
-//! just happened, and the menu (Esc), which the game starts in.
+//! just happened, the menu (Esc), which the game starts in, and someone
+//! asking to join (over everything, the menu too, so it can be clicked).
 
 const std = @import("std");
 const app = @import("app");
@@ -110,6 +111,10 @@ pub const Blocks = struct {
             .alignment = .top_right,
             .child = cx.make(ui.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = fullscreen_button }),
         })) catch {};
+        if (g.net.request) |who| layers.append(a, cx.make(ui.Align{
+            .alignment = .top_center,
+            .child = cx.make(ui.Padding{ .padding = .{ .top = 12 }, .child = joinRequest(cx, g, who) }),
+        })) catch {};
         const world = cx.make(ui.Overlay{ .children = layers.items });
         if (is_fullscreen) return world;
         return cx.make(ui.Column{ .cross_axis_alignment = .stretch, .children = &.{
@@ -187,39 +192,29 @@ pub const Blocks = struct {
         });
         const arena = cx.ui.arena();
         const column = struct {
-            fn f(c: *ui.Context, children: []const ui.Widget) ui.Widget {
-                return c.make(ui.Expanded{ .child = c.make(ui.Column{
+            fn f(c: *ui.Context, flex: f32, children: []const ui.Widget) ui.Widget {
+                return c.make(ui.Expanded{ .flex = flex, .child = c.make(ui.Column{
                     .main_axis_size = .min,
                     .cross_axis_alignment = .stretch,
                     .children = c.ui.arena().dupe(ui.Widget, children) catch &.{},
                 }) });
             }
         }.f;
-        const switches = cx.make(ui.Row{
-            .spacing = 16,
-            .cross_axis_alignment = .start,
-            .children = arena.dupe(ui.Widget, &.{
-                column(cx, &.{
-                    cx.make(ui.Switch{ .value = g.antialias, .on_changed = .of(g, Game.setAntialias), .label = "Antialiasing" }),
-                    cx.make(ui.Switch{ .value = g.bump, .on_changed = .of(g, Game.setBump), .label = "Bumps and ripples" }),
-                }),
-                column(cx, &.{
-                    cx.make(ui.Switch{ .value = g.help, .on_changed = .of(g, Game.setHelp), .label = "The controls" }),
-                    cx.make(ui.Switch{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
-                }),
-            }) catch &.{},
+        // The options get more room: the time of day has a slider.
+        const options = column(cx, 3, &.{
+            cx.make(ui.Switch{ .value = g.antialias, .on_changed = .of(g, Game.setAntialias), .label = "Antialiasing" }),
+            cx.make(ui.Switch{ .value = g.bump, .on_changed = .of(g, Game.setBump), .label = "Bumps and ripples" }),
+            cx.make(ui.Switch{ .value = g.help, .on_changed = .of(g, Game.setHelp), .label = "The controls" }),
+            cx.make(ui.Switch{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
+            time,
         });
         return cx.make(ui.Dialog{
             .title = "Paused",
-            .width = 480,
-            .content = cx.make(ui.Column{
-                .main_axis_size = .min,
-                .cross_axis_alignment = .stretch,
-                .spacing = 8,
-                .children = arena.dupe(ui.Widget, &.{
-                    switches,
-                    time,
-                }) catch &.{},
+            .width = 600,
+            .content = cx.make(ui.Row{
+                .spacing = 24,
+                .cross_axis_alignment = .start,
+                .children = arena.dupe(ui.Widget, &.{ options, column(cx, 2, &.{playTogether(cx, g)}) }) catch &.{},
             }),
             .confirm_label = "Resume",
             .on_confirm = .of(g, Game.closeMenu),
@@ -247,6 +242,86 @@ pub const Blocks = struct {
         return panel(cx, cx.make(ui.Text{ .text = text, .style = .{ .size = 15, .color = gfx.Color.argb(0xffffffff) } }));
     }
 };
+
+/// Games nearby listed at most (the menu must fit the smallest window).
+const max_nearby_shown = 3;
+
+/// The menu's other half: how playing together is going, and the games
+/// nearby to join.
+fn playTogether(cx: *ui.Context, g: *Game) ui.Widget {
+    const t = cx.theme();
+    const a = cx.ui.arena();
+    var items: std.ArrayList(ui.Widget) = .empty;
+    items.append(a, cx.make(ui.Text{ .text = "Play together", .style = .{ .size = t.body_size + 2, .color = t.on_surface }, .wrap = false })) catch {};
+    const note = struct {
+        fn f(c: *ui.Context, text: []const u8) ui.Widget {
+            const th = c.theme();
+            return c.make(ui.Text{ .text = text, .style = .{ .size = th.body_size, .color = th.on_surface_variant } });
+        }
+    }.f;
+    switch (g.net.status) {
+        .joined => |host| {
+            items.append(a, note(cx, cx.fmt("Playing on {s}'s island", .{host}))) catch {};
+            items.append(a, cx.make(ui.Row{ .children = a.dupe(ui.Widget, &.{
+                cx.make(ui.OutlinedButton{ .label = "Leave", .on_press = .of(g, Game.leaveGame) }),
+            }) catch &.{} })) catch {};
+            return cx.make(ui.Column{ .main_axis_size = .min, .cross_axis_alignment = .stretch, .spacing = 8, .children = items.items });
+        },
+        .asking => |host| {
+            items.append(a, note(cx, cx.fmt("Asking {s}…", .{host}))) catch {};
+            items.append(a, cx.make(ui.Row{ .children = a.dupe(ui.Widget, &.{
+                cx.make(ui.TextButton{ .label = "Stop asking", .on_press = .of(g, Game.leaveGame) }),
+            }) catch &.{} })) catch {};
+            return cx.make(ui.Column{ .main_axis_size = .min, .cross_axis_alignment = .stretch, .spacing = 8, .children = items.items });
+        },
+        .hosting => |n| items.append(a, note(cx, if (n == 1) "1 player has joined you" else cx.fmt("{d} players have joined you", .{n}))) catch {},
+        .alone => items.append(a, note(cx, "Others on this network can ask to join you")) catch {},
+    }
+    if (g.net.nearby.len == 0) {
+        items.append(a, note(cx, "No games nearby")) catch {};
+    }
+    for (g.net.nearby[0..@min(g.net.nearby.len, max_nearby_shown)]) |n| {
+        const join = a.create(JoinNearby) catch break;
+        join.* = .{ .game = g, .nearby = n };
+        items.append(a, cx.make(ui.ListItem{
+            .headline = join.nearby.name(),
+            .leading_icon = .computer,
+            .on_press = .of(join, JoinNearby.press),
+        })) catch {};
+    }
+    return cx.make(ui.Column{ .main_axis_size = .min, .cross_axis_alignment = .stretch, .spacing = 2, .children = items.items });
+}
+
+const JoinNearby = struct {
+    game: *Game,
+    nearby: game_mod.Nearby,
+
+    fn press(j: *JoinNearby) void {
+        j.game.joinNearby(j.nearby);
+    }
+};
+
+/// Someone asking to join: Y or N, or (with the mouse, after Esc) its
+/// buttons.
+fn joinRequest(cx: *ui.Context, g: *Game, who: []const u8) ui.Widget {
+    const t = cx.theme();
+    return cx.make(ui.Decorated{
+        .color = t.surface_container_highest,
+        .border = .{ .width = 1, .color = t.outline_variant },
+        .radius = .all(16),
+        .child = cx.make(ui.Padding{ .padding = .{ .left = 16, .right = 12, .top = 10, .bottom = 10 }, .child = cx.make(ui.Row{
+            .main_axis_size = .min,
+            .cross_axis_alignment = .center,
+            .spacing = 12,
+            .children = cx.ui.arena().dupe(ui.Widget, &.{
+                cx.make(ui.Icon{ .icon = .person_add, .size = 24, .color = t.primary }),
+                cx.make(ui.Text{ .text = cx.fmt("{s} wants to join", .{who}), .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
+                cx.make(ui.TextButton{ .label = "Deny (N)", .on_press = .of(g, Game.denyJoin) }),
+                cx.make(ui.FilledButton{ .label = "Allow (Y)", .on_press = .of(g, Game.allowJoin) }),
+            }) catch &.{},
+        }) }),
+    });
+}
 
 /// A small cross, white with a dark edge so it shows on sky and snow.
 fn crosshair(cx: *ui.Context) ui.Widget {
@@ -447,6 +522,61 @@ test "the menu fits from the smallest window up, and its switches set the option
     u.pointerButton(beside, ui.btn_left, true);
     u.pointerButton(beside, ui.btn_left, false);
     try testing.expect(!g.menu_open);
+}
+
+test "playing together: games nearby to join, someone asking to join, and leaving" {
+    const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
+    const u = try ui.Ui.create(testing.allocator, &f);
+    defer u.destroy();
+    const w = try world_mod.World.create(testing.allocator);
+    defer w.destroy();
+    var g = Game.init(testing.allocator, w);
+    const icons = try testing.allocator.create(Icons);
+    defer testing.allocator.destroy(icons);
+    icons.init();
+    var nearby: [4]game_mod.Nearby = undefined;
+    for (&nearby, [_][]const u8{ "awesome-elephant", "brave-otter", "calm-heron", "daring-lynx" }, 0..) |*n, name, i| {
+        n.* = .{ .addr = .{ 192, 168, 1, @intCast(10 + i) }, .port = 47153 };
+        n.setName(name);
+    }
+    g.net.nearby = &nearby;
+    g.net.status = .{ .hosting = 1 };
+    g.net.request = "brave-otter";
+    const view: Blocks = .{ .game = &g, .icons = icons };
+    for ([_][2]u32{ min_size, .{ 1280, 720 }, .{ 1920, 1036 } }) |size| {
+        u.frame(size[0], size[1], 0, view);
+        try testing.expect(!overflows(u.root.?));
+    }
+    try testing.expect(findText(u.root.?, "1 player has joined you") != null);
+    try testing.expect(findText(u.root.?, "brave-otter wants to join") != null);
+    // Three listed at most.
+    try testing.expect(findText(u.root.?, "calm-heron") != null);
+    try testing.expect(findText(u.root.?, "daring-lynx") == null);
+    const click = struct {
+        fn at(ui_: *ui.Ui, node: *ui.Node) void {
+            const pos = node.position();
+            const p: ui.Point = .{ pos[0] + 4, pos[1] + 4 };
+            ui_.pointerMotion(p);
+            ui_.pointerButton(p, ui.btn_left, true);
+            ui_.pointerButton(p, ui.btn_left, false);
+        }
+    }.at;
+    // The request's Allow, over the menu.
+    click(u, findText(u.root.?, "Allow (Y)").?);
+    try testing.expectEqual(@as(?bool, true), g.net.answer);
+    // A game nearby: asked to join.
+    u.frame(1920, 1036, 0, view);
+    click(u, findText(u.root.?, "awesome-elephant").?);
+    try testing.expectEqualStrings("awesome-elephant", g.net.join.?.name());
+    try testing.expectEqual([4]u8{ 192, 168, 1, 10 }, g.net.join.?.addr);
+    // Joined: leave.
+    g.net.request = null;
+    g.net.status = .{ .joined = "awesome-elephant" };
+    u.frame(min_size[0], min_size[1], 0, view);
+    try testing.expect(!overflows(u.root.?));
+    try testing.expect(findText(u.root.?, "Playing on awesome-elephant's island") != null);
+    click(u, findText(u.root.?, "Leave").?);
+    try testing.expect(g.net.leave);
 }
 
 test "the top-right fullscreen button toggles fullscreen" {

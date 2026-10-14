@@ -17,14 +17,15 @@
 //!     1 to 9, or the wheel                  choose a block from the hotbar
 //!     E                                     all the blocks
 //!     Esc                                   the menu (the game waits)
+//!     Y, N                                  let someone join, or not
 //!
 //! The game starts in the menu, which has the options; leaving it takes
 //! the mouse (it turns the view), and Esc gives it back with the menu.
 //! Where the mouse cannot be taken, dragging looks around, a click builds
 //! and pressing and holding takes away.
 //!
-//! Every change to the world goes through `edit`, the one place a future
-//! network game would send and receive changes.
+//! Every change to the world goes through `edit`, which also queues it for
+//! the others when playing together (see net.zig, and `Net`).
 
 const std = @import("std");
 const blocks = @import("blocks.zig");
@@ -44,6 +45,8 @@ pub const keys = struct {
     pub const digit_9 = 10;
     pub const w = 17;
     pub const e = 18;
+    pub const y = 21;
+    pub const n = 49;
     pub const left_ctrl = 29;
     pub const a = 30;
     pub const s = 31;
@@ -75,6 +78,67 @@ const turn_speed: f32 = 2.2;
 const click_slop: f32 = 8;
 /// Seconds between two presses of Space that fly (or walk).
 const double_tap: f32 = 0.3;
+
+/// A change to the world, as sent to the others.
+pub const Edit = struct {
+    cell: world_mod.Pos,
+    block: Block,
+};
+
+/// A game nearby, on the network: its computer's name and where to join it.
+pub const Nearby = struct {
+    name_buf: [64]u8 = undefined,
+    name_len: u8 = 0,
+    addr: [4]u8,
+    port: u16,
+
+    pub fn name(n: *const Nearby) []const u8 {
+        return n.name_buf[0..n.name_len];
+    }
+
+    pub fn setName(n: *Nearby, s: []const u8) void {
+        n.name_len = @intCast(@min(s.len, n.name_buf.len));
+        @memcpy(n.name_buf[0..n.name_len], s[0..n.name_len]);
+    }
+};
+
+/// Playing together: what net.zig tells the game, and what the game (the
+/// menu, the keys) asks of it.
+pub const Net = struct {
+    status: Status = .alone,
+    /// Games nearby, for the menu.
+    nearby: []const Nearby = &.{},
+    /// One the menu chose to ask to join.
+    join: ?Nearby = null,
+    /// Leave the game joined (or stop asking).
+    leave: bool = false,
+    /// Someone asking to join this game (their name), and the answer.
+    request: ?[]const u8 = null,
+    answer: ?bool = null,
+    /// Changes made here, for the others.
+    outbox: std.ArrayList(Edit) = .empty,
+    /// The others playing, as drawn.
+    others: []const player_mod.Other = &.{},
+
+    pub const Status = union(enum) {
+        alone,
+        /// Others (this many) have joined this game.
+        hosting: u8,
+        /// Asking the game with this name to join it.
+        asking: []const u8,
+        /// Playing in the game with this name (its world, not this one).
+        joined: []const u8,
+    };
+
+    /// Whether changes here go to others.
+    pub fn sharing(n: *const Net) bool {
+        return switch (n.status) {
+            .hosting => |count| count > 0,
+            .joined => true,
+            else => false,
+        };
+    }
+};
 
 pub const Game = struct {
     gpa: std.mem.Allocator,
@@ -119,9 +183,15 @@ pub const Game = struct {
     message_until: f32 = 0,
     /// The world changed since it was saved.
     unsaved: bool = false,
+    /// Playing together.
+    net: Net = .{},
 
     pub fn init(gpa: std.mem.Allocator, w: *World) Game {
         return .{ .gpa = gpa, .world = w, .player = .{ .pos = w.spawn, .yaw = w.spawn_yaw } };
+    }
+
+    pub fn deinit(g: *Game) void {
+        g.net.outbox.deinit(g.gpa);
     }
 
     pub fn selected(g: *const Game) Block {
@@ -132,7 +202,7 @@ pub const Game = struct {
         return g.player.camera();
     }
 
-    fn say(g: *Game, text: []const u8) void {
+    pub fn say(g: *Game, text: []const u8) void {
         g.message = text;
         g.message_until = g.clock + 2;
     }
@@ -148,6 +218,12 @@ pub const Game = struct {
         const was_held = g.held.isSet(code);
         g.held.setValue(code, pressed);
         if (!pressed or was_held) return;
+        // Someone asking to join: Y lets them, N does not (in the menu
+        // too).
+        if (g.net.request != null and (code == keys.y or code == keys.n)) {
+            g.net.answer = code == keys.y;
+            return;
+        }
         // Behind the menu, the game waits: only Esc (back to it) does
         // anything.
         if (g.menu_open) {
@@ -207,6 +283,44 @@ pub const Game = struct {
     pub fn pointerLocked(g: *Game, locked: bool) void {
         g.captured = locked;
         if (!locked and !g.menu_open and !g.palette_open) g.openMenu();
+    }
+
+    // Playing together (from the menu and the request shown).
+
+    /// Lets the player asking join (Y).
+    pub fn allowJoin(g: *Game) void {
+        if (g.net.request != null) g.net.answer = true;
+    }
+
+    /// Does not (N).
+    pub fn denyJoin(g: *Game) void {
+        if (g.net.request != null) g.net.answer = false;
+    }
+
+    /// Asks the game `n` (from the menu) to join it.
+    pub fn joinNearby(g: *Game, n: Nearby) void {
+        g.net.join = n;
+    }
+
+    /// Leaves the game joined, back to this island.
+    pub fn leaveGame(g: *Game) void {
+        g.net.leave = true;
+    }
+
+    /// Joined: plays in the host's world (`data`, as `World.encode` wrote
+    /// it), standing at `pos`; back to the game, from the menu.
+    pub fn joinWorld(g: *Game, data: []const u8, pos: V3, yaw: f32, time: f32) !void {
+        _ = try g.world.decode(data);
+        g.player = .{ .pos = pos, .yaw = yaw };
+        g.time_of_day = @mod(time, 1);
+        g.target = null;
+        g.unsaved = false;
+        g.closeMenu();
+    }
+
+    /// A change another player made.
+    pub fn editFromNetwork(g: *Game, e: Edit) void {
+        if (g.world.set(e.cell[0], e.cell[1], e.cell[2], e.block)) g.unsaved = true;
     }
 
     // The options, set from the menu (and only there: they have no keys).
@@ -324,6 +438,7 @@ pub const Game = struct {
     pub fn edit(g: *Game, cell: world_mod.Pos, b: Block) bool {
         if (!g.world.set(cell[0], cell[1], cell[2], b)) return false;
         g.unsaved = true;
+        if (g.net.sharing()) g.net.outbox.append(g.gpa, .{ .cell = cell, .block = b }) catch {};
         return true;
     }
 
