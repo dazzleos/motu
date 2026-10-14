@@ -5,7 +5,8 @@
 //!
 //! The world is kept in the user's files (`save_path`): loaded when the
 //! game starts (or a new island made), and saved every minute it has
-//! changed and when the window closes. Playing in another's game (see
+//! changed and when the window closes, also while others play in it
+//! (their changes too: the host saves). Playing in another's game (see
 //! net.zig), their world is not saved here: this island is saved before
 //! joining, and loaded again on leaving.
 
@@ -155,7 +156,7 @@ fn run(init: std.process.Init.Minimal) !void {
         // nothing to do but wait.
         a.idle = a.suspended;
         if (!try a.step(std.time.ns_per_s)) {
-            if (game.unsaved and game.net.status != .joined) save(gpa, &game);
+            if (game.wantsSave()) save(gpa, &game);
             return;
         }
         // The mouse can be taken if the shell can lock the pointer.
@@ -215,7 +216,7 @@ fn run(init: std.process.Init.Minimal) !void {
         // What changed, meshed again (a few chunks a frame, so a big change
         // does not stall a frame).
         _ = try renderer.update(world, game.player.eye(), 3);
-        if (game.unsaved and game.net.status != .joined and now - last_save > save_every * std.time.ns_per_s) {
+        if (game.wantsSave() and now - last_save > save_every * std.time.ns_per_s) {
             save(gpa, &game);
             last_save = now;
         }

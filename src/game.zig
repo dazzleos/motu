@@ -318,6 +318,13 @@ pub const Game = struct {
         g.closeMenu();
     }
 
+    /// Whether there are changes to save here: only in this computer's
+    /// own world (alone, or hosting, with the guests' changes too), not in
+    /// a game joined (its host saves that).
+    pub fn wantsSave(g: *const Game) bool {
+        return g.unsaved and g.net.status != .joined;
+    }
+
     /// A change another player made.
     pub fn editFromNetwork(g: *Game, e: Edit) void {
         if (g.world.set(e.cell[0], e.cell[1], e.cell[2], e.block)) g.unsaved = true;
@@ -762,6 +769,22 @@ test "the game starts in the menu; leaving it takes the mouse, and Esc gives it 
     // The mouse taken away while playing (by the shell): the menu.
     g.pointerLocked(false);
     try testing.expect(g.menu_open);
+}
+
+test "the host saves, the guests' changes too; a game joined is not saved here" {
+    var g = try testGame();
+    defer g.world.destroy();
+    defer g.deinit();
+    g.net.status = .{ .hosting = 1 };
+    g.editFromNetwork(.{ .cell = .{ 10, 31, 10 }, .block = .bricks });
+    try testing.expect(g.wantsSave());
+    g.unsaved = false;
+    _ = g.edit(.{ 11, 31, 10 }, .lamp);
+    try testing.expect(g.wantsSave());
+    // Joined: changes, but not this computer's world to save.
+    g.net.status = .{ .joined = "host-pi" };
+    _ = g.edit(.{ 12, 31, 10 }, .gold);
+    try testing.expect(g.unsaved and !g.wantsSave());
 }
 
 test "saving and loading keep the world, the player and the hotbar" {
