@@ -16,7 +16,7 @@
 //!     middle click                          take that kind of block
 //!     1 to 9, or the wheel                  choose a block from the hotbar
 //!     E                                     all the blocks
-//!     Esc                                   the menu (the game waits)
+//!     Esc                                   the menu (the game goes on)
 //!     Y, N                                  let someone join, or not
 //!
 //! The game starts in the menu, which has the options; leaving it takes
@@ -156,8 +156,9 @@ pub const Game = struct {
     /// double tap.
     space_at: ?f32 = null,
     palette_open: bool = false,
-    /// The menu: the game's options, and the game paused behind it. The
-    /// game starts in it, so the mouse is not taken before it is wanted.
+    /// The menu: the game's options, over the game, which goes on behind
+    /// it (the player standing still). The game starts in it, so the mouse
+    /// is not taken before it is wanted.
     menu_open: bool = true,
     help: bool = true,
     stats: bool = false,
@@ -224,8 +225,7 @@ pub const Game = struct {
             g.net.answer = code == keys.y;
             return;
         }
-        // Behind the menu, the game waits: only Esc (back to it) does
-        // anything.
+        // In the menu, only Esc (back to the game) does anything.
         if (g.menu_open) {
             if (code == keys.esc) g.closeMenu();
             return;
@@ -253,7 +253,7 @@ pub const Game = struct {
         }
     }
 
-    /// The menu, over the game: it waits, and the mouse is given back to
+    /// The menu, over the game (which goes on): the mouse is given back to
     /// use the menu with.
     pub fn openMenu(g: *Game) void {
         g.menu_open = true;
@@ -520,16 +520,18 @@ pub const Game = struct {
     }
 
     /// Moves everything on by `dt` seconds.
+    /// The game goes on behind the menu, but the keys held do not move the
+    /// player there.
     pub fn tick(g: *Game, dt: f32) void {
-        // Paused behind the menu.
-        if (g.menu_open) return;
         g.clock += dt;
         g.time_of_day = @mod(g.time_of_day + dt / day_length, 1);
         var turn: f32 = 0;
-        if (g.held.isSet(keys.left)) turn -= 1;
-        if (g.held.isSet(keys.right)) turn += 1;
+        if (!g.menu_open) {
+            if (g.held.isSet(keys.left)) turn -= 1;
+            if (g.held.isSet(keys.right)) turn += 1;
+        }
         if (turn != 0) g.player.look(turn * turn_speed * dt, 0);
-        g.player.update(g.world, g.controls(), dt);
+        g.player.update(g.world, if (g.menu_open) .{} else g.controls(), dt);
         g.updateTarget();
     }
 
@@ -734,24 +736,26 @@ test "the game starts in the menu; leaving it takes the mouse, and Esc gives it 
     try testing.expectEqual(@as(?bool, false), g.capture_wanted);
     g.capture_wanted = null;
     g.pointerLocked(false);
-    // The game waits: time stands still, and keys do nothing.
+    // The game goes on (time passes), but keys do nothing: the player
+    // stands still, and the palette stays shut.
     const t = g.time_of_day;
     const pos = g.player.pos;
     g.key(keys.w, true);
     g.key(keys.e, true);
     for (0..30) |_| g.tick(1.0 / 30.0);
-    try testing.expectEqual(t, g.time_of_day);
-    try testing.expectEqual(pos, g.player.pos);
+    try testing.expect(g.time_of_day != t);
+    try testing.expectApproxEqAbs(pos[0], g.player.pos[0], 1e-4);
+    try testing.expectApproxEqAbs(pos[2], g.player.pos[2], 1e-4);
     try testing.expect(!g.palette_open);
-    g.key(keys.w, false);
-    g.key(keys.e, false);
-    // Resume.
+    // Resume: W still held walks again.
     g.closeMenu();
     try testing.expectEqual(@as(?bool, true), g.capture_wanted);
     g.capture_wanted = null;
     g.pointerLocked(true);
-    g.tick(1);
-    try testing.expect(g.time_of_day != t);
+    for (0..30) |_| g.tick(1.0 / 30.0);
+    try testing.expect(g.player.pos[2] < pos[2] - 1);
+    g.key(keys.w, false);
+    g.key(keys.e, false);
     // The palette gives the mouse back to pick with; Esc closes it (not
     // opening the menu) and takes the mouse again.
     g.key(keys.e, true);

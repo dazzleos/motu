@@ -173,7 +173,7 @@ pub const Blocks = struct {
     }
 
     /// The menu: the game's options, over the world darkened behind it
-    /// (which waits); clicking beside it, Resume or Esc go back.
+    /// (which goes on); clicking beside it, Resume or Esc go back.
     fn menu(self: *const Blocks, cx: *ui.Context) ui.Widget {
         const g = self.game;
         const t = cx.theme();
@@ -209,7 +209,7 @@ pub const Blocks = struct {
             time,
         });
         return cx.make(ui.Dialog{
-            .title = "Paused",
+            .title = "Menu",
             .width = 600,
             .content = cx.make(ui.Row{
                 .spacing = 24,
@@ -504,7 +504,7 @@ test "the menu fits from the smallest window up, and its switches set the option
         u.frame(size[0], size[1], 0, view);
         try testing.expect(!overflows(u.root.?));
     }
-    try testing.expect(findText(u.root.?, "Paused") != null);
+    try testing.expect(findText(u.root.?, "Menu") != null);
     try testing.expect(findText(u.root.?, "Resume") != null);
     // Its antialiasing switch turns it off.
     try testing.expect(g.antialias);
