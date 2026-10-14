@@ -390,4 +390,3 @@ test "the top-right fullscreen button toggles fullscreen" {
     u.pointerButton(p, ui.btn_left, false);
     try testing.expect(toggle.toggled);
 }
-

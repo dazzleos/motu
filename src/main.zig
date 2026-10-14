@@ -185,7 +185,7 @@ fn run(init: std.process.Init.Minimal) !void {
         }
         if (a.suspended) continue;
 
-        a.ui.frame(a.width, a.height, now, view.Blocks{
+        a.ui.frame(a.width, a.height, a.win.nextPresentationNs(now), view.Blocks{
             .game = &game,
             .icons = icons,
             .draw = .{ .ctx = &scene, .f = Scene.draw },
