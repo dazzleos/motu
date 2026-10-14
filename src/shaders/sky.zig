@@ -18,6 +18,12 @@ const Uniforms = extern struct {
     moon: Vec4,
     zenith: Vec4,
     horizon: Vec4,
+    /// xyz: the colour the sun or moon's disc adds at full strength; w:
+    /// the disc's edge, as a scaled squared distance.
+    disc: Vec4,
+    /// xyz: the colour the corona adds at its brightest; w: its falloff
+    /// per scaled squared distance.
+    corona: Vec4,
 };
 const u = gpu.uniforms(Uniforms);
 
@@ -28,6 +34,11 @@ const v_color = gpu.vertexOutput(Vec3, 1);
 /// How far away the dome is (within the camera's far plane).
 const radius = 150.0;
 
+/// The vector to the sun or moon is scaled by this, the square root of the
+/// disc edge's sharpness, so the fragment shader need not scale the squared
+/// distance for the disc (see `sky_disc_sharpness` in the renderer).
+const body_scale = 38.729833; // @sqrt(1500)
+
 export fn vertex() callconv(.spirv_vertex) void {
     const d = in_dir.*;
     const m = u.turn;
@@ -36,7 +47,7 @@ export fn vertex() callconv(.spirv_vertex) void {
     const sun = u.sun;
     const moon = u.moon;
     const body = if (sun[3] >= moon[3]) Vec3{ sun[0], sun[1], sun[2] } else Vec3{ moon[0], moon[1], moon[2] };
-    v_sun.* = .{ d[0] - body[0], d[1] - body[1], d[2] - body[2] };
+    v_sun.* = .{ (d[0] - body[0]) * body_scale, (d[1] - body[1]) * body_scale, (d[2] - body[2]) * body_scale };
 
     const up = @sqrt(gpu.clamp(d[1], 0, 1));
     const z = u.zenith;
@@ -57,18 +68,21 @@ const f_color = gpu.fragmentInput(Vec3, 1);
 export fn fragment() callconv(.spirv_fragment) void {
     const ds = f_sun.*;
     const d2 = ds[0] * ds[0] + ds[1] * ds[1] + ds[2] * ds[2];
-    // Tight corona and the sun or moon's disc, from squared chord distance
-    // (d2 = 2 * (1 - cos(angle))).
-    const corona = gpu.clamp(1 - d2 * 33, 0, 1);
-    const disc = gpu.clamp((0.0014 - d2) * 1500, 0, 1);
-    const s = (disc * 3 + corona * corona * 0.5) * u.sun[3];
-    const m = disc * u.moon[3] * 0.9;
+    // The sun or moon's disc and tight corona, from the scaled squared
+    // chord distance (2 * (1 - cos(angle)) * body_scale^2). Their colours
+    // (with how much of each body shows) come premultiplied, and the
+    // constants come as uniforms, which are free to read.
+    const dc = u.disc;
+    const cc = u.corona;
+    const disc = gpu.clamp(dc[3] - d2, 0, 1);
+    // Never above 1, as d2 is not negative.
+    const corona = @max(1 - d2 * cc[3], 0);
+    const c2 = corona * corona;
     const base = f_color.*;
-    const sc = u.sun_color;
     gpu.color.* = .{
-        base[0] + sc[0] * s + m,
-        base[1] + sc[1] * s + m,
-        base[2] + sc[2] * s + m * 0.95,
+        base[0] + disc * dc[0] + c2 * cc[0],
+        base[1] + disc * dc[1] + c2 * cc[1],
+        base[2] + disc * dc[2] + c2 * cc[2],
         1,
     };
 }

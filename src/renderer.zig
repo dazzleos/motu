@@ -116,7 +116,17 @@ const SkyUniforms = extern struct {
     moon: [4]f32,
     zenith: [4]f32,
     horizon: [4]f32,
+    disc: [4]f32,
+    corona: [4]f32,
 };
+
+/// How sharp the sun and moon discs' edges are; the sky shader scales the
+/// vector to them by its square root (`body_scale`).
+const sky_disc_sharpness = 1500.0;
+/// The discs cover squared chord distances (2 * (1 - cos(angle))) below this.
+const sky_disc_size = 0.0014;
+/// The corona fades out at this squared chord distance.
+const sky_corona_size = 1.0 / 33.0;
 
 const LineUniforms = extern struct {
     mvp: Mat4,
@@ -571,14 +581,24 @@ pub fn Renderer(comptime Device: type) type {
             }
             // 2. The sky.
             const env_sun = env.sun_dir;
-            const sky: SkyUniforms = .{
+            var sky: SkyUniforms = .{
                 .turn = math.mul(proj, cam.rotation()),
                 .sun = .{ env_sun[0], env_sun[1], env_sun[2], env.sun_shows },
                 .sun_color = .{ env.sun_color[0] + 0.3 * env.sun_shows, env.sun_color[1] + 0.25 * env.sun_shows, env.sun_color[2] + 0.15 * env.sun_shows, 0 },
                 .moon = .{ -env_sun[0], -env_sun[1], -env_sun[2], env.moon_shows },
                 .zenith = .{ env.zenith[0], env.zenith[1], env.zenith[2], 0 },
                 .horizon = .{ fog[0], fog[1], fog[2], 0 },
+                .disc = .{ 0, 0, 0, sky_disc_size * sky_disc_sharpness },
+                .corona = .{ 0, 0, 0, 1.0 / (sky_corona_size * sky_disc_sharpness) },
             };
+            // The disc is the sun's light, three times over, or the moon's
+            // pale grey; the corona is half the sun's light. Premultiplied
+            // here by how much of each shows, so the shader adds them as is.
+            for (0..3) |k| {
+                const moon_grey: f32 = if (k == 2) 0.855 else 0.9;
+                sky.disc[k] = sky.sun_color[k] * 3 * env.sun_shows + moon_grey * env.moon_shows;
+                sky.corona[k] = sky.sun_color[k] * 0.5 * env.sun_shows;
+            }
             r.sky.setUniforms(std.mem.asBytes(&sky));
             try target.quads(&r.sky, r.dome.handle, 0, r.dome_quads, .{ null, null, null });
             // 3. Water, far to near; the sea around the world first (it is
