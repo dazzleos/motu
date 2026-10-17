@@ -116,6 +116,10 @@ fn renderDraw(gpa: std.mem.Allocator, d: *const Recorded, dev: *const renderer.F
     var cs_buf: [256]u32 = undefined;
     const vs_uniforms = streamOf(&prog.vs, d.values, .{ draw.texture, draw.texture1, draw.texture2 }, &vs_buf);
     const cs_uniforms = streamOf(&prog.cs, d.values, .{ draw.texture, draw.texture1, draw.texture2 }, &cs_buf);
+    var vs_decoded_buf: [vc4.compiler.max_code]sim.DecodedInst = undefined;
+    var cs_decoded_buf: [vc4.compiler.max_code]sim.DecodedInst = undefined;
+    const vs_decoded = sim.decodeProgram(prog.vs.code(), &vs_decoded_buf);
+    const cs_decoded = sim.decodeProgram(prog.cs.code(), &cs_decoded_buf);
     var batch: [lanes]u32 = undefined;
     var n: usize = 0;
     var v: u32 = 0;
@@ -124,15 +128,17 @@ fn renderDraw(gpa: std.mem.Allocator, d: *const Recorded, dev: *const renderer.F
         batch[n] = v;
         n += 1;
         if (n == lanes or v == most) {
-            try shadeVertices(prog, p, draw, mem, batch[0..n], vs_uniforms, cs_uniforms, shaded);
+            try shadeVertices(prog, p, draw, mem, batch[0..n], vs_decoded, cs_decoded, vs_uniforms, cs_uniforms, shaded);
             n = 0;
         }
     }
-    if (n > 0) try shadeVertices(prog, p, draw, mem, batch[0..n], vs_uniforms, cs_uniforms, shaded);
+    if (n > 0) try shadeVertices(prog, p, draw, mem, batch[0..n], vs_decoded, cs_decoded, vs_uniforms, cs_uniforms, shaded);
 
     var fs_buf: [256]u32 = undefined;
     const fs_uniforms = streamOf(&prog.fs, d.values, .{ draw.texture, draw.texture1, draw.texture2 }, &fs_buf);
-    var frags: Fragments = .{ .prog = prog, .uniforms = fs_uniforms, .img = img };
+    var fs_decoded_buf: [vc4.compiler.max_code]sim.DecodedInst = undefined;
+    const fs_decoded = sim.decodeProgram(prog.fs.code(), &fs_decoded_buf);
+    var frags: Fragments = .{ .prog = prog, .fs_decoded = fs_decoded, .uniforms = fs_uniforms, .img = img };
     for (&frags.textures, [_]?vc4.render.Texture{ draw.texture, draw.texture1, draw.texture2 }) |*m, t| {
         m.* = if (t) |tex| dev.memory(tex.handle) else &.{};
     }
@@ -145,7 +151,7 @@ fn renderDraw(gpa: std.mem.Allocator, d: *const Recorded, dev: *const renderer.F
     try frags.flush();
 }
 
-fn shadeVertices(prog: *const shader.Program, p: *const shader.Pipeline, draw: shader.Pipeline.Draw, mem: []const u8, batch: []const u32, vs_u: []const u32, cs_u: []const u32, out: []Shaded) !void {
+fn shadeVertices(prog: *const shader.Program, p: *const shader.Pipeline, draw: shader.Pipeline.Draw, mem: []const u8, batch: []const u32, vs_decoded: []const sim.DecodedInst, cs_decoded: []const sim.DecodedInst, vs_u: []const u32, cs_u: []const u32, out: []Shaded) !void {
     var vs_in: [32]sim.Vec = undefined;
     var cs_in: [32]sim.Vec = undefined;
     var nv: usize = 0;
@@ -166,8 +172,8 @@ fn shadeVertices(prog: *const shader.Program, p: *const shader.Pipeline, draw: s
             }
         }
     }
-    const vs = try sim.run(prog.vs.code(), .{ .uniforms = vs_u, .vpm_in = vs_in[0..nv] });
-    const cs = try sim.run(prog.cs.code(), .{ .uniforms = cs_u, .vpm_in = cs_in[0..nc] });
+    const vs = try sim.runDecoded(vs_decoded, .{ .uniforms = vs_u, .vpm_in = vs_in[0..nv] });
+    const cs = try sim.runDecoded(cs_decoded, .{ .uniforms = cs_u, .vpm_in = cs_in[0..nc] });
     const vo = vs.vpmOut();
     const co = cs.vpmOut();
     for (batch, 0..) |vi, lane| {
@@ -182,6 +188,7 @@ fn shadeVertices(prog: *const shader.Program, p: *const shader.Pipeline, draw: s
 /// Fragments waiting to be shaded, sixteen at a time.
 const Fragments = struct {
     prog: *const shader.Program,
+    fs_decoded: []const sim.DecodedInst,
     uniforms: []const u32,
     textures: [3][]const u8 = @splat(&.{}),
     img: Image,
@@ -211,7 +218,7 @@ const Fragments = struct {
         }
         var tile: sim.Vec = undefined;
         for (&tile, f.index) |*c, i| c.* = f.img.pixels[i];
-        const r = try sim.run(f.prog.fs.code(), .{ .uniforms = f.uniforms, .varyings = f.vary[0..nv], .tlb_color_in = tile, .textures = &f.textures });
+        const r = try sim.runFragmentDecoded(f.fs_decoded, .{ .uniforms = f.uniforms, .varyings = f.vary[0..nv], .tlb_color_in = tile, .textures = &f.textures });
         for (f.index[0..f.n], 0..) |i, lane| f.img.pixels[i] = r.tlb_color.?[lane];
         f.n = 0;
     }
