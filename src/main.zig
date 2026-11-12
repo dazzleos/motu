@@ -15,7 +15,9 @@ const linux = std.os.linux;
 const sys = @import("sys");
 const locale = @import("locale");
 const vc4 = @import("vc4");
-const ui = @import("ui");
+const app = @import("app");
+const kete = @import("kete");
+const kete_vc4 = @import("kete_vc4");
 const world_mod = @import("world.zig");
 const game_mod = @import("game.zig");
 const renderer_mod = @import("renderer.zig");
@@ -30,7 +32,7 @@ pub const save_path = sys.system.user_dir ++ "/Island.blocks";
 /// How often a changed world is saved, in seconds.
 const save_every = 60;
 
-pub fn main(init: std.process.Init.Minimal) u8 {
+pub fn main(init: std.process.Init) u8 {
     sys.logToKmsgIfStderr();
     run(init) catch |err| {
         print(sys.log_error ++ "dazzle-blocks: error: {s}\n", .{@errorName(err)});
@@ -44,11 +46,12 @@ const Scene = struct {
     game: *game_mod.Game,
     renderer: *Renderer,
 
-    fn draw(ctx: *anyopaque, f: *vc4.render.Frame, area: ui.GpuArea) anyerror!void {
+    fn draw(ctx: *anyopaque, f: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void {
         const s: *Scene = @ptrCast(@alignCast(ctx));
         const g = s.game;
-        const vp = area.viewport;
-        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, area.scissor, .{
+        const vp = kete_vc4.renderer.viewport(area.viewport);
+        const scissor = if (area.scissor) |sc| kete_vc4.renderer.viewport(sc) else null;
+        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, scissor, .{
             .camera = g.camera(),
             .aspect = @as(f32, @floatFromInt(vp.width)) / @as(f32, @floatFromInt(@max(vp.height, 1))),
             .time = g.clock,
@@ -101,19 +104,69 @@ fn save(gpa: std.mem.Allocator, g: *game_mod.Game) void {
     print("dazzle-blocks: saved ({d} KB)\n", .{out.items.len / 1024});
 }
 
-fn run(init: std.process.Init.Minimal) !void {
+/// The window's root: the world and what is over it.
+const Root = struct {
+    game: *game_mod.Game,
+    icons: *const view.Icons,
+    scene: *Scene,
+    fps: *const f32,
+
+    pub fn build(r: *const Root, cx: *kete.BuildContext) kete.Widget {
+        return cx.make(view.Blocks{
+            .game = r.game,
+            .icons = r.icons,
+            .draw = .{ .ctx = r.scene, .f = Scene.draw },
+            .stats = r.scene.renderer.stats,
+            .fps = r.fps.*,
+        });
+    }
+};
+
+/// The input the game takes before the widgets see it: all the keys, and
+/// with the mouse taken, the mouse too (it turns the view, and its buttons
+/// act on the middle of it).
+const Input = struct {
+    game: *game_mod.Game,
+    win: ?*app.Window = null,
+
+    fn filter(in: *Input, e: app.InputEvent) bool {
+        const game = in.game;
+        switch (e) {
+            .key => |k| {
+                game.key(k.code, k.pressed);
+                return true;
+            },
+            .button => |b| if (game.captured) {
+                game.mouseButton(b.code, b.pressed);
+                return true;
+            },
+            .scroll => |sc| if (game.captured) {
+                if (sc.dy != 0) game.scroll(sc.dy);
+                return true;
+            },
+            .motion, .leave => return game.captured,
+            .relative_motion => |d| {
+                if (game.captured) game.mouseMoved(d[0], d[1]);
+                return true;
+            },
+            .pointer_locked => |locked| {
+                // Given back (the shell took it): the menu.
+                game.pointerLocked(locked);
+                if (!locked) if (in.win) |w| w.unlockPointer();
+                return true;
+            },
+            else => {},
+        }
+        return false;
+    }
+};
+
+fn run(init: std.process.Init) !void {
     locale.current = locale.load().language;
     const gpa = std.heap.page_allocator;
-    // A frame in flight: the next is recorded while the GPU renders this
-    // one (with a third buffer, while the GPU's memory allows).
-    const a = try ui.App.open(gpa, init.environ, .{
-        .title = "Blocks",
-        .app_id = "dazzle-blocks",
-        .size = view.open_size,
-        .min_size = view.min_size,
-        .pipelined = true,
-    });
-    defer a.close();
+    var host: kete_vc4.Host = undefined;
+    try host.init(gpa, init.io, init.minimal.environ, .{ .app_id = "dazzle-blocks" });
+    defer host.deinit();
 
     // The world: as it was left, or a new island.
     const world = try world_mod.World.create(gpa);
@@ -125,7 +178,7 @@ fn run(init: std.process.Init.Minimal) !void {
         game = game_mod.Game.init(gpa, world);
         print("dazzle-blocks: made an island in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
     };
-    const renderer = try Renderer.init(gpa, a.dev);
+    const renderer = try Renderer.init(gpa, host.dev);
     {
         // The chunks around the player now; the rest a few a frame, from
         // the nearest (they are further off, in the fog, at first).
@@ -145,47 +198,43 @@ fn run(init: std.process.Init.Minimal) !void {
     };
     defer if (session) |*s| s.deinit();
 
+    var fps: f32 = 0;
+    const root: Root = .{ .game = &game, .icons = icons, .scene = &scene, .fps = &fps };
+    var input: Input = .{ .game = &game };
+    host.display.input_filter = .of(&input, Input.filter);
+    const window = try host.app.openWindow(.{
+        .title = "Blocks",
+        .root = .of(&root),
+        .size = view.open_size,
+        .min_size = view.min_size,
+        .clear_color = 0xff000000,
+        .on_close_request = .close,
+    });
+    const win = &host.display.window.?;
+    input.win = win.win;
+
     var last = sys.nowNs();
     var last_save = last;
-    var fps: f32 = 0;
     var frames: u32 = 0;
     var fps_since = last;
     var log_since = last;
     while (true) {
         // While shown, a frame as often as the shell takes them; covered,
         // nothing to do but wait.
-        a.idle = a.suspended;
-        if (!try a.step(std.time.ns_per_s)) {
+        if (!window.suspended) host.redraw();
+        if (!try host.step(std.time.ns_per_s)) {
             if (game.wantsSave()) save(gpa, &game);
             return;
         }
         // The mouse can be taken if the shell can lock the pointer.
-        game.can_capture = a.win.pointer_constraints != null and a.win.relative_pointer_manager != null;
-        for (a.win.takeInput()) |e| switch (e) {
-            // With the mouse taken, it turns the view and its buttons act
-            // on the middle of it; the widgets do not see it.
-            .motion => |pos| if (!game.captured) a.ui.pointerMotion(pos),
-            .button => |b| if (game.captured) game.mouseButton(b.code, b.pressed) else a.ui.pointerButton(b.pos, b.code, b.pressed),
-            .key => |k| game.key(k.code, k.pressed),
-            .scroll => |sc| if (game.captured) {
-                if (sc.dy != 0) game.scroll(sc.dy);
-            } else a.ui.pointerScroll(sc.pos, sc.dx, sc.dy),
-            .leave => if (!game.captured) a.ui.pointerLeave(),
-            .relative_motion => |d| if (game.captured) game.mouseMoved(d[0], d[1]),
-            .pointer_locked => |locked| {
-                // Given back (the shell took it): the menu.
-                game.pointerLocked(locked);
-                if (!locked) a.win.unlockPointer();
-            },
-            else => a.ui.handleInput(e),
-        };
+        game.can_capture = win.win.pointer_constraints != null and win.win.relative_pointer_manager != null;
 
         if (game.capture_wanted) |take| {
             game.capture_wanted = null;
             if (take) {
-                if (!a.win.lockPointer()) game.can_capture = false;
+                if (!win.win.lockPointer()) game.can_capture = false;
             } else {
-                a.win.unlockPointer();
+                win.win.unlockPointer();
                 game.captured = false;
             }
         }
@@ -220,27 +269,9 @@ fn run(init: std.process.Init.Minimal) !void {
             save(gpa, &game);
             last_save = now;
         }
-        if (a.suspended) continue;
-
-        a.ui.frame(a.width, a.height, a.win.nextPresentationNs(now), view.Blocks{
-            .game = &game,
-            .icons = icons,
-            .draw = .{ .ctx = &scene, .f = Scene.draw },
-            .stats = renderer.stats,
-            .fps = fps,
-        });
-        if (a.ui.changed()) {
-            const target = try a.win.beginFrame();
-            const region = a.ui.repaint(a.win.bufferAge());
-            // Antialiased: 4x multisampled (see vc4.render.Frame).
-            if (game.antialias) a.frame.beginMultisampled(target, 0xff000000) else a.frame.begin(target, .{ .clear = 0xff000000 });
-            ui.Ui.limit(&a.frame, &region);
-            try a.ui.render(&a.frame, a.win.flusher());
-            var damage: [ui.damage.Region.max_rects]vc4.render.Viewport = undefined;
-            // To the GPU, showing the frame before while it renders this.
-            try a.win.submit(&a.frame, a.ui.damagedViewports(&damage));
-            frames += 1;
-        }
+        // Antialiased: 4x multisampled (see vc4.render.Frame).
+        host.renderer.multisampled = game.antialias;
+        frames += host.renderer.takeStats().frames;
         if (now - fps_since >= std.time.ns_per_s) {
             fps = @as(f32, @floatFromInt(frames)) / (@as(f32, @floatFromInt(now - fps_since)) / std.time.ns_per_s);
             frames = 0;

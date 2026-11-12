@@ -5,9 +5,8 @@
 //! asking to join (over everything, the menu too, so it can be clicked).
 
 const std = @import("std");
-const app = @import("app");
-const ui = @import("ui");
-const gfx = @import("gfx");
+const kete = @import("kete");
+const gfx = kete.gfx;
 const vc4 = @import("vc4");
 const blocks = @import("blocks.zig");
 const textures = @import("textures.zig");
@@ -26,9 +25,6 @@ pub const button_bg = gfx.Color.argb(0xd8182232);
 
 /// How big the fullscreen button is.
 const fullscreen_size = 40;
-
-/// The middle button (a Linux button code).
-const btn_middle = 0x112;
 
 /// Icons for the blocks, made once.
 pub const Icons = struct {
@@ -51,7 +47,7 @@ pub const Icons = struct {
 /// Draws the world into the frame.
 pub const Draw = struct {
     ctx: *anyopaque,
-    f: *const fn (ctx: *anyopaque, frame: *vc4.render.Frame, area: ui.GpuArea) anyerror!void,
+    f: *const fn (ctx: *anyopaque, frame: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void,
 };
 
 pub const Blocks = struct {
@@ -62,159 +58,150 @@ pub const Blocks = struct {
     /// What the last frame drew, and how fast frames come.
     stats: renderer.Stats = .{},
     fps: f32 = 0,
-    on_close: ?ui.Callback = null,
-    on_maximize: ?ui.Callback = null,
-    on_fullscreen: ?ui.Callback = null,
-    on_drag: ?ui.Callback = null,
-    maximized: bool = true,
+    on_fullscreen: ?kete.Callback = null,
     fullscreen: bool = false,
 
-    pub fn build(self: *const Blocks, cx: *ui.Context) ui.Widget {
+    pub fn build(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
-        const a = cx.ui.arena();
-        const is_fullscreen = self.fullscreen or cx.ui.fullscreen;
+        const a = cx.arena;
+        const window = cx.window();
+        const is_fullscreen = self.fullscreen or (if (window) |w| w.isFullscreen() else false);
         const on_fullscreen = self.on_fullscreen orelse
-            if (cx.ui.controls) |c| ui.Callback.of(c, app.Controls.toggleFullscreen) else null;
+            if (window) |w| kete.Callback.of(w, toggleFullscreen) else null;
 
-        var layers: std.ArrayList(ui.Widget) = .empty;
+        var layers: std.ArrayList(kete.Widget) = .empty;
         layers.append(a, cx.make(WorldView{ .game = g, .draw = self.draw })) catch {};
         // The hotbar, at the bottom; what happened, above it.
-        var bottom: std.ArrayList(ui.Widget) = .empty;
+        var bottom: std.ArrayList(kete.Widget) = .empty;
         if (g.messageShown()) |m| bottom.append(a, label(cx, m, 20)) catch {};
         bottom.append(a, self.hotbar(cx)) catch {};
-        layers.append(a, cx.make(ui.Align{ .alignment = .bottom_center, .child = cx.make(ui.Padding{ .padding = .all(14), .child = cx.make(ui.Column{
-            .main_axis_size = .min,
+        layers.append(a, cx.make(kete.Align{ .alignment = .bottom_center, .child = cx.make(kete.Padding{ .padding = .all(14), .child = cx.make(kete.Column{
+            .fill = false,
             .spacing = 8,
             .children = bottom.items,
         }) }) })) catch {};
-        if (g.help) layers.append(a, cx.make(ui.Align{ .alignment = .top_left, .child = cx.make(ui.Padding{ .padding = .all(14), .child = help(cx) }) })) catch {};
-        const fullscreen_button = cx.make(ui.Decorated{
+        if (g.help) layers.append(a, cx.make(kete.Align{ .alignment = .top_left, .child = cx.make(kete.Padding{ .padding = .all(14), .child = help(cx) }) })) catch {};
+        const fullscreen_button = cx.make(kete.RoundedBox{
             .color = button_bg,
-            .radius = gfx.Radii.all(fullscreen_size / 2),
-            .child = cx.make(ui.IconButton{
+            .radius = kete.CornerRadii.all(fullscreen_size / 2),
+            .child = cx.make(kete.IconButton{
                 .size = fullscreen_size,
                 .icon = if (is_fullscreen) .fullscreen_exit else .fullscreen,
                 .on_press = on_fullscreen,
             }),
         });
         // What is drawn, below the fullscreen button.
-        if (g.stats) layers.append(a, cx.make(ui.Align{
+        if (g.stats) layers.append(a, cx.make(kete.Align{
             .alignment = .top_right,
-            .child = cx.make(ui.Padding{ .padding = .{ .top = 12 + fullscreen_size + 8, .right = 12 }, .child = self.statsPanel(cx) }),
+            .child = cx.make(kete.Padding{ .padding = .{ .top = 12 + fullscreen_size + 8, .right = 12 }, .child = self.statsPanel(cx) }),
         })) catch {};
-        if (g.palette_open) layers.append(a, cx.make(ui.Align{ .alignment = .center, .child = self.palette(cx) })) catch {};
+        if (g.palette_open) layers.append(a, cx.make(kete.Align{ .alignment = .center, .child = self.palette(cx) })) catch {};
         // With the mouse taken, a mark in the middle: what it acts on.
-        if (g.captured and !g.menu_open) layers.append(a, cx.make(ui.Center{ .child = crosshair(cx) })) catch {};
+        if (g.captured and !g.menu_open) layers.append(a, cx.make(kete.Align{ .child = crosshair(cx) })) catch {};
         if (g.menu_open) layers.append(a, self.menu(cx)) catch {};
         // Fullscreen, top right as in the other apps; over the menu too.
-        layers.append(a, cx.make(ui.Align{
+        layers.append(a, cx.make(kete.Align{
             .alignment = .top_right,
-            .child = cx.make(ui.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = fullscreen_button }),
+            .child = cx.make(kete.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = fullscreen_button }),
         })) catch {};
-        if (g.net.request) |who| layers.append(a, cx.make(ui.Align{
+        if (g.net.request) |who| layers.append(a, cx.make(kete.Align{
             .alignment = .top_center,
-            .child = cx.make(ui.Padding{ .padding = .{ .top = 12 }, .child = joinRequest(cx, g, who) }),
+            .child = cx.make(kete.Padding{ .padding = .{ .top = 12 }, .child = joinRequest(cx, g, who) }),
         })) catch {};
-        const world = cx.make(ui.Overlay{ .children = layers.items });
-        if (is_fullscreen) return world;
-        return cx.make(ui.Column{ .cross_axis_alignment = .stretch, .children = &.{
-            cx.make(ui.TitleBar{
-                .title = "Blocks",
-                .on_close = self.on_close,
-                .on_maximize = self.on_maximize,
-                .on_drag = self.on_drag,
-                .maximized = self.maximized,
-            }),
-            cx.make(ui.Expanded{ .child = world }),
-        } });
+        return cx.make(kete.Overlay{ .children = layers.items });
     }
 
-    fn hotbar(self: *const Blocks, cx: *ui.Context) ui.Widget {
+    fn toggleFullscreen(w: *kete.App.Window) void {
+        w.setFullscreen(!w.isFullscreen());
+    }
+
+    fn hotbar(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
         const t = cx.theme();
-        var slots: [9]ui.Widget = undefined;
+        var slots: [9]kete.Widget = undefined;
         for (&slots, g.hotbar, 0..) |*w, b, i| {
             const chosen = i == g.slot;
-            const pick = cx.ui.arena().create(Choose) catch return cx.make(ui.Empty{});
+            const pick = cx.arena.create(Choose) catch return cx.make(kete.SizedBox.empty);
             pick.* = .{ .game = g, .slot = @intCast(i) };
-            w.* = cx.make(ui.Pressable{ .on_press = .of(pick, Choose.press), .child = cx.make(ui.Decorated{
+            w.* = cx.make(kete.Pressable{ .on_press = .of(pick, Choose.press), .child = cx.make(kete.RoundedBox{
                 .color = gfx.Color.argb(if (chosen) 0xcc303030 else 0x99000000),
-                .border = .{ .width = if (chosen) 3 else 1, .color = if (chosen) t.primary else gfx.Color.argb(0x66ffffff) },
+                .border_width = if (chosen) 3 else 1,
+                .border_color = if (chosen) t.primary else gfx.Color.argb(0x66ffffff),
                 .radius = .all(8),
-                .child = cx.make(ui.SizedBox{ .width = 60, .height = 60, .child = cx.make(ui.Center{ .child = if (self.icons.of(b)) |img| cx.make(ui.Image{ .image = img }) else cx.make(ui.Empty{}) }) }),
+                .child = cx.make(kete.SizedBox{ .width = 60, .height = 60, .child = cx.make(kete.Align{ .child = if (self.icons.of(b)) |img| cx.make(kete.Image{ .source = .{ .image = img } }) else cx.make(kete.SizedBox.empty) }) }),
             }) });
         }
-        return cx.make(ui.Row{ .main_axis_size = .min, .spacing = 6, .children = &slots });
+        return cx.make(kete.Row{ .fill = false, .spacing = 6, .children = &slots });
     }
 
-    fn palette(self: *const Blocks, cx: *ui.Context) ui.Widget {
+    fn palette(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
         const t = cx.theme();
-        const a = cx.ui.arena();
-        var cells: std.ArrayList(ui.Widget) = .empty;
+        const a = cx.arena;
+        var cells: std.ArrayList(kete.Widget) = .empty;
         for (blocks.palette) |b| {
             const pick = a.create(FromPalette) catch break;
             pick.* = .{ .game = g, .block = b };
-            cells.append(a, cx.make(ui.Pressable{ .on_press = .of(pick, FromPalette.press), .child = cx.make(ui.Decorated{
+            cells.append(a, cx.make(kete.Pressable{ .on_press = .of(pick, FromPalette.press), .child = cx.make(kete.RoundedBox{
                 .color = gfx.Color.argb(if (b == g.selected()) 0x44ffffff else 0x00000000),
                 .radius = .all(8),
-                .child = cx.make(ui.Center{ .child = cx.make(ui.Image{ .image = self.icons.of(b).? }) }),
+                .child = cx.make(kete.Align{ .child = cx.make(kete.Image{ .source = .{ .image = self.icons.of(b).? } }) }),
             }) })) catch {};
         }
-        return cx.make(ui.Decorated{ .color = gfx.Color.argb(0xe0202024), .radius = .all(16), .child = cx.make(ui.Padding{ .padding = .all(20), .child = cx.make(ui.Column{
-            .main_axis_size = .min,
+        return cx.make(kete.RoundedBox{ .color = gfx.Color.argb(0xe0202024), .radius = .all(16), .child = cx.make(kete.Padding{ .padding = .all(20), .child = cx.make(kete.Column{
+            .fill = false,
             .spacing = 12,
             .children = &.{
-                cx.make(ui.Text{ .text = "Blocks", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
-                cx.make(ui.Grid{ .children = cells.items, .cell = .{ .w = 52, .h = 52 }, .spacing = 4 }),
-                cx.make(ui.Text{ .text = "Pick one for the hotbar's chosen slot  ·  E or Esc to close", .style = .{ .size = 15, .color = gfx.Color.argb(0xffc8c8c8) }, .wrap = false }),
+                cx.make(kete.Text{ .text = "Blocks", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
+                cx.make(kete.Grid.fixed(cx, cells.items, .{ .w = 52, .h = 52 }, 4)),
+                cx.make(kete.Text{ .text = "Pick one for the hotbar's chosen slot  ·  E or Esc to close", .style = .{ .size = 15, .color = gfx.Color.argb(0xffc8c8c8) }, .wrap = false }),
             },
         }) }) });
     }
 
     /// The menu: the game's options, over the world darkened behind it
     /// (which goes on); clicking beside it, Resume or Esc go back.
-    fn menu(self: *const Blocks, cx: *ui.Context) ui.Widget {
+    fn menu(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
         const t = cx.theme();
-        const time = cx.make(ui.Row{
+        const time = cx.make(kete.Row{
             .spacing = 12,
             .cross_axis_alignment = .center,
-            .children = cx.ui.arena().dupe(ui.Widget, &.{
-                cx.make(ui.Text{ .text = "Time of day", .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
-                cx.make(ui.Expanded{ .child = cx.make(ui.Slider{ .value = g.time_of_day, .on_changed = .of(g, Game.setTimeOfDay) }) }),
-                cx.make(ui.SizedBox{ .width = 80, .child = cx.make(ui.Text{
+            .children = cx.arena.dupe(kete.Widget, &.{
+                cx.make(kete.Text{ .text = "Time of day", .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
+                cx.make(kete.Expanded{ .child = cx.make(kete.Slider{ .value = g.time_of_day, .on_changed = .of(g, Game.setTimeOfDay) }) }),
+                cx.make(kete.SizedBox{ .width = 80, .child = cx.make(kete.Text{
                     .text = game_mod.timeName(g.time_of_day),
                     .style = .{ .size = t.body_size, .color = t.on_surface_variant },
                     .wrap = false,
                 }) }),
             }) catch &.{},
         });
-        const arena = cx.ui.arena();
+        const arena = cx.arena;
         const column = struct {
-            fn f(c: *ui.Context, flex: f32, children: []const ui.Widget) ui.Widget {
-                return c.make(ui.Expanded{ .flex = flex, .child = c.make(ui.Column{
-                    .main_axis_size = .min,
+            fn f(c: *kete.BuildContext, flex: f32, children: []const kete.Widget) kete.Widget {
+                return c.make(kete.Expanded{ .flex = flex, .child = c.make(kete.Column{
+                    .fill = false,
                     .cross_axis_alignment = .stretch,
-                    .children = c.ui.arena().dupe(ui.Widget, children) catch &.{},
+                    .children = c.ui.arena().dupe(kete.Widget, children) catch &.{},
                 }) });
             }
         }.f;
         // The options get more room: the time of day has a slider.
         const options = column(cx, 3, &.{
-            cx.make(ui.Switch{ .value = g.antialias, .on_changed = .of(g, Game.setAntialias), .label = "Antialiasing" }),
-            cx.make(ui.Switch{ .value = g.bump, .on_changed = .of(g, Game.setBump), .label = "Bumps and ripples" }),
-            cx.make(ui.Switch{ .value = g.help, .on_changed = .of(g, Game.setHelp), .label = "The controls" }),
-            cx.make(ui.Switch{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
+            cx.make(kete.SwitchRow{ .value = g.antialias, .on_changed = .of(g, Game.setAntialias), .label = "Antialiasing" }),
+            cx.make(kete.SwitchRow{ .value = g.bump, .on_changed = .of(g, Game.setBump), .label = "Bumps and ripples" }),
+            cx.make(kete.SwitchRow{ .value = g.help, .on_changed = .of(g, Game.setHelp), .label = "The controls" }),
+            cx.make(kete.SwitchRow{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
             time,
         });
-        return cx.make(ui.Dialog{
+        return cx.make(kete.Dialog{
             .title = "Menu",
             .width = 600,
-            .content = cx.make(ui.Row{
+            .content = cx.make(kete.Row{
                 .spacing = 24,
                 .cross_axis_alignment = .start,
-                .children = arena.dupe(ui.Widget, &.{ options, column(cx, 2, &.{playTogether(cx, g)}) }) catch &.{},
+                .children = arena.dupe(kete.Widget, &.{ options, column(cx, 2, &.{playTogether(cx, g)}) }) catch &.{},
             }),
             .confirm_label = "Resume",
             .on_confirm = .of(g, Game.closeMenu),
@@ -223,7 +210,7 @@ pub const Blocks = struct {
         });
     }
 
-    fn statsPanel(self: *const Blocks, cx: *ui.Context) ui.Widget {
+    fn statsPanel(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
         const s = self.stats;
         const p = self.game.player.pos;
         const text = cx.fmt("{d:.0} fps{s}{s}\n{d} chunks, {d} draws ({d} detailed)\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
@@ -239,7 +226,7 @@ pub const Blocks = struct {
             p[2],
             game_mod.timeName(self.game.time_of_day),
         });
-        return panel(cx, cx.make(ui.Text{ .text = text, .style = .{ .size = 15, .color = gfx.Color.argb(0xffffffff) } }));
+        return panel(cx, cx.make(kete.Text{ .text = text, .style = .{ .size = 15, .color = gfx.Color.argb(0xffffffff) } }));
     }
 };
 
@@ -248,31 +235,31 @@ const max_nearby_shown = 3;
 
 /// The menu's other half: how playing together is going, and the games
 /// nearby to join.
-fn playTogether(cx: *ui.Context, g: *Game) ui.Widget {
+fn playTogether(cx: *kete.BuildContext, g: *Game) kete.Widget {
     const t = cx.theme();
-    const a = cx.ui.arena();
-    var items: std.ArrayList(ui.Widget) = .empty;
-    items.append(a, cx.make(ui.Text{ .text = "Play together", .style = .{ .size = t.body_size + 2, .color = t.on_surface }, .wrap = false })) catch {};
+    const a = cx.arena;
+    var items: std.ArrayList(kete.Widget) = .empty;
+    items.append(a, cx.make(kete.Text{ .text = "Play together", .style = .{ .size = t.body_size + 2, .color = t.on_surface }, .wrap = false })) catch {};
     const note = struct {
-        fn f(c: *ui.Context, text: []const u8) ui.Widget {
+        fn f(c: *kete.BuildContext, text: []const u8) kete.Widget {
             const th = c.theme();
-            return c.make(ui.Text{ .text = text, .style = .{ .size = th.body_size, .color = th.on_surface_variant } });
+            return c.make(kete.Text{ .text = text, .style = .{ .size = th.body_size, .color = th.on_surface_variant } });
         }
     }.f;
     switch (g.net.status) {
         .joined => |host| {
             items.append(a, note(cx, cx.fmt("Playing on {s}'s island", .{host}))) catch {};
-            items.append(a, cx.make(ui.Row{ .children = a.dupe(ui.Widget, &.{
-                cx.make(ui.OutlinedButton{ .label = "Leave", .on_press = .of(g, Game.leaveGame) }),
+            items.append(a, cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
+                cx.make(kete.OutlinedButton{ .label = "Leave", .on_press = .of(g, Game.leaveGame) }),
             }) catch &.{} })) catch {};
-            return cx.make(ui.Column{ .main_axis_size = .min, .cross_axis_alignment = .stretch, .spacing = 8, .children = items.items });
+            return cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 8, .children = items.items });
         },
         .asking => |host| {
             items.append(a, note(cx, cx.fmt("Asking {s}…", .{host}))) catch {};
-            items.append(a, cx.make(ui.Row{ .children = a.dupe(ui.Widget, &.{
-                cx.make(ui.TextButton{ .label = "Stop asking", .on_press = .of(g, Game.leaveGame) }),
+            items.append(a, cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
+                cx.make(kete.TextButton{ .label = "Stop asking", .on_press = .of(g, Game.leaveGame) }),
             }) catch &.{} })) catch {};
-            return cx.make(ui.Column{ .main_axis_size = .min, .cross_axis_alignment = .stretch, .spacing = 8, .children = items.items });
+            return cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 8, .children = items.items });
         },
         .hosting => |n| items.append(a, note(cx, if (n == 1) "1 player has joined you" else cx.fmt("{d} players have joined you", .{n}))) catch {},
         .alone => items.append(a, note(cx, "Others on this network can ask to join you")) catch {},
@@ -283,13 +270,13 @@ fn playTogether(cx: *ui.Context, g: *Game) ui.Widget {
     for (g.net.nearby[0..@min(g.net.nearby.len, max_nearby_shown)]) |n| {
         const join = a.create(JoinNearby) catch break;
         join.* = .{ .game = g, .nearby = n };
-        items.append(a, cx.make(ui.ListItem{
+        items.append(a, cx.make(kete.ListItem{
             .headline = join.nearby.name(),
             .leading_icon = .computer,
             .on_press = .of(join, JoinNearby.press),
         })) catch {};
     }
-    return cx.make(ui.Column{ .main_axis_size = .min, .cross_axis_alignment = .stretch, .spacing = 2, .children = items.items });
+    return cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 2, .children = items.items });
 }
 
 const JoinNearby = struct {
@@ -303,40 +290,42 @@ const JoinNearby = struct {
 
 /// Someone asking to join: Y or N, or (with the mouse, after Esc) its
 /// buttons.
-fn joinRequest(cx: *ui.Context, g: *Game, who: []const u8) ui.Widget {
+fn joinRequest(cx: *kete.BuildContext, g: *Game, who: []const u8) kete.Widget {
     const t = cx.theme();
-    return cx.make(ui.Decorated{
+    return cx.make(kete.RoundedBox{
         .color = t.surface_container_highest,
-        .border = .{ .width = 1, .color = t.outline_variant },
+        .border_width = 1,
+        .border_color = t.outline_variant,
         .radius = .all(16),
-        .child = cx.make(ui.Padding{ .padding = .{ .left = 16, .right = 12, .top = 10, .bottom = 10 }, .child = cx.make(ui.Row{
-            .main_axis_size = .min,
+        .child = cx.make(kete.Padding{ .padding = .{ .left = 16, .right = 12, .top = 10, .bottom = 10 }, .child = cx.make(kete.Row{
+            .fill = false,
             .cross_axis_alignment = .center,
             .spacing = 12,
-            .children = cx.ui.arena().dupe(ui.Widget, &.{
-                cx.make(ui.Icon{ .icon = .person_add, .size = 24, .color = t.primary }),
-                cx.make(ui.Text{ .text = cx.fmt("{s} wants to join", .{who}), .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
-                cx.make(ui.TextButton{ .label = "Deny (N)", .on_press = .of(g, Game.denyJoin) }),
-                cx.make(ui.FilledButton{ .label = "Allow (Y)", .on_press = .of(g, Game.allowJoin) }),
+            .children = cx.arena.dupe(kete.Widget, &.{
+                cx.make(kete.Icon{ .icon = .person_add, .size = 24, .color = t.primary }),
+                cx.make(kete.Text{ .text = cx.fmt("{s} wants to join", .{who}), .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
+                cx.make(kete.TextButton{ .label = "Deny (N)", .on_press = .of(g, Game.denyJoin) }),
+                cx.make(kete.FilledButton{ .label = "Allow (Y)", .on_press = .of(g, Game.allowJoin) }),
             }) catch &.{},
         }) }),
     });
 }
 
 /// A small cross, white with a dark edge so it shows on sky and snow.
-fn crosshair(cx: *ui.Context) ui.Widget {
+fn crosshair(cx: *kete.BuildContext) kete.Widget {
     const bar = struct {
-        fn f(c: *ui.Context, w: f32, h: f32) ui.Widget {
-            return c.make(ui.Decorated{
+        fn f(c: *kete.BuildContext, w: f32, h: f32) kete.Widget {
+            return c.make(kete.RoundedBox{
                 .color = gfx.Color.argb(0xeeffffff),
-                .border = .{ .width = 1, .color = gfx.Color.argb(0x88000000) },
-                .child = c.make(ui.SizedBox{ .width = w, .height = h, .child = c.make(ui.Empty{}) }),
+                .border_width = 1,
+                .border_color = gfx.Color.argb(0x88000000),
+                .child = c.make(kete.SizedBox{ .width = w, .height = h, .child = c.make(kete.SizedBox.empty) }),
             });
         }
     }.f;
-    return cx.make(ui.Overlay{ .children = cx.ui.arena().dupe(ui.Widget, &.{
-        cx.make(ui.Center{ .child = bar(cx, 22, 4) }),
-        cx.make(ui.Center{ .child = bar(cx, 4, 22) }),
+    return cx.make(kete.Overlay{ .children = cx.arena.dupe(kete.Widget, &.{
+        cx.make(kete.Align{ .child = bar(cx, 22, 4) }),
+        cx.make(kete.Align{ .child = bar(cx, 4, 22) }),
     }) catch &.{} });
 }
 
@@ -347,16 +336,16 @@ const help_text =
     \\Esc  menu
 ;
 
-fn help(cx: *ui.Context) ui.Widget {
-    return panel(cx, cx.make(ui.Text{ .text = help_text, .style = .{ .size = 15, .color = gfx.Color.argb(0xffffffff) } }));
+fn help(cx: *kete.BuildContext) kete.Widget {
+    return panel(cx, cx.make(kete.Text{ .text = help_text, .style = .{ .size = 15, .color = gfx.Color.argb(0xffffffff) } }));
 }
 
-fn panel(cx: *ui.Context, child: ui.Widget) ui.Widget {
-    return cx.make(ui.Decorated{ .color = gfx.Color.argb(0xa0000000), .radius = .all(10), .child = cx.make(ui.Padding{ .padding = .{ .left = 14, .right = 14, .top = 10, .bottom = 10 }, .child = child }) });
+fn panel(cx: *kete.BuildContext, child: kete.Widget) kete.Widget {
+    return cx.make(kete.RoundedBox{ .color = gfx.Color.argb(0xa0000000), .radius = .all(10), .child = cx.make(kete.Padding{ .padding = .{ .left = 14, .right = 14, .top = 10, .bottom = 10 }, .child = child }) });
 }
 
-fn label(cx: *ui.Context, text: []const u8, size: f32) ui.Widget {
-    return cx.make(ui.Center{ .child = panel(cx, cx.make(ui.Text{ .text = text, .style = .{ .size = size, .color = gfx.Color.argb(0xffffffff) }, .wrap = false })) });
+fn label(cx: *kete.BuildContext, text: []const u8, size: f32) kete.Widget {
+    return cx.make(kete.Align{ .child = panel(cx, cx.make(kete.Text{ .text = text, .style = .{ .size = size, .color = gfx.Color.argb(0xffffffff) }, .wrap = false })) });
 }
 
 const Choose = struct {
@@ -383,39 +372,39 @@ const WorldView = struct {
     game: *Game,
     draw: ?Draw,
 
-    pub fn layout(self: *const WorldView, _: *ui.Node, c: ui.Constraints) ui.Size {
+    pub fn layout(self: *const WorldView, _: *kete.WidgetNode, c: kete.Constraints) kete.Size {
         const size = c.biggest();
         self.game.view_size = .{ size.w, size.h };
         return size;
     }
 
-    pub fn paint(self: *const WorldView, _: *ui.Node, p: *ui.Painter) void {
+    pub fn paint(self: *const WorldView, _: *kete.WidgetNode, p: *kete.Painter) void {
         // A new picture every frame (things move, even standing still).
         if (self.draw != null) p.gpu(self, drawWorld);
     }
 
-    fn drawWorld(self: *const WorldView, frame: *vc4.render.Frame, area: ui.GpuArea) anyerror!void {
+    fn drawWorld(self: *const WorldView, frame: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void {
         const d = self.draw.?;
         try d.f(d.ctx, frame, area);
     }
 
-    pub fn event(self: *const WorldView, _: *ui.Node, e: ui.Event) bool {
+    pub fn event(self: *const WorldView, _: *kete.WidgetNode, e: kete.Event) bool {
         const g = self.game;
         switch (e) {
             .motion => |pos| g.pointerAt(pos),
             .leave => if (g.press == null) g.pointerAt(null),
             .press => |pr| {
-                if (pr.button == btn_middle) {
+                if (pr.button == .middle) {
                     g.pointerAt(pr.pos);
                     g.pickAtPointer();
                     return true;
                 }
-                if (pr.button != ui.btn_left) return false;
+                if (pr.button != .left) return false;
                 g.pointerDown(pr.pos);
                 return true;
             },
             .release => |r| {
-                if (r.button == btn_middle) return true;
+                if (r.button == .middle) return true;
                 // Let go outside (or cancelled, as a touch that turned
                 // into turning the view): nothing is built.
                 if (!r.inside) {
@@ -446,24 +435,24 @@ const WorldView = struct {
 // --- Tests ---------------------------------------------------------------------------------
 
 const testing = std.testing;
-const font = @import("font");
+const font = kete.font;
 const world_mod = @import("world.zig");
 
-fn overflows(node: *ui.Node) bool {
+fn overflows(node: *kete.WidgetNode) bool {
     if (node.overflow.any()) return true;
     for (node.children.items) |ch| if (overflows(ch)) return true;
     return false;
 }
 
-fn findText(n: *ui.Node, text: []const u8) ?*ui.Node {
-    if (n.widget.as(ui.Text)) |tx| if (std.mem.indexOf(u8, tx.text, text) != null) return n;
+fn findText(n: *kete.WidgetNode, text: []const u8) ?*kete.WidgetNode {
+    if (n.widget.as(kete.Text)) |tx| if (std.mem.indexOf(u8, tx.text, text) != null) return n;
     for (n.children.items) |ch| if (findText(ch, text)) |f| return f;
     return null;
 }
 
 test "the hotbar, palette, help and stats fit from the smallest window up; clicking them chooses" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
-    const u = try ui.Ui.create(testing.allocator, &f);
+    const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
     const w = try world_mod.World.create(testing.allocator);
     defer w.destroy();
@@ -484,13 +473,13 @@ test "the hotbar, palette, help and stats fit from the smallest window up; click
     try testing.expect(findText(u.root.?, "Bricks") != null);
     try testing.expect(findText(u.root.?, "fps") != null);
     try testing.expect(findText(u.root.?, "W A S D") != null);
-    // The world's view is the window below the title bar.
+    // The world's view is the whole window (kete draws the title bar outside it).
     try testing.expect(g.view_size[0] == 1920 and g.view_size[1] > 900);
 }
 
 test "the menu fits from the smallest window up, and its switches set the options" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
-    const u = try ui.Ui.create(testing.allocator, &f);
+    const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
     const w = try world_mod.World.create(testing.allocator);
     defer w.destroy();
@@ -510,23 +499,23 @@ test "the menu fits from the smallest window up, and its switches set the option
     try testing.expect(g.antialias);
     const label_node = findText(u.root.?, "Antialiasing").?;
     const at = label_node.position();
-    const p: ui.Point = .{ at[0] + 4, at[1] + 4 };
+    const p: kete.Point = .{ at[0] + 4, at[1] + 4 };
     u.pointerMotion(p);
-    u.pointerButton(p, ui.btn_left, true);
-    u.pointerButton(p, ui.btn_left, false);
+    u.pointerButton(p, .left, true);
+    u.pointerButton(p, .left, false);
     try testing.expect(!g.antialias);
     // Clicking beside it goes back to the game.
     u.frame(1920, 1036, 0, view);
-    const beside: ui.Point = .{ 20, 500 };
+    const beside: kete.Point = .{ 20, 500 };
     u.pointerMotion(beside);
-    u.pointerButton(beside, ui.btn_left, true);
-    u.pointerButton(beside, ui.btn_left, false);
+    u.pointerButton(beside, .left, true);
+    u.pointerButton(beside, .left, false);
     try testing.expect(!g.menu_open);
 }
 
 test "playing together: games nearby to join, someone asking to join, and leaving" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
-    const u = try ui.Ui.create(testing.allocator, &f);
+    const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
     const w = try world_mod.World.create(testing.allocator);
     defer w.destroy();
@@ -553,12 +542,12 @@ test "playing together: games nearby to join, someone asking to join, and leavin
     try testing.expect(findText(u.root.?, "calm-heron") != null);
     try testing.expect(findText(u.root.?, "daring-lynx") == null);
     const click = struct {
-        fn at(ui_: *ui.Ui, node: *ui.Node) void {
+        fn at(ui_: *kete.ui.WindowUi, node: *kete.WidgetNode) void {
             const pos = node.position();
-            const p: ui.Point = .{ pos[0] + 4, pos[1] + 4 };
+            const p: kete.Point = .{ pos[0] + 4, pos[1] + 4 };
             ui_.pointerMotion(p);
-            ui_.pointerButton(p, ui.btn_left, true);
-            ui_.pointerButton(p, ui.btn_left, false);
+            ui_.pointerButton(p, .left, true);
+            ui_.pointerButton(p, .left, false);
         }
     }.at;
     // The request's Allow, over the menu.
@@ -581,7 +570,7 @@ test "playing together: games nearby to join, someone asking to join, and leavin
 
 test "the top-right fullscreen button toggles fullscreen" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
-    const u = try ui.Ui.create(testing.allocator, &f);
+    const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
     const w = try world_mod.World.create(testing.allocator);
     defer w.destroy();
@@ -602,19 +591,19 @@ test "the top-right fullscreen button toggles fullscreen" {
         .on_fullscreen = .of(&toggle, Toggle.call),
     });
     const Find = struct {
-        fn first(node: *ui.Node, comptime T: type) ?*ui.Node {
+        fn first(node: *kete.WidgetNode, comptime T: type) ?*kete.WidgetNode {
             if (node.widget.is(T)) return node;
             for (node.children.items) |ch| if (first(ch, T)) |n| return n;
             return null;
         }
     };
-    const btn = Find.first(u.root.?, ui.IconButton).?;
+    const btn = Find.first(u.root.?, kete.IconButton).?;
     const at = btn.position();
     // Top right of the world view (below the title bar).
     try testing.expect(at[0] > 700 and at[1] < 100);
-    const p: ui.Point = .{ at[0] + 10, at[1] + 10 };
+    const p: kete.Point = .{ at[0] + 10, at[1] + 10 };
     u.pointerMotion(p);
-    u.pointerButton(p, ui.btn_left, true);
-    u.pointerButton(p, ui.btn_left, false);
+    u.pointerButton(p, .left, true);
+    u.pointerButton(p, .left, false);
     try testing.expect(toggle.toggled);
 }
