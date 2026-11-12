@@ -165,7 +165,9 @@ fn run(init: std.process.Init) !void {
     locale.current = locale.load().language;
     const gpa = std.heap.page_allocator;
     var host: kete_vc4.Host = undefined;
-    try host.init(gpa, init.io, init.minimal.environ, .{ .app_id = "dazzle-blocks" });
+    // A frame in flight: the next is recorded while the GPU renders this
+    // one (with a third buffer, while the GPU's memory allows).
+    try host.init(gpa, init.io, init.minimal.environ, .{ .app_id = "dazzle-blocks", .pipelined = true });
     defer host.deinit();
 
     // The world: as it was left, or a new island.
