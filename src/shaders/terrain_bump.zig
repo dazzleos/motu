@@ -120,7 +120,7 @@ const f_sun = gpu.fragmentInput(Vec3, 2);
 const f_fog = gpu.fragmentInput(f32, 3);
 const f_detail = gpu.fragmentInput(Vec3, 4);
 
-export fn fragment() callconv(.spirv_fragment) void {
+export fn fragment() callconv(.{ .spirv_fragment = .{} }) void {
     const t = gpu.texture(f_uv.*);
     const nm = gpu.texture1(f_uv.*);
     const dt = f_detail.*;

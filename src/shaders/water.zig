@@ -38,6 +38,6 @@ export fn vertex() callconv(.spirv_vertex) void {
 
 const f_color = gpu.fragmentInput(Vec4, 0);
 
-export fn fragment() callconv(.spirv_fragment) void {
+export fn fragment() callconv(.{ .spirv_fragment = .{} }) void {
     gpu.color.* = f_color.*;
 }

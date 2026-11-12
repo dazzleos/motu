@@ -151,7 +151,7 @@ pub const Game = struct {
     /// Seconds since the game started (for things that move).
     clock: f32 = 0,
     /// Keys held, by code.
-    held: std.StaticBitSet(256) = .initEmpty(),
+    held: std.StaticBitSet(256) = .empty,
     /// When Space was last pressed, if a second press now would be a
     /// double tap.
     space_at: ?f32 = null,

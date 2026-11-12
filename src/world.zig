@@ -56,7 +56,7 @@ pub const World = struct {
     light: []u8,
     seed: u32 = 0,
     /// Chunks whose look changed since they were last meshed.
-    dirty: std.StaticBitSet(chunk_count) = .initFull(),
+    dirty: std.StaticBitSet(chunk_count) = .full,
     /// Where players start: on a beach, looking inland.
     spawn: [3]f32 = .{ 64, 40, 64 },
     spawn_yaw: f32 = 0,
@@ -123,7 +123,7 @@ pub const World = struct {
             // Out of memory: light everything again, more slowly but
             // without the queue growing as much.
             w.computeLight() catch {};
-            w.dirty = .initFull();
+            w.dirty = .full;
         };
         return true;
     }
@@ -341,7 +341,7 @@ pub const World = struct {
         w.growPlants();
         w.findSpawn(heights);
         try w.computeLight();
-        w.dirty = .initFull();
+        w.dirty = .full;
     }
 
     fn growTrees(w: *World, heights: []const i32) void {
@@ -496,7 +496,7 @@ pub const World = struct {
             at += 2;
         }
         try w.computeLight();
-        w.dirty = .initFull();
+        w.dirty = .full;
         return at;
     }
 };
@@ -643,7 +643,7 @@ test "an edit marks the chunks it changes the look of" {
     const w = try World.create(testing.allocator);
     defer w.destroy();
     try w.generate(7);
-    w.dirty = .initEmpty();
+    w.dirty = .empty;
     // High in the open air: only the light right around it changes.
     try testing.expect(w.set(40, 60, 40, .stone));
     try testing.expect(w.dirty.isSet(2 * chunks_x + 2));

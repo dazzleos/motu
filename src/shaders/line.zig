@@ -18,6 +18,6 @@ export fn vertex() callconv(.spirv_vertex) void {
     gpu.position.* = m[0] * gpu.splat4(p[0]) + m[1] * gpu.splat4(p[1]) + m[2] * gpu.splat4(p[2]) + m[3];
 }
 
-export fn fragment() callconv(.spirv_fragment) void {
+export fn fragment() callconv(.{ .spirv_fragment = .{} }) void {
     gpu.color.* = u.color;
 }

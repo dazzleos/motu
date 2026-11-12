@@ -63,7 +63,7 @@ const f_ripples = gpu.fragmentInput(Vec4, 1);
 const f_half = gpu.fragmentInput(Vec4, 2);
 const f_shimmer = gpu.fragmentInput(f32, 3);
 
-export fn fragment() callconv(.spirv_fragment) void {
+export fn fragment() callconv(.{ .spirv_fragment = .{} }) void {
     const rc = f_ripples.*;
     const a = gpu.texture(.{ rc[0], rc[1] });
     const b = gpu.texture1(.{ rc[2], rc[3] });

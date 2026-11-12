@@ -65,7 +65,7 @@ export fn vertex() callconv(.spirv_vertex) void {
 const f_sun = gpu.fragmentInput(Vec3, 0);
 const f_color = gpu.fragmentInput(Vec3, 1);
 
-export fn fragment() callconv(.spirv_fragment) void {
+export fn fragment() callconv(.{ .spirv_fragment = .{} }) void {
     const ds = f_sun.*;
     const d2 = ds[0] * ds[0] + ds[1] * ds[1] + ds[2] * ds[2];
     // The sun or moon's disc and tight corona, from the scaled squared
