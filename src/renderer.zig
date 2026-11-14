@@ -205,6 +205,41 @@ pub const Environment = struct {
 
 // --- What is on the GPU -----------------------------------------------------------------
 
+/// The chunks are drawn together, a square of `region_chunks` of them
+/// across at a time (`regions`): fewer draws, each of more triangles,
+/// which the Pi Zero to Pi 3's GPU draws faster (it goes over each draw
+/// again in each 64 by 64 tile of the screen it covers).
+pub const region_chunks = 2;
+pub const region_size = world_mod.chunk_size * region_chunks;
+pub const regions_x = world_mod.chunks_x / region_chunks;
+pub const regions_z = world_mod.chunks_z / region_chunks;
+pub const region_count = regions_x * regions_z;
+
+/// The region chunk `i` is in.
+pub fn regionOf(i: usize) usize {
+    return (i / world_mod.chunks_x / region_chunks) * regions_x + (i % world_mod.chunks_x) / region_chunks;
+}
+
+/// A chunk's mesh, kept to make its region's buffer of: its sections one
+/// after another (as a region's), its solid strips' faces by the way they
+/// face.
+const ChunkMesh = struct {
+    verts: []Vertex = &.{},
+    quads: [mesher.Section.count]u32 = @splat(0),
+    face_quads: [blocks.Tile.strips][6]u32 = @splat(@splat(0)),
+    min_y: f32 = std.math.inf(f32),
+    max_y: f32 = -std.math.inf(f32),
+
+    /// Where a section starts, in quads.
+    fn start(c: ChunkMesh, s: mesher.Section) u32 {
+        var n: u32 = 0;
+        for (c.quads[0..@intFromEnum(s)]) |q| n += q;
+        return n;
+    }
+};
+
+/// What is drawn: a region's chunks' meshes in one buffer, each section's
+/// together, and of each solid strip, the faces facing each way together.
 const ChunkGpu = struct {
     bo: ?vc4.Bo = null,
     /// Quads in each of its meshes (one after another in `bo`, in the
@@ -215,6 +250,8 @@ const ChunkGpu = struct {
     /// How high its faces go, for culling.
     min_y: f32 = 0,
     max_y: f32 = 0,
+    /// One of its chunks has changed since it was made.
+    dirty: bool = false,
 
     /// Where a mesh starts in its buffer.
     fn offset(c: ChunkGpu, s: mesher.Section) u32 {
@@ -228,7 +265,7 @@ const ChunkGpu = struct {
     /// front of it, so of the faces of a chunk the eye is east of, none
     /// facing west are.
     fn facing(c: ChunkGpu, strip: usize, corner: V3, eye: V3, runs: *[3][2]u32) []const [2]u32 {
-        const size: f32 = world_mod.chunk_size;
+        const size: f32 = region_size;
         // A little room for leaves swaying.
         const m = 0.25;
         var n: usize = 0;
@@ -324,7 +361,8 @@ pub fn Renderer(comptime Device: type) type {
         creatures_frame: u1 = 0,
         creatures: creatures.Creatures = .{},
         world: ?*const World = null,
-        chunks: [world_mod.chunk_count]ChunkGpu = @splat(.{}),
+        chunks: [world_mod.chunk_count]ChunkMesh = @splat(.{}),
+        regions: [region_count]ChunkGpu = @splat(.{}),
         mesh: mesher.Mesh = .{},
         stats: Stats = .{},
 
@@ -453,7 +491,8 @@ pub fn Renderer(comptime Device: type) type {
         }
 
         pub fn deinit(r: *Self) void {
-            for (&r.chunks) |*c| if (c.bo) |bo| r.dev.destroyBo(bo);
+            for (&r.chunks) |*c| r.gpa.free(c.verts);
+            for (&r.regions) |*g| if (g.bo) |bo| r.dev.destroyBo(bo);
             for ([_][blocks.Tile.strips]vc4.Bo{ r.strips, r.albedo, r.normals }) |set| for (set) |bo| r.dev.destroyBo(bo);
             for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.detail, r.ripples, r.creatures_bo[0], r.creatures_bo[1] }) |bo| r.dev.destroyBo(bo);
             r.terrain.deinit(r.dev);
@@ -493,6 +532,9 @@ pub fn Renderer(comptime Device: type) type {
                     return err;
                 };
             }
+            // The regions of those meshed, made again (one without memory
+            // for it is shown as it was, and made again later).
+            for (&r.regions, 0..) |*g, ri| if (g.dirty) try r.makeRegion(ri);
             return w.dirty.count();
         }
 
@@ -500,38 +542,76 @@ pub fn Renderer(comptime Device: type) type {
             const cx = i % world_mod.chunks_x;
             const cz = i / world_mod.chunks_x;
             try mesher.build(r.gpa, w, cx, cz, &r.mesh);
-            const c = &r.chunks[i];
             const m = &r.mesh;
-            const total = m.quads() * 4;
-            // A new buffer (the old one may still be in a frame the GPU is
-            // drawing: it keeps it until then), made before the old one
-            // goes, which stays if there is no memory for it.
-            const bo = if (total == 0) null else try r.dev.createBo(@intCast(total * @sizeOf(Vertex)));
-            if (c.bo) |old| r.dev.destroyBo(old);
-            c.* = .{};
-            const new = bo orelse return;
+            const verts = try r.gpa.alloc(Vertex, m.quads() * 4);
+            var c: ChunkMesh = .{ .verts = verts, .face_quads = m.face_quads };
             var at: usize = 0;
-            var min_y: f32 = std.math.inf(f32);
-            var max_y: f32 = -std.math.inf(f32);
-            var quads: [mesher.Section.count]u32 = undefined;
-            for (m.lists, &quads) |l, *q| {
+            for (m.lists, &c.quads) |l, *q| {
                 const list = l.items;
                 q.* = @intCast(list.len / 4);
-                @memcpy(new.map[at..][0 .. list.len * @sizeOf(Vertex)], std.mem.sliceAsBytes(list));
-                at += list.len * @sizeOf(Vertex);
+                @memcpy(verts[at..][0..list.len], list);
+                at += list.len;
                 for (list) |v| {
-                    min_y = @min(min_y, v.pos[1]);
-                    max_y = @max(max_y, v.pos[1]);
+                    c.min_y = @min(c.min_y, v.pos[1]);
+                    c.max_y = @max(c.max_y, v.pos[1]);
                 }
             }
-            c.* = .{
-                .bo = new,
-                .quads = quads,
-                .face_quads = m.face_quads,
-                // Room for swaying and waves.
-                .min_y = min_y - 0.5,
-                .max_y = max_y + 0.5,
+            r.gpa.free(r.chunks[i].verts);
+            r.chunks[i] = c;
+            r.regions[regionOf(i)].dirty = true;
+        }
+
+        /// Makes region `ri`'s buffer from its chunks' meshes: a new one
+        /// (the old one may still be in a frame the GPU is drawing: it keeps
+        /// it until then), made before the old one goes, which stays if
+        /// there is no memory for it.
+        fn makeRegion(r: *Self, ri: usize) !void {
+            const rx = ri % regions_x;
+            const rz = ri / regions_x;
+            var members: [region_chunks * region_chunks]*const ChunkMesh = undefined;
+            for (0..region_chunks) |dz| for (0..region_chunks) |dx| {
+                members[dz * region_chunks + dx] = &r.chunks[(rz * region_chunks + dz) * world_mod.chunks_x + rx * region_chunks + dx];
             };
+            var g: ChunkGpu = .{ .min_y = std.math.inf(f32), .max_y = -std.math.inf(f32) };
+            for (members) |c| {
+                for (&g.quads, c.quads) |*q, n| q.* += n;
+                for (&g.face_quads, c.face_quads) |*gs, cs| for (gs, cs) |*q, n| {
+                    q.* += n;
+                };
+                g.min_y = @min(g.min_y, c.min_y);
+                g.max_y = @max(g.max_y, c.max_y);
+            }
+            var total: u32 = 0;
+            for (g.quads) |q| total += q;
+            const bo = if (total == 0) null else try r.dev.createBo(total * 4 * @sizeOf(Vertex));
+            if (r.regions[ri].bo) |old| r.dev.destroyBo(old);
+            r.regions[ri] = .{};
+            const new = bo orelse return;
+            const out = std.mem.bytesAsSlice(Vertex, new.map[0 .. total * 4 * @sizeOf(Vertex)]);
+            var at: usize = 0;
+            for (0..mesher.Section.count) |si| {
+                const sec: mesher.Section = @enumFromInt(si);
+                if (si < blocks.Tile.strips) {
+                    // A solid strip: by the way its faces face, each across
+                    // the chunks.
+                    for (0..6) |face| for (members) |c| {
+                        var first = c.start(sec);
+                        for (c.face_quads[si][0..face]) |q| first += q;
+                        const n = c.face_quads[si][face] * 4;
+                        @memcpy(out[at..][0..n], c.verts[first * 4 ..][0..n]);
+                        at += n;
+                    };
+                } else for (members) |c| {
+                    const n = c.quads[si] * 4;
+                    @memcpy(out[at..][0..n], c.verts[c.start(sec) * 4 ..][0..n]);
+                    at += n;
+                }
+            }
+            g.bo = new;
+            // Room for swaying and waves.
+            g.min_y -= 0.5;
+            g.max_y += 0.5;
+            r.regions[ri] = g;
         }
 
         /// Records the scene into `sink` (a `FrameSink`, or the preview's),
@@ -563,17 +643,16 @@ pub fn Renderer(comptime Device: type) type {
             r.water.setUniforms(bytes);
             r.water_ripples.setUniforms(bytes);
 
-            // The chunks in view, nearest first.
+            // The regions in view, nearest first.
             const frustum = math.Frustum.of(vp);
-            var order: [world_mod.chunk_count]struct { i: u8, d: f32 } = undefined;
+            var order: [region_count]struct { i: u8, d: f32 } = undefined;
             var n: usize = 0;
-            for (r.chunks, 0..) |c, i| {
+            for (r.regions, 0..) |c, i| {
                 if (c.bo == null) continue;
-                const cx: f32 = @floatFromInt(i % world_mod.chunks_x * world_mod.chunk_size);
-                const cz: f32 = @floatFromInt(i / world_mod.chunks_x * world_mod.chunk_size);
-                const d = chunkDistance(i, cam.eye);
+                const corner = regionCorner(i);
+                const d = regionDistance(i, cam.eye);
                 if (d > depth + start + 12) continue;
-                if (!frustum.sees(.{ cx, c.min_y, cz }, .{ cx + world_mod.chunk_size, c.max_y, cz + world_mod.chunk_size })) continue;
+                if (!frustum.sees(.{ corner[0], c.min_y, corner[2] }, .{ corner[0] + region_size, c.max_y, corner[2] + region_size })) continue;
                 order[n] = .{ .i = @intCast(i), .d = d };
                 n += 1;
             }
@@ -583,7 +662,8 @@ pub fn Renderer(comptime Device: type) type {
                     return a.d < b.d;
                 }
             }.less);
-            r.stats.chunks = @intCast(n);
+            // The chunks in them.
+            r.stats.chunks = @intCast(n * region_chunks * region_chunks);
             var tex: [blocks.Tile.strips]vc4.render.Texture = undefined;
             for (&tex, r.strips) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
             var plain: [blocks.Tile.strips]vc4.render.Texture = undefined;
@@ -595,8 +675,8 @@ pub fn Renderer(comptime Device: type) type {
 
             // 1. Solid blocks, near to far.
             for (visible) |o| {
-                const c = r.chunks[o.i];
-                const corner = chunkCorner(o.i);
+                const c = r.regions[o.i];
+                const corner = regionCorner(o.i);
                 const near = o.d < near_distance;
                 for (0..blocks.Tile.strips) |k| {
                     const sec = mesher.Section.solid(@intCast(k));
@@ -697,14 +777,14 @@ pub fn Renderer(comptime Device: type) type {
             var k = visible.len;
             while (k > 0) {
                 k -= 1;
-                const c = r.chunks[visible[k].i];
+                const c = r.regions[visible[k].i];
                 try target.quads(water, c.bo.?.handle, c.offset(.water), c.quads[@intFromEnum(mesher.Section.water)], ripple_tex);
             }
             // 4. Glass and plants, far to near.
             k = visible.len;
             while (k > 0) {
                 k -= 1;
-                const c = r.chunks[visible[k].i];
+                const c = r.regions[visible[k].i];
                 for (0..blocks.Tile.strips) |sk| {
                     const sec = mesher.Section.clear(@intCast(sk));
                     try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], .{ tex[sk], null, null });
@@ -850,6 +930,24 @@ fn chunkCorner(i: usize) V3 {
         0,
         @floatFromInt(i / world_mod.chunks_x * world_mod.chunk_size),
     };
+}
+
+/// A region's corner nearest the origin (at y = 0).
+fn regionCorner(ri: usize) V3 {
+    return .{
+        @floatFromInt(ri % regions_x * region_size),
+        0,
+        @floatFromInt(ri / regions_x * region_size),
+    };
+}
+
+/// How far `p` is from a region, across.
+fn regionDistance(ri: usize, p: V3) f32 {
+    const corner = regionCorner(ri);
+    const half: f32 = region_size / 2;
+    const dx = @max(@abs(p[0] - (corner[0] + half)) - half, 0);
+    const dz = @max(@abs(p[2] - (corner[2] + half)) - half, 0);
+    return @sqrt(dx * dx + dz * dz);
 }
 
 fn chunkDistance(i: usize, p: V3) f32 {
@@ -1075,27 +1173,32 @@ test "the whole island in view fits one frame, the near chunks first" {
     // Everything drawn: room to spare for the UI over it.
     try testing.expect(frame.hasRoom(4096));
     try testing.expect(r.stats.triangles > 40000);
+    // Drawn a region at a time: at most a draw for each strip's faces
+    // facing the eye (in up to three runs), and its water and glass.
+    try testing.expect(r.stats.draws < 100);
     // Meshing a changed chunk again replaces its buffer.
     const before = state.bos.count();
     _ = w.set(64, 50, 64, .gold);
     _ = try r.update(w, w.spawn, 1000);
     try testing.expectEqual(before, state.bos.count());
 
-    // No memory for its new buffer: it is shown as it was, and meshed
-    // again when there is.
+    // No memory for its region's new buffer: it is shown as it was, and
+    // made again when there is.
     _ = w.set(64, 50, 64, .stone);
     const i = for (0..world_mod.chunk_count) |c| {
         if (w.dirty.isSet(c)) break c;
     } else unreachable;
-    const old = r.chunks[i].bo.?.handle;
+    const ri = regionOf(i);
+    const old = r.regions[ri].bo.?.handle;
     state.full = true;
     try testing.expectError(error.OutOfMemory, r.update(w, w.spawn, 1000));
-    try testing.expectEqual(old, r.chunks[i].bo.?.handle);
+    try testing.expectEqual(old, r.regions[ri].bo.?.handle);
     try testing.expect(state.bos.contains(old));
-    try testing.expect(w.dirty.isSet(i));
+    try testing.expect(r.regions[ri].dirty);
     state.full = false;
     try testing.expectEqual(@as(usize, 0), try r.update(w, w.spawn, 1000));
-    try testing.expect(r.chunks[i].bo.?.handle != old);
+    try testing.expect(r.regions[ri].bo.?.handle != old);
+    try testing.expect(!r.regions[ri].dirty);
     try testing.expectEqual(before, state.bos.count());
 }
 
