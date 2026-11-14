@@ -23,6 +23,7 @@ const game_mod = @import("game.zig");
 const renderer_mod = @import("renderer.zig");
 const view = @import("view.zig");
 const net = @import("net.zig");
+const options = @import("options.zig");
 
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(vc4.Device);
@@ -300,6 +301,11 @@ fn run(init: std.process.Init) !void {
         game = game_mod.Game.init(gpa, world);
         print("dazzle-blocks: made an island in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
     };
+    // The options as chosen, or as suit the GPU (the Pi 4's and 5's draws
+    // them fast enough; the older one's does not).
+    var kept = options.effective(options.load(), host.dev.is_v3d);
+    game.antialias = kept.antialias;
+    game.bump = kept.bump;
     const renderer = try Renderer.init(gpa, host.dev);
     var trouble: Trouble = .{};
     {
@@ -413,6 +419,11 @@ fn run(init: std.process.Init) !void {
             save(gpa, &game);
             last_save = now;
         }
+        // Changed in the menu: kept.
+        if (game.antialias != kept.antialias or game.bump != kept.bump) {
+            kept = .{ .antialias = game.antialias, .bump = game.bump };
+            options.save(.{ .antialias = kept.antialias, .bump = kept.bump });
+        }
         // Antialiased: 4x multisampled (see vc4.render.Frame).
         host.renderer.multisampled = game.antialias;
         const stats = host.renderer.takeStats();
@@ -448,4 +459,5 @@ test {
     _ = @import("game.zig");
     _ = @import("view.zig");
     _ = @import("net.zig");
+    _ = @import("options.zig");
 }
