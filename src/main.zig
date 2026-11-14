@@ -24,6 +24,7 @@ const renderer_mod = @import("renderer.zig");
 const view = @import("view.zig");
 const net = @import("net.zig");
 const options = @import("options.zig");
+const upscale = @import("upscale.zig");
 
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(vc4.Device);
@@ -46,13 +47,22 @@ pub fn main(init: std.process.Init) u8 {
 const Scene = struct {
     game: *game_mod.Game,
     renderer: *Renderer,
+    /// For drawing the world smaller (if it could be made), and how much.
+    upscaler: ?*upscale.Upscaler = null,
+    scale: upscale.Scale = .{},
+    /// `app.window.gpu_waited_ns` at the last frame.
+    waited_ns: u64 = 0,
 
     fn draw(ctx: *anyopaque, f: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void {
         const s: *Scene = @ptrCast(@alignCast(ctx));
         const g = s.game;
         const vp = kete_vc4.renderer.viewport(area.viewport);
         const scissor = if (area.scissor) |sc| kete_vc4.renderer.viewport(sc) else null;
-        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, scissor, .{
+        // How big to draw it, from how the last frames went.
+        const waited = app.window.gpu_waited_ns -% s.waited_ns;
+        s.waited_ns = app.window.gpu_waited_ns;
+        _ = s.scale.frame(sys.nowNs(), waited);
+        const seen: renderer_mod.View = .{
             .camera = g.camera(),
             .aspect = @as(f32, @floatFromInt(vp.width)) / @as(f32, @floatFromInt(@max(vp.height, 1))),
             .time = g.clock,
@@ -61,7 +71,18 @@ const Scene = struct {
             .bump = g.bump,
             .outline = if (g.target) |t| t.cell else null,
             .avatars = g.net.others,
-        });
+        };
+        // Smaller, into an image stretched over the view.
+        if (s.upscaler) |up| if (s.scale.k < 1) {
+            const full = [2]u32{ vp.width, vp.height };
+            const size = s.scale.of(full);
+            if (up.begin(full, size, g.antialias)) |image| {
+                try s.renderer.draw(renderer_mod.FrameSink{ .frame = image }, .{ .x = 0, .y = 0, .width = @intCast(size[0]), .height = @intCast(size[1]) }, null, seen);
+                try up.finish(f, size, vp, scissor);
+                return;
+            }
+        };
+        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, scissor, seen);
     }
 };
 
@@ -122,7 +143,7 @@ const Timing = struct {
     waited_ns: u64,
     gpu: GpuTime,
 
-    fn report(t: *const Timing, fd: linux.fd_t, elapsed_ns: u64, antialias: bool, bump: bool) void {
+    fn report(t: *const Timing, fd: linux.fd_t, elapsed_ns: u64, antialias: bool, bump: bool, scale: f32) void {
         const n: f64 = @floatFromInt(@max(t.frames, 1));
         const ms = struct {
             fn per(ns: u64, frames: f64) f64 {
@@ -139,9 +160,10 @@ const Timing = struct {
             }) catch "GPU time not known"
         else
             "GPU time not known";
-        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels{s}{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
+        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels, the world at {d:.0}%{s}{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
             gpu_text,
             t.pixels / n / 1e6,
+            scale * 100,
             if (antialias) ", antialiased" else "",
             if (bump) ", bump mapped" else "",
             ms(t.step_ns, n),
@@ -315,7 +337,13 @@ fn run(init: std.process.Init) !void {
         mesh(renderer, world, game.player.eye(), 12, &trouble);
         print("dazzle-blocks: meshed the nearest chunks in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
     }
-    var scene: Scene = .{ .game = &game, .renderer = renderer };
+    // For drawing the world smaller when the GPU cannot keep up.
+    var upscaler: ?upscale.Upscaler = upscale.Upscaler.init(gpa, host.dev) catch |err| blk: {
+        print(sys.log_warning ++ "dazzle-blocks: the world is always drawn whole ({s})\n", .{@errorName(err)});
+        break :blk null;
+    };
+    defer if (upscaler) |*u| u.deinit();
+    var scene: Scene = .{ .game = &game, .renderer = renderer, .upscaler = if (upscaler) |*u| u else null };
     const icons = try gpa.create(view.Icons);
     icons.init();
 
@@ -439,7 +467,7 @@ fn run(init: std.process.Init) !void {
         if (now - log_since >= 10 * std.time.ns_per_s) {
             const s = renderer.stats;
             print("dazzle-blocks: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
-            timing.report(host.dev.fd, now - log_since, game.antialias, game.bump);
+            timing.report(host.dev.fd, now - log_since, game.antialias, game.bump, scene.scale.k);
             timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
             log_since = now;
         }
@@ -460,4 +488,5 @@ test {
     _ = @import("view.zig");
     _ = @import("net.zig");
     _ = @import("options.zig");
+    _ = @import("upscale.zig");
 }
