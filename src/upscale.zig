@@ -35,7 +35,7 @@ pub const Upscaler = struct {
     perfmon: ?u32 = null,
 
     /// What is counted in the world's images while measuring.
-    pub const counted = [_]vc4.device.PerfCounter{
+    pub const counted: [vc4.device.max_counters]vc4.device.PerfCounter = .{
         .fep_valid_prims_render,
         .fep_valid_quads,
         .tlb_quads_written_to_color_buf,
@@ -48,7 +48,6 @@ pub const Upscaler = struct {
         .qpu_waiting_varyings_cycles,
         .tmu_texture_quads,
         .tmu_texture_cache_misses,
-        .l2_cache_misses,
         .qpu_inst_cache_misses,
         .qpu_uniform_cache_hits,
         .qpu_uniform_cache_misses,
