@@ -129,15 +129,15 @@ const Input = struct {
     game: *game_mod.Game,
     win: ?*app.Window = null,
 
-    fn filter(in: *Input, e: app.InputEvent) bool {
+    fn filter(in: *Input, e: kete.window.InputEvent) bool {
         const game = in.game;
         switch (e) {
             .key => |k| {
-                game.key(k.code, k.pressed);
+                game.key(k.key, k.pressed);
                 return true;
             },
             .button => |b| if (game.captured) {
-                game.mouseButton(b.code, b.pressed);
+                game.mouseButton(b.button, b.pressed);
                 return true;
             },
             .scroll => |sc| if (game.captured) {
@@ -203,7 +203,6 @@ fn run(init: std.process.Init) !void {
     var fps: f32 = 0;
     const root: Root = .{ .game = &game, .icons = icons, .scene = &scene, .fps = &fps };
     var input: Input = .{ .game = &game };
-    host.display.input_filter = .of(&input, Input.filter);
     const window = try host.app.openWindow(.{
         .title = "Blocks",
         .root = .of(&root),
@@ -211,6 +210,7 @@ fn run(init: std.process.Init) !void {
         .min_size = view.min_size,
         .clear_color = 0xff000000,
         .on_close_request = .close,
+        .on_input = .of(&input, Input.filter),
     });
     const win = &host.display.window.?;
     input.win = win.win;
