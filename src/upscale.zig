@@ -69,8 +69,9 @@ pub const Upscaler = struct {
 
     /// Sends the image's frame to the GPU, and draws the image over
     /// `viewport` of `frame` (the window's), clipped to `scissor`.
-    pub fn finish(u: *Upscaler, frame: *render.Frame, size: [2]u32, viewport: render.Viewport, scissor: ?render.Viewport) !void {
-        _ = try u.dev.submit(image_frame.finish());
+    /// Returns the image's job (to wait for, to time it).
+    pub fn finish(u: *Upscaler, frame: *render.Frame, size: [2]u32, viewport: render.Viewport, scissor: ?render.Viewport) !u64 {
+        const seqno = try u.dev.submit(image_frame.finish());
         const target = targetOf(u.image.?, size);
         try u.pipeline.draw(frame, .{
             .vertices = u.quad.handle,
@@ -87,6 +88,7 @@ pub const Upscaler = struct {
                 .wrap_t = .clamp,
             } },
         });
+        return seqno;
     }
 
     fn targetOf(bo: vc4.Bo, size: [2]u32) render.Target {

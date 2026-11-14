@@ -52,6 +52,10 @@ const Scene = struct {
     scale: upscale.Scale = .{},
     /// `app.window.gpu_waited_ns` at the last frame.
     waited_ns: u64 = 0,
+    /// While "what is drawn" shows: the GPU's time on the world's images,
+    /// waited for (see `Timing`).
+    world_ns: u64 = 0,
+    world_frames: u32 = 0,
 
     fn draw(ctx: *anyopaque, f: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void {
         const s: *Scene = @ptrCast(@alignCast(ctx));
@@ -78,7 +82,15 @@ const Scene = struct {
             const size = s.scale.of(full);
             if (up.begin(full, size, g.antialias)) |image| {
                 try s.renderer.draw(renderer_mod.FrameSink{ .frame = image }, .{ .x = 0, .y = 0, .width = @intCast(size[0]), .height = @intCast(size[1]) }, null, seen);
-                try up.finish(f, size, vp, scissor);
+                const submitted = sys.nowNs();
+                const seqno = try up.finish(f, size, vp, scissor);
+                // Measuring: its time on the GPU, waited for (the GPU has
+                // nothing else then, its frames not overlapping).
+                if (g.stats) {
+                    try up.dev.waitSeqno(seqno, 10 * std.time.ns_per_s);
+                    s.world_ns += sys.nowNs() - submitted;
+                    s.world_frames += 1;
+                }
                 return;
             }
         };
@@ -138,6 +150,9 @@ const Timing = struct {
     tick_ns: u64 = 0,
     mesh_ns: u64 = 0,
     record_ns: u64 = 0,
+    /// From handing the window's frames to the GPU to their being drawn:
+    /// their GPU time when they are not overlapped (while measuring).
+    window_gpu_ns: u64 = 0,
     pixels: f64 = 0,
     /// `app.window.gpu_waited_ns`, and the GPU's time, as they were.
     waited_ns: u64,
@@ -375,6 +390,7 @@ fn run(init: std.process.Init) !void {
     var frames: u32 = 0;
     var fps_since = last;
     var log_since = last;
+    var measuring = false;
     // Where the frames' time goes, said with the frame rate.
     var timing: Timing = .{ .gpu = .read(host.dev.fd), .waited_ns = app.window.gpu_waited_ns };
     while (true) {
@@ -452,12 +468,25 @@ fn run(init: std.process.Init) !void {
             kept = .{ .antialias = game.antialias, .bump = game.bump };
             options.save(.{ .antialias = kept.antialias, .bump = kept.bump });
         }
+        // While "what is drawn" shows, the GPU's time on each part is
+        // measured: the frames are drawn one at a time, each waited for.
+        if (game.stats != measuring) {
+            measuring = game.stats;
+            if (measuring) {
+                win.win.setPipelined(false) catch {};
+                _ = host.renderer.setPipelined(false);
+            } else {
+                _ = host.renderer.setPipelined(true);
+                win.win.setPipelined(true) catch {};
+            }
+        }
         // Antialiased: 4x multisampled (see vc4.render.Frame).
         host.renderer.multisampled = game.antialias;
         const stats = host.renderer.takeStats();
         frames += stats.frames;
         timing.frames += stats.frames;
         timing.record_ns += stats.cpu_ns;
+        timing.window_gpu_ns += stats.gpu_ns;
         timing.pixels += stats.pixels;
         if (now - fps_since >= std.time.ns_per_s) {
             fps = @as(f32, @floatFromInt(frames)) / (@as(f32, @floatFromInt(now - fps_since)) / std.time.ns_per_s);
@@ -468,6 +497,18 @@ fn run(init: std.process.Init) !void {
             const s = renderer.stats;
             print("dazzle-blocks: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
             timing.report(host.dev.fd, now - log_since, game.antialias, game.bump, scene.scale.k);
+            if (measuring) {
+                const n: f64 = @floatFromInt(@max(timing.frames, 1));
+                const wn: f64 = @floatFromInt(@max(scene.world_frames, 1));
+                print("dazzle-blocks: measured on the GPU, per frame: the world's image {d:.1} ms ({d} of {d} frames), the window's frame {d:.1} ms\n", .{
+                    @as(f64, @floatFromInt(scene.world_ns)) / std.time.ns_per_ms / wn,
+                    scene.world_frames,
+                    timing.frames,
+                    @as(f64, @floatFromInt(timing.window_gpu_ns)) / std.time.ns_per_ms / n,
+                });
+            }
+            scene.world_ns = 0;
+            scene.world_frames = 0;
             timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
             log_since = now;
         }
