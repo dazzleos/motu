@@ -104,6 +104,93 @@ fn save(gpa: std.mem.Allocator, g: *game_mod.Game) void {
     print("dazzle-blocks: saved ({d} KB)\n", .{out.items.len / 1024});
 }
 
+/// Where the frames' time goes, since it was last said: each part of
+/// the loop, recording the frames' draws, waiting for the GPU, and the
+/// GPU's own time on them (its two stages: binning, which sorts the
+/// triangles into the screen's tiles, and rendering the tiles).
+const Timing = struct {
+    frames: u32 = 0,
+    /// The UI's step (building, recording and handing over the frame, and
+    /// waiting for the shell to take one), the game's tick, and meshing.
+    step_ns: u64 = 0,
+    tick_ns: u64 = 0,
+    mesh_ns: u64 = 0,
+    record_ns: u64 = 0,
+    pixels: f64 = 0,
+    /// `app.window.gpu_waited_ns`, and the GPU's time, as they were.
+    waited_ns: u64,
+    gpu: GpuTime,
+
+    fn report(t: *const Timing, fd: linux.fd_t, elapsed_ns: u64, antialias: bool, bump: bool) void {
+        const n: f64 = @floatFromInt(@max(t.frames, 1));
+        const ms = struct {
+            fn per(ns: u64, frames: f64) f64 {
+                return @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms / frames;
+            }
+        }.per;
+        const gpu_now = GpuTime.read(fd);
+        var gpu_buf: [96]u8 = undefined;
+        const gpu_text = if (gpu_now.known and t.gpu.known)
+            std.fmt.bufPrint(&gpu_buf, "GPU binning {d:.1} ms, rendering {d:.1} ms ({d:.0}% busy)", .{
+                ms(gpu_now.bin_ns -| t.gpu.bin_ns, n),
+                ms(gpu_now.render_ns -| t.gpu.render_ns, n),
+                100 * @as(f64, @floatFromInt(@max(gpu_now.bin_ns -| t.gpu.bin_ns, gpu_now.render_ns -| t.gpu.render_ns))) / @as(f64, @floatFromInt(@max(elapsed_ns, 1))),
+            }) catch "GPU time not known"
+        else
+            "GPU time not known";
+        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels{s}{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
+            gpu_text,
+            t.pixels / n / 1e6,
+            if (antialias) ", antialiased" else "",
+            if (bump) ", bump mapped" else "",
+            ms(t.step_ns, n),
+            ms(t.record_ns, n),
+            ms(app.window.gpu_waited_ns -% t.waited_ns, n),
+            ms(t.tick_ns, n),
+            ms(t.mesh_ns, n),
+        });
+    }
+};
+
+/// The GPU's time on this process's work, from the kernel's counters for
+/// its GPU file (/proc/self/fdinfo): binning and rendering.
+const GpuTime = struct {
+    bin_ns: u64 = 0,
+    render_ns: u64 = 0,
+    known: bool = false,
+
+    fn read(fd: linux.fd_t) GpuTime {
+        var path_buf: [48]u8 = undefined;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "/proc/self/fdinfo/{d}", .{fd}, 0) catch return .{};
+        var buf: [1024]u8 = undefined;
+        return parse(sys.readFile(path, &buf) orelse return .{});
+    }
+
+    fn parse(text: []const u8) GpuTime {
+        var t: GpuTime = .{};
+        var lines = std.mem.tokenizeScalar(u8, text, '\n');
+        while (lines.next()) |line| {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const key = std.mem.trim(u8, line[0..colon], " \t");
+            const field: *u64 = if (std.mem.eql(u8, key, "drm-engine-bin")) &t.bin_ns else if (std.mem.eql(u8, key, "drm-engine-render")) &t.render_ns else continue;
+            var toks = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t");
+            const num = toks.next() orelse continue;
+            if (!std.mem.eql(u8, toks.next() orelse "", "ns")) continue;
+            field.* = std.fmt.parseInt(u64, num, 10) catch continue;
+            t.known = true;
+        }
+        return t;
+    }
+};
+
+test "the GPU's time is read from the kernel's counters for its file" {
+    const t = GpuTime.parse("pos:\t0\nflags:\t02100002\ndrm-driver:\tvc4\ndrm-client-id:\t7\ndrm-engine-bin:\t123456 ns\ndrm-engine-render:\t7654321 ns\n");
+    try std.testing.expect(t.known);
+    try std.testing.expectEqual(@as(u64, 123456), t.bin_ns);
+    try std.testing.expectEqual(@as(u64, 7654321), t.render_ns);
+    try std.testing.expect(!GpuTime.parse("drm-driver:\tvc4\n").known);
+}
+
 /// Errors Blocks goes on from (the frame or the meshes are made again
 /// later), said in the log: each kind once, and then at most every few
 /// seconds, so one that keeps happening does not fill it.
@@ -254,10 +341,13 @@ fn run(init: std.process.Init) !void {
     var frames: u32 = 0;
     var fps_since = last;
     var log_since = last;
+    // Where the frames' time goes, said with the frame rate.
+    var timing: Timing = .{ .gpu = .read(host.dev.fd), .waited_ns = app.window.gpu_waited_ns };
     while (true) {
         // While shown, a frame as often as the shell takes them; covered,
         // nothing to do but wait.
         if (!window.suspended) host.redraw();
+        const step_started = sys.nowNs();
         const going = host.step(std.time.ns_per_s) catch |err| blk: {
             // The shell is gone: nothing more can be shown. The island is
             // kept first.
@@ -271,6 +361,7 @@ fn run(init: std.process.Init) !void {
             sys.sleepMs(50);
             break :blk true;
         };
+        timing.step_ns += sys.nowNs() - step_started;
         if (!going) {
             if (game.wantsSave()) save(gpa, &game);
             return;
@@ -310,17 +401,25 @@ fn run(init: std.process.Init) !void {
             .denied => game.say("They said no"),
             .failed => game.say("Cannot reach that game"),
         };
+        const tick_started = sys.nowNs();
         game.tick(dt);
+        const mesh_started = sys.nowNs();
         // What changed, meshed again (a few chunks a frame, so a big change
         // does not stall a frame).
         mesh(renderer, world, game.player.eye(), 3, &trouble);
+        timing.tick_ns += mesh_started - tick_started;
+        timing.mesh_ns += sys.nowNs() - mesh_started;
         if (game.wantsSave() and now - last_save > save_every * std.time.ns_per_s) {
             save(gpa, &game);
             last_save = now;
         }
         // Antialiased: 4x multisampled (see vc4.render.Frame).
         host.renderer.multisampled = game.antialias;
-        frames += host.renderer.takeStats().frames;
+        const stats = host.renderer.takeStats();
+        frames += stats.frames;
+        timing.frames += stats.frames;
+        timing.record_ns += stats.cpu_ns;
+        timing.pixels += stats.pixels;
         if (now - fps_since >= std.time.ns_per_s) {
             fps = @as(f32, @floatFromInt(frames)) / (@as(f32, @floatFromInt(now - fps_since)) / std.time.ns_per_s);
             frames = 0;
@@ -329,6 +428,8 @@ fn run(init: std.process.Init) !void {
         if (now - log_since >= 10 * std.time.ns_per_s) {
             const s = renderer.stats;
             print("dazzle-blocks: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
+            timing.report(host.dev.fd, now - log_since, game.antialias, game.bump);
+            timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
             log_since = now;
         }
     }
