@@ -135,6 +135,8 @@ const Timing = struct {
     /// their GPU time when they are not overlapped (while measuring).
     window_gpu_ns: u64 = 0,
     pixels: f64 = 0,
+    /// Frames that drew the widgets' layer again.
+    layers: u32 = 0,
     /// `app.window.gpu_waited_ns`, and the GPU's time, as they were.
     waited_ns: u64,
     gpu: GpuTime,
@@ -156,10 +158,11 @@ const Timing = struct {
             }) catch "GPU time not known"
         else
             "GPU time not known";
-        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels (drawn at {d:.0}%), seen {d:.0} blocks away{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
+        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels (drawn at {d:.0}%, widgets redrawn in {d:.0}%), seen {d:.0} blocks away{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
             gpu_text,
             t.pixels / n / 1e6,
             quality * 100,
+            100 * @as(f64, @floatFromInt(t.layers)) / n,
             renderer_mod.view_distance * reach,
             if (bump) ", bump mapped" else "",
             ms(t.step_ns, n),
@@ -552,6 +555,7 @@ fn run(init: std.process.Init) !void {
         timing.record_ns += stats.cpu_ns;
         timing.window_gpu_ns += stats.gpu_ns;
         timing.pixels += stats.pixels;
+        timing.layers += stats.layers;
         if (now - fps_since >= std.time.ns_per_s) {
             fps = @as(f32, @floatFromInt(frames)) / (@as(f32, @floatFromInt(now - fps_since)) / std.time.ns_per_s);
             frames = 0;
