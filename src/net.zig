@@ -19,6 +19,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 const sys = @import("sys");
+const evdev = sys.evdev;
 const game_mod = @import("game.zig");
 const world_mod = @import("world.zig");
 const blocks = @import("blocks.zig");
@@ -843,8 +844,8 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
     try testing.expectEqualStrings("host-pi", pair.gb.net.status.asking);
 
     // Y: let in, with the host's world.
-    pair.ga.key(game_mod.keys.y, true);
-    pair.ga.key(game_mod.keys.y, false);
+    pair.ga.key(evdev.key_y, true);
+    pair.ga.key(evdev.key_y, false);
     const joined = try pair.until(struct {
         fn f(p: *Pair) bool {
             return p.gb.net.status == .joined and p.gb.net.others.len == 1 and p.ga.net.others.len == 1;
@@ -900,7 +901,7 @@ test "a host can say no" {
         }
     }.f);
     // N.
-    pair.ga.key(game_mod.keys.n, true);
+    pair.ga.key(evdev.key_n, true);
     const denied = try pair.until(struct {
         fn f(p: *Pair) bool {
             return p.gb.net.status == .alone;

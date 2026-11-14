@@ -28,6 +28,7 @@
 //! the others when playing together (see net.zig, and `Net`).
 
 const std = @import("std");
+const evdev = @import("sys").evdev;
 const blocks = @import("blocks.zig");
 const world_mod = @import("world.zig");
 const player_mod = @import("player.zig");
@@ -37,34 +38,6 @@ const Block = blocks.Block;
 const World = world_mod.World;
 const Player = player_mod.Player;
 const V3 = math.V3;
-
-/// Linux key codes (the keys' places, whatever the layout).
-pub const keys = struct {
-    pub const esc = 1;
-    pub const digit_1 = 2;
-    pub const digit_9 = 10;
-    pub const w = 17;
-    pub const e = 18;
-    pub const y = 21;
-    pub const n = 49;
-    pub const left_ctrl = 29;
-    pub const a = 30;
-    pub const s = 31;
-    pub const d = 32;
-    pub const left_shift = 42;
-    pub const right_shift = 54;
-    pub const space = 57;
-    pub const right_ctrl = 97;
-    pub const up = 103;
-    pub const left = 105;
-    pub const right = 106;
-    pub const down = 108;
-};
-
-/// Mouse buttons (Linux button codes).
-const btn_left = 0x110;
-const btn_right = 0x111;
-const btn_middle = 0x112;
 
 /// How far away blocks can be built on.
 pub const reach: f32 = 24;
@@ -221,18 +194,18 @@ pub const Game = struct {
         if (!pressed or was_held) return;
         // Someone asking to join: Y lets them, N does not (in the menu
         // too).
-        if (g.net.request != null and (code == keys.y or code == keys.n)) {
-            g.net.answer = code == keys.y;
+        if (g.net.request != null and (code == evdev.key_y or code == evdev.key_n)) {
+            g.net.answer = code == evdev.key_y;
             return;
         }
         // In the menu, only Esc (back to the game) does anything.
         if (g.menu_open) {
-            if (code == keys.esc) g.closeMenu();
+            if (code == evdev.key_esc) g.closeMenu();
             return;
         }
         switch (code) {
-            keys.digit_1...keys.digit_9 => g.choose(@intCast(code - keys.digit_1)),
-            keys.space => {
+            evdev.key_1...evdev.key_9 => g.choose(@intCast(code - evdev.key_1)),
+            evdev.key_space => {
                 if (g.space_at) |at| if (g.clock - at <= double_tap) {
                     g.player.flying = !g.player.flying;
                     g.player.vel[1] = 0;
@@ -243,12 +216,12 @@ pub const Game = struct {
                 };
                 g.space_at = g.clock;
             },
-            keys.e => if (g.palette_open) g.closePalette() else {
+            evdev.key_e => if (g.palette_open) g.closePalette() else {
                 g.palette_open = true;
                 // Its blocks are chosen with the pointer.
                 if (g.captured) g.capture_wanted = false;
             },
-            keys.esc => if (g.palette_open) g.closePalette() else g.openMenu(),
+            evdev.key_esc => if (g.palette_open) g.closePalette() else g.openMenu(),
             else => {},
         }
     }
@@ -414,9 +387,9 @@ pub const Game = struct {
         if (!pressed) return;
         g.updateTarget();
         switch (code) {
-            btn_left => _ = g.place(),
-            btn_right => _ = g.remove(),
-            btn_middle => g.pickAtPointer(),
+            evdev.btn_left => _ = g.place(),
+            evdev.btn_right => _ = g.remove(),
+            evdev.btn_middle => g.pickAtPointer(),
             else => {},
         }
     }
@@ -508,14 +481,14 @@ pub const Game = struct {
             }
         }.f;
         var c: player_mod.Controls = .{
-            .up = h.isSet(keys.space),
-            .down = on(h, keys.left_shift, keys.right_shift),
-            .sprint = on(h, keys.left_ctrl, keys.right_ctrl),
+            .up = h.isSet(evdev.key_space),
+            .down = on(h, evdev.key_leftshift, evdev.key_rightshift),
+            .sprint = on(h, evdev.key_leftctrl, evdev.key_rightctrl),
         };
-        if (on(h, keys.w, keys.up)) c.forward += 1;
-        if (on(h, keys.s, keys.down)) c.forward -= 1;
-        if (h.isSet(keys.d)) c.strafe += 1;
-        if (h.isSet(keys.a)) c.strafe -= 1;
+        if (on(h, evdev.key_w, evdev.key_up)) c.forward += 1;
+        if (on(h, evdev.key_s, evdev.key_down)) c.forward -= 1;
+        if (h.isSet(evdev.key_d)) c.strafe += 1;
+        if (h.isSet(evdev.key_a)) c.strafe -= 1;
         return c;
     }
 
@@ -527,8 +500,8 @@ pub const Game = struct {
         g.time_of_day = @mod(g.time_of_day + dt / day_length, 1);
         var turn: f32 = 0;
         if (!g.menu_open) {
-            if (g.held.isSet(keys.left)) turn -= 1;
-            if (g.held.isSet(keys.right)) turn += 1;
+            if (g.held.isSet(evdev.key_left)) turn -= 1;
+            if (g.held.isSet(evdev.key_right)) turn += 1;
         }
         if (turn != 0) g.player.look(turn * turn_speed * dt, 0);
         g.player.update(g.world, if (g.menu_open) .{} else g.controls(), dt);
@@ -633,16 +606,16 @@ test "with the mouse taken, it turns the view and builds on the middle of it" {
     g.capture_wanted = null;
     g.captured = true;
     g.pointer = .{ 10, 10 };
-    g.mouseButton(btn_left, true);
+    g.mouseButton(evdev.btn_left, true);
     const t = g.target.?;
     try testing.expectEqual(Block.grass, g.world.get(t.before[0], t.before[1], t.before[2]));
-    g.mouseButton(btn_right, true);
+    g.mouseButton(evdev.btn_right, true);
     try testing.expectEqual(Block.air, g.world.get(t.before[0], t.before[1], t.before[2]));
     // Moving it turns the view; Esc gives it back (and opens the menu).
     const yaw = g.player.yaw;
     g.mouseMoved(100, 0);
     try testing.expect(g.player.yaw > yaw);
-    g.key(keys.esc, true);
+    g.key(evdev.key_esc, true);
     try testing.expectEqual(@as(?bool, false), g.capture_wanted);
 }
 
@@ -666,11 +639,11 @@ test "keys: walking, choosing, flying, the palette" {
     var g = try testGame();
     defer g.world.destroy();
     const z = g.player.pos[2];
-    g.key(keys.w, true);
+    g.key(evdev.key_w, true);
     for (0..30) |_| g.tick(1.0 / 30.0);
-    g.key(keys.w, false);
+    g.key(evdev.key_w, false);
     try testing.expect(g.player.pos[2] < z - 2);
-    g.key(keys.digit_1 + 3, true);
+    g.key(evdev.key_1 + 3, true);
     try testing.expectEqual(@as(u8, 3), g.slot);
     try testing.expectEqualStrings("Log", g.messageShown().?);
     g.scroll(1);
@@ -679,32 +652,32 @@ test "keys: walking, choosing, flying, the palette" {
     g.scroll(1);
     try testing.expectEqual(@as(u8, 0), g.slot);
     // Space twice, quickly, flies.
-    g.key(keys.space, true);
-    g.key(keys.space, false);
+    g.key(evdev.key_space, true);
+    g.key(evdev.key_space, false);
     try testing.expect(!g.player.flying);
     g.tick(0.1);
-    g.key(keys.space, true);
+    g.key(evdev.key_space, true);
     try testing.expect(g.player.flying);
     // Holding it (repeat presses) does not toggle it back off.
-    g.key(keys.space, true);
+    g.key(evdev.key_space, true);
     try testing.expect(g.player.flying);
-    g.key(keys.space, false);
+    g.key(evdev.key_space, false);
     // A third press soon after is the first of the next double tap.
     g.tick(0.1);
-    g.key(keys.space, true);
-    g.key(keys.space, false);
+    g.key(evdev.key_space, true);
+    g.key(evdev.key_space, false);
     try testing.expect(g.player.flying);
     // Twice, but slowly: still flying.
     g.tick(0.5);
-    g.key(keys.space, true);
-    g.key(keys.space, false);
+    g.key(evdev.key_space, true);
+    g.key(evdev.key_space, false);
     try testing.expect(g.player.flying);
     // Then twice quickly: walking again.
     g.tick(0.1);
-    g.key(keys.space, true);
-    g.key(keys.space, false);
+    g.key(evdev.key_space, true);
+    g.key(evdev.key_space, false);
     try testing.expect(!g.player.flying);
-    g.key(keys.e, true);
+    g.key(evdev.key_e, true);
     try testing.expect(g.palette_open);
     g.pickFromPalette(.gold);
     try testing.expect(!g.palette_open);
@@ -723,15 +696,15 @@ test "the game starts in the menu; leaving it takes the mouse, and Esc gives it 
     g.can_capture = true;
     g.menu_open = true;
     // Esc on the menu: back to the game, which takes the mouse.
-    g.key(keys.esc, true);
-    g.key(keys.esc, false);
+    g.key(evdev.key_esc, true);
+    g.key(evdev.key_esc, false);
     try testing.expect(!g.menu_open);
     try testing.expectEqual(@as(?bool, true), g.capture_wanted);
     g.capture_wanted = null;
     g.pointerLocked(true);
     // Esc in the game: the menu, and the mouse given back.
-    g.key(keys.esc, true);
-    g.key(keys.esc, false);
+    g.key(evdev.key_esc, true);
+    g.key(evdev.key_esc, false);
     try testing.expect(g.menu_open);
     try testing.expectEqual(@as(?bool, false), g.capture_wanted);
     g.capture_wanted = null;
@@ -740,8 +713,8 @@ test "the game starts in the menu; leaving it takes the mouse, and Esc gives it 
     // stands still, and the palette stays shut.
     const t = g.time_of_day;
     const pos = g.player.pos;
-    g.key(keys.w, true);
-    g.key(keys.e, true);
+    g.key(evdev.key_w, true);
+    g.key(evdev.key_e, true);
     for (0..30) |_| g.tick(1.0 / 30.0);
     try testing.expect(g.time_of_day != t);
     try testing.expectApproxEqAbs(pos[0], g.player.pos[0], 1e-4);
@@ -754,18 +727,18 @@ test "the game starts in the menu; leaving it takes the mouse, and Esc gives it 
     g.pointerLocked(true);
     for (0..30) |_| g.tick(1.0 / 30.0);
     try testing.expect(g.player.pos[2] < pos[2] - 1);
-    g.key(keys.w, false);
-    g.key(keys.e, false);
+    g.key(evdev.key_w, false);
+    g.key(evdev.key_e, false);
     // The palette gives the mouse back to pick with; Esc closes it (not
     // opening the menu) and takes the mouse again.
-    g.key(keys.e, true);
-    g.key(keys.e, false);
+    g.key(evdev.key_e, true);
+    g.key(evdev.key_e, false);
     try testing.expectEqual(@as(?bool, false), g.capture_wanted);
     g.capture_wanted = null;
     g.pointerLocked(false);
     try testing.expect(g.palette_open and !g.menu_open);
-    g.key(keys.esc, true);
-    g.key(keys.esc, false);
+    g.key(evdev.key_esc, true);
+    g.key(evdev.key_esc, false);
     try testing.expect(!g.palette_open and !g.menu_open);
     try testing.expectEqual(@as(?bool, true), g.capture_wanted);
     g.capture_wanted = null;
