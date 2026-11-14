@@ -483,7 +483,12 @@ pub fn Renderer(comptime Device: type) type {
                 }
                 const i = best orelse break;
                 w.dirty.unset(i);
-                try r.meshChunk(w, i);
+                // Not meshed (no memory for it): shown as it was, and
+                // meshed again later.
+                r.meshChunk(w, i) catch |err| {
+                    w.dirty.set(i);
+                    return err;
+                };
             }
             return w.dirty.count();
         }
@@ -495,12 +500,13 @@ pub fn Renderer(comptime Device: type) type {
             const c = &r.chunks[i];
             const m = &r.mesh;
             const total = m.quads() * 4;
-            // A new buffer: the old one may still be in a frame the GPU is
-            // drawing (it keeps it until then).
-            if (c.bo) |bo| r.dev.destroyBo(bo);
+            // A new buffer (the old one may still be in a frame the GPU is
+            // drawing: it keeps it until then), made before the old one
+            // goes, which stays if there is no memory for it.
+            const bo = if (total == 0) null else try r.dev.createBo(@intCast(total * @sizeOf(Vertex)));
+            if (c.bo) |old| r.dev.destroyBo(old);
             c.* = .{};
-            if (total == 0) return;
-            const bo = try r.dev.createBo(@intCast(total * @sizeOf(Vertex)));
+            const new = bo orelse return;
             var at: usize = 0;
             var min_y: f32 = std.math.inf(f32);
             var max_y: f32 = -std.math.inf(f32);
@@ -508,7 +514,7 @@ pub fn Renderer(comptime Device: type) type {
             for (m.lists, &quads) |l, *q| {
                 const list = l.items;
                 q.* = @intCast(list.len / 4);
-                @memcpy(bo.map[at..][0 .. list.len * @sizeOf(Vertex)], std.mem.sliceAsBytes(list));
+                @memcpy(new.map[at..][0 .. list.len * @sizeOf(Vertex)], std.mem.sliceAsBytes(list));
                 at += list.len * @sizeOf(Vertex);
                 for (list) |v| {
                     min_y = @min(min_y, v.pos[1]);
@@ -516,7 +522,7 @@ pub fn Renderer(comptime Device: type) type {
                 }
             }
             c.* = .{
-                .bo = bo,
+                .bo = new,
                 .quads = quads,
                 .face_quads = m.face_quads,
                 // Room for swaying and waves.
@@ -988,6 +994,8 @@ pub const FakeDevice = struct {
         gpa: std.mem.Allocator,
         next: u32 = 1,
         bos: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
+        /// Making buffers fails (as when the GPU's memory is used up).
+        full: bool = false,
 
         pub fn deinit(s: *State) void {
             s.bos.deinit(s.gpa);
@@ -1000,6 +1008,7 @@ pub const FakeDevice = struct {
 
     pub fn createBo(d: FakeDevice, size: u32) !vc4.Bo {
         const s = d.state;
+        if (s.full) return error.OutOfMemory;
         const map = try s.gpa.alignedAlloc(u8, .fromByteUnits(std.heap.page_size_min), std.mem.alignForward(u32, size, 4096));
         errdefer s.gpa.free(map);
         s.next += 1;
@@ -1067,6 +1076,23 @@ test "the whole island in view fits one frame, the near chunks first" {
     const before = state.bos.count();
     _ = w.set(64, 50, 64, .gold);
     _ = try r.update(w, w.spawn, 1000);
+    try testing.expectEqual(before, state.bos.count());
+
+    // No memory for its new buffer: it is shown as it was, and meshed
+    // again when there is.
+    _ = w.set(64, 50, 64, .stone);
+    const i = for (0..world_mod.chunk_count) |c| {
+        if (w.dirty.isSet(c)) break c;
+    } else unreachable;
+    const old = r.chunks[i].bo.?.handle;
+    state.full = true;
+    try testing.expectError(error.OutOfMemory, r.update(w, w.spawn, 1000));
+    try testing.expectEqual(old, r.chunks[i].bo.?.handle);
+    try testing.expect(state.bos.contains(old));
+    try testing.expect(w.dirty.isSet(i));
+    state.full = false;
+    try testing.expectEqual(@as(usize, 0), try r.update(w, w.spawn, 1000));
+    try testing.expect(r.chunks[i].bo.?.handle != old);
     try testing.expectEqual(before, state.bos.count());
 }
 

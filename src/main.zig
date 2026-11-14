@@ -104,6 +104,39 @@ fn save(gpa: std.mem.Allocator, g: *game_mod.Game) void {
     print("dazzle-blocks: saved ({d} KB)\n", .{out.items.len / 1024});
 }
 
+/// Errors Blocks goes on from (the frame or the meshes are made again
+/// later), said in the log: each kind once, and then at most every few
+/// seconds, so one that keeps happening does not fill it.
+const Trouble = struct {
+    last_ns: u64 = 0,
+    last: ?anyerror = null,
+    since_said: u32 = 0,
+
+    const quiet_ns = 5 * std.time.ns_per_s;
+
+    fn note(t: *Trouble, what: []const u8, err: anyerror) void {
+        const now = sys.nowNs();
+        t.since_said += 1;
+        if (t.last != null and t.last.? == err and now -| t.last_ns < quiet_ns) return;
+        print(sys.log_warning ++ "dazzle-blocks: {s} failed ({s}; {d} times since last said); going on\n", .{ what, @errorName(err), t.since_said });
+        t.last = err;
+        t.last_ns = now;
+        t.since_said = 0;
+    }
+};
+
+/// Meshes up to `limit` of the chunks changed, nearest `near` first; if
+/// it cannot (no memory), they are meshed later.
+fn mesh(renderer: *Renderer, world: *world_mod.World, near: anytype, limit: usize, trouble: *Trouble) void {
+    _ = renderer.update(world, near, limit) catch |err| trouble.note("meshing the island", err);
+}
+
+/// Whether `err` means the connection to the shell is gone (it closed it,
+/// or said this did something wrong): nothing more can be shown.
+fn lostShell(err: anyerror) bool {
+    return err == error.Closed or err == error.ProtocolError or err == error.ServerError or err == error.SystemError or err == error.Canceled;
+}
+
 /// The window's root: the world and what is over it.
 const Root = struct {
     game: *game_mod.Game,
@@ -181,11 +214,12 @@ fn run(init: std.process.Init) !void {
         print("dazzle-blocks: made an island in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
     };
     const renderer = try Renderer.init(gpa, host.dev);
+    var trouble: Trouble = .{};
     {
         // The chunks around the player now; the rest a few a frame, from
         // the nearest (they are further off, in the fog, at first).
         const started = sys.nowNs();
-        _ = try renderer.update(world, game.player.eye(), 12);
+        mesh(renderer, world, game.player.eye(), 12, &trouble);
         print("dazzle-blocks: meshed the nearest chunks in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
     }
     var scene: Scene = .{ .game = &game, .renderer = renderer };
@@ -224,7 +258,20 @@ fn run(init: std.process.Init) !void {
         // While shown, a frame as often as the shell takes them; covered,
         // nothing to do but wait.
         if (!window.suspended) host.redraw();
-        if (!try host.step(std.time.ns_per_s)) {
+        const going = host.step(std.time.ns_per_s) catch |err| blk: {
+            // The shell is gone: nothing more can be shown. The island is
+            // kept first.
+            if (lostShell(err)) {
+                if (game.wantsSave()) save(gpa, &game);
+                return err;
+            }
+            // Anything else (the GPU slow, or out of memory for a frame):
+            // the frame is drawn again, after a moment.
+            trouble.note("a frame", err);
+            sys.sleepMs(50);
+            break :blk true;
+        };
+        if (!going) {
             if (game.wantsSave()) save(gpa, &game);
             return;
         }
@@ -253,11 +300,11 @@ fn run(init: std.process.Init) !void {
                     print(sys.log_warning ++ "dazzle-blocks: cannot play in that world ({s})\n", .{@errorName(err)});
                     game.leaveGame();
                 };
-                _ = try renderer.update(world, game.player.eye(), 12);
+                mesh(renderer, world, game.player.eye(), 12, &trouble);
             },
             .left => {
                 backHome(gpa, &game);
-                _ = try renderer.update(world, game.player.eye(), 12);
+                mesh(renderer, world, game.player.eye(), 12, &trouble);
                 game.say("Back on your island");
             },
             .denied => game.say("They said no"),
@@ -266,7 +313,7 @@ fn run(init: std.process.Init) !void {
         game.tick(dt);
         // What changed, meshed again (a few chunks a frame, so a big change
         // does not stall a frame).
-        _ = try renderer.update(world, game.player.eye(), 3);
+        mesh(renderer, world, game.player.eye(), 3, &trouble);
         if (game.wantsSave() and now - last_save > save_every * std.time.ns_per_s) {
             save(gpa, &game);
             last_save = now;
