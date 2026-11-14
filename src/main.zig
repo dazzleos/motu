@@ -443,6 +443,9 @@ fn run(init: std.process.Init) !void {
     input.win = win.win;
     // Fullscreen to start with (the menu's button leaves it).
     win.setFullscreen(true);
+    // The world drawn smaller (the quality chosen), the widgets over it
+    // stay sharp.
+    win.layered = true;
 
     var last = sys.nowNs();
     var last_save = last;
