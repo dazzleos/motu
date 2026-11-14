@@ -209,7 +209,7 @@ pub const Environment = struct {
 /// across at a time (`regions`): fewer draws, each of more triangles,
 /// which the Pi Zero to Pi 3's GPU draws faster (it goes over each draw
 /// again in each 64 by 64 tile of the screen it covers).
-pub const region_chunks = 2;
+pub const region_chunks = 1;
 pub const region_size = world_mod.chunk_size * region_chunks;
 pub const regions_x = world_mod.chunks_x / region_chunks;
 pub const regions_z = world_mod.chunks_z / region_chunks;
