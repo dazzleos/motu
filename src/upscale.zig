@@ -37,10 +37,8 @@ pub const Upscaler = struct {
     /// What is counted in the world's images while measuring.
     pub const counted = [_]vc4.device.PerfCounter{
         .fep_valid_prims_render,
-        .fep_valid_prims_no_render,
         .fep_valid_quads,
         .tlb_quads_written_to_color_buf,
-        .plb_prims_need_clipping,
         .qpu_idle_cycles,
         .qpu_vertex_coord_shading_cycles,
         .qpu_fragment_shading_cycles,
@@ -50,8 +48,11 @@ pub const Upscaler = struct {
         .qpu_waiting_varyings_cycles,
         .tmu_texture_quads,
         .tmu_texture_cache_misses,
-        .vpm_vdw_stalled_cycles,
         .l2_cache_misses,
+        .qpu_inst_cache_misses,
+        .qpu_uniform_cache_hits,
+        .qpu_uniform_cache_misses,
+        .qpu_inst_cache_hits,
     };
 
     /// Counts what the GPU does in the images' jobs from now (on the older
