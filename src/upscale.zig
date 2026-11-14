@@ -30,6 +30,46 @@ pub const Upscaler = struct {
     /// The image: as big as the view (its smaller sizes fit in it).
     image: ?vc4.Bo = null,
     image_size: [2]u32 = .{ 0, 0 },
+    /// While measuring (on the older GPU, which has them): the GPU's
+    /// performance counters, counting in the images' jobs (`counted`).
+    perfmon: ?u32 = null,
+
+    /// What is counted in the world's images while measuring.
+    pub const counted = [_]vc4.device.PerfCounter{
+        .fep_valid_prims_render,
+        .fep_valid_prims_no_render,
+        .fep_valid_quads,
+        .tlb_quads_written_to_color_buf,
+        .plb_prims_need_clipping,
+        .qpu_idle_cycles,
+        .qpu_vertex_coord_shading_cycles,
+        .qpu_fragment_shading_cycles,
+        .qpu_valid_instruction_cycles,
+        .qpu_waiting_tmus_cycles,
+        .qpu_waiting_scoreboard_cycles,
+        .qpu_waiting_varyings_cycles,
+        .tmu_texture_quads,
+        .tmu_texture_cache_misses,
+        .vpm_vdw_stalled_cycles,
+        .l2_cache_misses,
+    };
+
+    /// Counts what the GPU does in the images' jobs from now (on the older
+    /// GPU), or stops.
+    pub fn count(u: *Upscaler, on: bool) void {
+        if (u.perfmon) |id| u.dev.destroyPerfmon(id);
+        u.perfmon = null;
+        if (on and !u.dev.is_v3d) u.perfmon = u.dev.createPerfmon(&counted) catch null;
+    }
+
+    /// What was counted since `count` (its jobs done), starting again from
+    /// 0. False if nothing is being counted.
+    pub fn takeCounts(u: *Upscaler, out: *[counted.len]u64) bool {
+        const id = u.perfmon orelse return false;
+        u.dev.perfmonValues(id, out) catch return false;
+        u.count(true);
+        return true;
+    }
 
     pub fn init(gpa: std.mem.Allocator, dev: vc4.Device) !Upscaler {
         var pipeline = try shader.Pipeline.init(gpa, dev, shader.Program.decode(@embedFile("upscale.shader")) catch unreachable, .{
@@ -48,6 +88,7 @@ pub const Upscaler = struct {
     }
 
     pub fn deinit(u: *Upscaler) void {
+        u.count(false);
         if (u.image) |bo| u.dev.destroyBo(bo);
         u.dev.destroyBo(u.quad);
         u.pipeline.deinit(u.dev);
@@ -71,7 +112,9 @@ pub const Upscaler = struct {
     /// `viewport` of `frame` (the window's), clipped to `scissor`.
     /// Returns the image's job (to wait for, to time it).
     pub fn finish(u: *Upscaler, frame: *render.Frame, size: [2]u32, viewport: render.Viewport, scissor: ?render.Viewport) !u64 {
-        const seqno = try u.dev.submit(image_frame.finish());
+        const job = image_frame.finish();
+        if (u.perfmon) |id| job.perfmonid = id;
+        const seqno = try u.dev.submit(job);
         const target = targetOf(u.image.?, size);
         try u.pipeline.draw(frame, .{
             .vertices = u.quad.handle,

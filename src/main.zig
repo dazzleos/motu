@@ -192,6 +192,35 @@ const Timing = struct {
     }
 };
 
+/// What the GPU's counters say of the world's images (`counts`, over
+/// `frames` of them), per image: the shader processors' (QPUs') time on
+/// vertices and on pixels, idle, and waiting; the triangles and pixels;
+/// textures and memory.
+fn reportCounts(counts: *const [upscale.Upscaler.counted.len]u64, frames: u32) void {
+    const n: f64 = @floatFromInt(@max(frames, 1));
+    var per: [upscale.Upscaler.counted.len]f64 = undefined;
+    for (counts, &per) |c, *p| p.* = @as(f64, @floatFromInt(c)) / n;
+    const at = struct {
+        fn f(v: []const f64, c: vc4.device.PerfCounter) f64 {
+            const i = std.mem.indexOfScalar(vc4.device.PerfCounter, &upscale.Upscaler.counted, c).?;
+            return v[i];
+        }
+    }.f;
+    const idle = at(&per, .qpu_idle_cycles);
+    const vertex = at(&per, .qpu_vertex_coord_shading_cycles);
+    const fragment = at(&per, .qpu_fragment_shading_cycles);
+    const all = @max(idle + vertex + fragment, 1);
+    print("dazzle-blocks: GPU counters per world image: QPU cycles {d:.1}M (vertices {d:.0}%, pixels {d:.0}%, idle {d:.0}%), running instructions {d:.1}M, waiting for textures {d:.1}M, for the scoreboard {d:.1}M, for varyings {d:.1}M\n", .{
+        all / 1e6,                                     100 * vertex / all,                       100 * fragment / all,                           100 * idle / all,
+        at(&per, .qpu_valid_instruction_cycles) / 1e6, at(&per, .qpu_waiting_tmus_cycles) / 1e6, at(&per, .qpu_waiting_scoreboard_cycles) / 1e6, at(&per, .qpu_waiting_varyings_cycles) / 1e6,
+    });
+    print("dazzle-blocks: GPU counters per world image: triangles drawn {d:.0}k, not drawn {d:.0}k, clipped {d:.1}k; quads {d:.0}k, written {d:.0}k; texture quads {d:.0}k, texture cache misses {d:.0}k; vertex writes stalled {d:.1}M cycles; L2 cache misses {d:.0}k\n", .{
+        at(&per, .fep_valid_prims_render) / 1e3,   at(&per, .fep_valid_prims_no_render) / 1e3,      at(&per, .plb_prims_need_clipping) / 1e3,
+        at(&per, .fep_valid_quads) / 1e3,          at(&per, .tlb_quads_written_to_color_buf) / 1e3, at(&per, .tmu_texture_quads) / 1e3,
+        at(&per, .tmu_texture_cache_misses) / 1e3, at(&per, .vpm_vdw_stalled_cycles) / 1e6,         at(&per, .l2_cache_misses) / 1e3,
+    });
+}
+
 /// The GPU's time on this process's work, from the kernel's counters for
 /// its GPU file (/proc/self/fdinfo): binning and rendering.
 const GpuTime = struct {
@@ -474,6 +503,7 @@ fn run(init: std.process.Init) !void {
         // measured: the frames are drawn one at a time, each waited for.
         if (game.stats != measuring) {
             measuring = game.stats;
+            if (scene.upscaler) |up| up.count(measuring);
             if (measuring) {
                 win.win.setPipelined(false) catch {};
                 _ = host.renderer.setPipelined(false);
@@ -509,6 +539,10 @@ fn run(init: std.process.Init) !void {
                     @as(f64, @floatFromInt(timing.window_gpu_ns)) / std.time.ns_per_ms / n,
                 });
             }
+            if (measuring) if (scene.upscaler) |up| {
+                var counts: [upscale.Upscaler.counted.len]u64 = undefined;
+                if (up.takeCounts(&counts)) reportCounts(&counts, scene.world_frames);
+            };
             scene.world_ns = 0;
             scene.world_frames = 0;
             timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
