@@ -133,10 +133,10 @@ pub const Game = struct {
     /// it (the player standing still). The game starts in it, so the mouse
     /// is not taken before it is wanted.
     menu_open: bool = true,
-    help: bool = true,
     stats: bool = false,
-    /// Edges antialiased (the GPU's 4x multisampling).
-    antialias: bool = true,
+    /// How big the window is drawn, of its size across and down (the
+    /// display stretches it): from half to all of it.
+    quality: f32 = 1,
     /// Solid blocks lit per pixel from their normal maps.
     bump: bool = true,
     /// The view's size, and the pointer in it (if it is there).
@@ -306,16 +306,21 @@ pub const Game = struct {
 
     // The options, set from the menu (and only there: they have no keys).
 
-    pub fn setAntialias(g: *Game, on: bool) void {
-        g.antialias = on;
+    /// The quality, from the menu's slider (0: half as big across and
+    /// down, 1: as big as the window), in steps of a twentieth.
+    pub fn setQuality(g: *Game, slider: f32) void {
+        const steps = 10;
+        const k = @round(std.math.clamp(slider, 0, 1) * steps) / steps;
+        g.quality = 0.5 + 0.5 * k;
+    }
+
+    /// The quality, as the menu's slider shows it.
+    pub fn qualitySlider(g: *const Game) f32 {
+        return (g.quality - 0.5) / 0.5;
     }
 
     pub fn setBump(g: *Game, on: bool) void {
         g.bump = on;
-    }
-
-    pub fn setHelp(g: *Game, on: bool) void {
-        g.help = on;
     }
 
     pub fn setStats(g: *Game, on: bool) void {

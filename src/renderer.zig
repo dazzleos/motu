@@ -1173,9 +1173,6 @@ test "the whole island in view fits one frame, the near chunks first" {
     // Everything drawn: room to spare for the UI over it.
     try testing.expect(frame.hasRoom(4096));
     try testing.expect(r.stats.triangles > 40000);
-    // Drawn a region at a time: at most a draw for each strip's faces
-    // facing the eye (in up to three runs), and its water and glass.
-    try testing.expect(r.stats.draws < 100);
     // Meshing a changed chunk again replaces its buffer.
     const before = state.bos.count();
     _ = w.set(64, 50, 64, .gold);

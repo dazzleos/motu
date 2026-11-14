@@ -24,7 +24,7 @@ const renderer_mod = @import("renderer.zig");
 const view = @import("view.zig");
 const net = @import("net.zig");
 const options = @import("options.zig");
-const upscale = @import("upscale.zig");
+const reach_mod = @import("reach.zig");
 
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(vc4.Device);
@@ -47,26 +47,25 @@ pub fn main(init: std.process.Init) u8 {
 const Scene = struct {
     game: *game_mod.Game,
     renderer: *Renderer,
-    /// For drawing the world smaller (if it could be made), and how much.
-    upscaler: ?*upscale.Upscaler = null,
-    scale: upscale.Scale = .{},
+    /// The window's renderer: how much smaller than the window its buffer
+    /// is (the quality chosen), which the world is drawn in.
+    window_renderer: *const kete_vc4.Renderer,
+    reach: reach_mod.Reach = .{},
     /// `app.window.gpu_waited_ns` at the last frame.
     waited_ns: u64 = 0,
-    /// While "what is drawn" shows: the GPU's time on the world's images,
-    /// waited for (see `Timing`).
-    world_ns: u64 = 0,
-    world_frames: u32 = 0,
 
     fn draw(ctx: *anyopaque, f: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void {
         const s: *Scene = @ptrCast(@alignCast(ctx));
         const g = s.game;
-        const vp = kete_vc4.renderer.viewport(area.viewport);
-        const scissor = if (area.scissor) |sc| kete_vc4.renderer.viewport(sc) else null;
-        // How big to draw it, from how the last frames went.
+        // Laid out at the window's size; drawn in its buffer, perhaps
+        // smaller (the shell, or the display, stretches it).
+        const vp = s.window_renderer.scaled(area.viewport);
+        const scissor = if (area.scissor) |sc| s.window_renderer.scaled(sc) else null;
+        // How far to see, from how the last frames went.
         const waited = app.window.gpu_waited_ns -% s.waited_ns;
         s.waited_ns = app.window.gpu_waited_ns;
-        _ = s.scale.frame(sys.nowNs(), waited);
-        const seen: renderer_mod.View = .{
+        _ = s.reach.frame(sys.nowNs(), waited);
+        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, scissor, .{
             .camera = g.camera(),
             .aspect = @as(f32, @floatFromInt(vp.width)) / @as(f32, @floatFromInt(@max(vp.height, 1))),
             .time = g.clock,
@@ -75,27 +74,8 @@ const Scene = struct {
             .bump = g.bump,
             .outline = if (g.target) |t| t.cell else null,
             .avatars = g.net.others,
-            .reach = s.scale.reach(),
-        };
-        // Smaller, into an image stretched over the view.
-        if (s.upscaler) |up| if (s.scale.resolution() < 1) {
-            const full = [2]u32{ vp.width, vp.height };
-            const size = s.scale.of(full);
-            if (up.begin(full, size, g.antialias)) |image| {
-                try s.renderer.draw(renderer_mod.FrameSink{ .frame = image }, .{ .x = 0, .y = 0, .width = @intCast(size[0]), .height = @intCast(size[1]) }, null, seen);
-                const submitted = sys.nowNs();
-                const seqno = try up.finish(f, size, vp, scissor);
-                // Measuring: its time on the GPU, waited for (the GPU has
-                // nothing else then, its frames not overlapping).
-                if (g.stats) {
-                    try up.dev.waitSeqno(seqno, 10 * std.time.ns_per_s);
-                    s.world_ns += sys.nowNs() - submitted;
-                    s.world_frames += 1;
-                }
-                return;
-            }
-        };
-        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, scissor, seen);
+            .reach = s.reach.k,
+        });
     }
 };
 
@@ -159,7 +139,7 @@ const Timing = struct {
     waited_ns: u64,
     gpu: GpuTime,
 
-    fn report(t: *const Timing, fd: linux.fd_t, elapsed_ns: u64, antialias: bool, bump: bool, scale: upscale.Scale) void {
+    fn report(t: *const Timing, fd: linux.fd_t, elapsed_ns: u64, quality: f32, bump: bool, reach: f32) void {
         const n: f64 = @floatFromInt(@max(t.frames, 1));
         const ms = struct {
             fn per(ns: u64, frames: f64) f64 {
@@ -176,12 +156,11 @@ const Timing = struct {
             }) catch "GPU time not known"
         else
             "GPU time not known";
-        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels, seen {d:.0} blocks away, the world at {d:.0}%{s}{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
+        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels (drawn at {d:.0}%), seen {d:.0} blocks away{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
             gpu_text,
             t.pixels / n / 1e6,
-            renderer_mod.view_distance * scale.reach(),
-            scale.resolution() * 100,
-            if (antialias) ", antialiased" else "",
+            quality * 100,
+            renderer_mod.view_distance * reach,
             if (bump) ", bump mapped" else "",
             ms(t.step_ns, n),
             ms(t.record_ns, n),
@@ -192,18 +171,62 @@ const Timing = struct {
     }
 };
 
-/// What the GPU's counters say of the world's images (`counts`, over
-/// `frames` of them), per image: the shader processors' (QPUs') time on
+/// While measuring (on the older GPU, which has them), the GPU's
+/// performance counters (`counted`), counting in the window's frames.
+const Counting = struct {
+    dev: vc4.Device,
+    id: ?u32 = null,
+
+    /// What is counted.
+    const counted: [vc4.device.max_counters]vc4.device.PerfCounter = .{
+        .fep_valid_prims_render,
+        .fep_valid_quads,
+        .tlb_quads_written_to_color_buf,
+        .qpu_idle_cycles,
+        .qpu_vertex_coord_shading_cycles,
+        .qpu_fragment_shading_cycles,
+        .qpu_valid_instruction_cycles,
+        .qpu_waiting_tmus_cycles,
+        .qpu_waiting_scoreboard_cycles,
+        .qpu_waiting_varyings_cycles,
+        .tmu_texture_quads,
+        .tmu_texture_cache_misses,
+        .qpu_inst_cache_misses,
+        .qpu_uniform_cache_hits,
+        .qpu_uniform_cache_misses,
+        .qpu_inst_cache_hits,
+    };
+
+    /// Counts the window's frames from now, or stops.
+    fn count(c: *Counting, on: bool) void {
+        if (c.id) |id| c.dev.destroyPerfmon(id);
+        c.id = null;
+        if (on and !c.dev.is_v3d) c.id = c.dev.createPerfmon(&counted) catch null;
+        app.window.perfmon_id = c.id orelse 0;
+    }
+
+    /// What was counted since `count` (the frames done: measuring draws
+    /// them one at a time), starting again from 0.
+    fn take(c: *Counting, out: *[counted.len]u64) bool {
+        const id = c.id orelse return false;
+        c.dev.perfmonValues(id, out) catch return false;
+        c.count(true);
+        return true;
+    }
+};
+
+/// What the GPU's counters say of the window's frames (`counts`, over
+/// `frames` of them), per frame: the shader processors' (QPUs') time on
 /// vertices and on pixels, idle, and waiting; the triangles and pixels;
-/// textures and memory.
-fn reportCounts(counts: *const [upscale.Upscaler.counted.len]u64, frames: u32) void {
+/// textures and caches.
+fn reportCounts(counts: *const [Counting.counted.len]u64, frames: u32) void {
     const n: f64 = @floatFromInt(@max(frames, 1));
-    var per: [upscale.Upscaler.counted.len]f64 = undefined;
+    var per: [Counting.counted.len]f64 = undefined;
     for (counts, &per) |c, *p| p.* = @as(f64, @floatFromInt(c)) / n;
     const at = struct {
         fn f(v: []const f64, comptime c: vc4.device.PerfCounter) f64 {
             // Counted, or this does not build.
-            const i = comptime std.mem.indexOfScalar(vc4.device.PerfCounter, &upscale.Upscaler.counted, c).?;
+            const i = comptime std.mem.indexOfScalar(vc4.device.PerfCounter, &Counting.counted, c).?;
             return v[i];
         }
     }.f;
@@ -211,11 +234,11 @@ fn reportCounts(counts: *const [upscale.Upscaler.counted.len]u64, frames: u32) v
     const vertex = at(&per, .qpu_vertex_coord_shading_cycles);
     const fragment = at(&per, .qpu_fragment_shading_cycles);
     const all = @max(idle + vertex + fragment, 1);
-    print("dazzle-blocks: GPU counters per world image: QPU cycles {d:.1}M (vertices {d:.0}%, pixels {d:.0}%, idle {d:.0}%), running instructions {d:.1}M, waiting for textures {d:.1}M, for the scoreboard {d:.1}M, for varyings {d:.1}M\n", .{
+    print("dazzle-blocks: GPU counters per frame: QPU cycles {d:.1}M (vertices {d:.0}%, pixels {d:.0}%, idle {d:.0}%), running instructions {d:.1}M, waiting for textures {d:.1}M, for the scoreboard {d:.1}M, for varyings {d:.1}M\n", .{
         all / 1e6,                                     100 * vertex / all,                       100 * fragment / all,                           100 * idle / all,
         at(&per, .qpu_valid_instruction_cycles) / 1e6, at(&per, .qpu_waiting_tmus_cycles) / 1e6, at(&per, .qpu_waiting_scoreboard_cycles) / 1e6, at(&per, .qpu_waiting_varyings_cycles) / 1e6,
     });
-    print("dazzle-blocks: GPU counters per world image: triangles drawn {d:.0}k; quads {d:.0}k, written {d:.0}k; texture quads {d:.0}k, texture cache misses {d:.0}k; instruction cache {d:.0}k hits, {d:.0}k misses; uniform cache {d:.0}k hits, {d:.0}k misses\n", .{
+    print("dazzle-blocks: GPU counters per frame: triangles drawn {d:.0}k; quads {d:.0}k, written {d:.0}k; texture quads {d:.0}k, texture cache misses {d:.0}k; instruction cache {d:.0}k hits, {d:.0}k misses; uniform cache {d:.0}k hits, {d:.0}k misses\n", .{
         at(&per, .fep_valid_prims_render) / 1e3,
         at(&per, .fep_valid_quads) / 1e3,
         at(&per, .tlb_quads_written_to_color_buf) / 1e3,
@@ -379,7 +402,7 @@ fn run(init: std.process.Init) !void {
     // The options as chosen, or as suit the GPU (the Pi 4's and 5's draws
     // them fast enough; the older one's does not).
     var kept = options.effective(options.load(), host.dev.is_v3d);
-    game.antialias = kept.antialias;
+    game.quality = kept.quality;
     game.bump = kept.bump;
     const renderer = try Renderer.init(gpa, host.dev);
     var trouble: Trouble = .{};
@@ -390,13 +413,9 @@ fn run(init: std.process.Init) !void {
         mesh(renderer, world, game.player.eye(), 12, &trouble);
         print("dazzle-blocks: meshed the nearest chunks in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
     }
-    // For drawing the world smaller when the GPU cannot keep up.
-    var upscaler: ?upscale.Upscaler = upscale.Upscaler.init(gpa, host.dev) catch |err| blk: {
-        print(sys.log_warning ++ "dazzle-blocks: the world is always drawn whole ({s})\n", .{@errorName(err)});
-        break :blk null;
-    };
-    defer if (upscaler) |*u| u.deinit();
-    var scene: Scene = .{ .game = &game, .renderer = renderer, .upscaler = if (upscaler) |*u| u else null };
+    var scene: Scene = .{ .game = &game, .renderer = renderer, .window_renderer = &host.renderer };
+    var counting: Counting = .{ .dev = host.dev };
+    defer counting.count(false);
     const icons = try gpa.create(view.Icons);
     icons.init();
 
@@ -422,6 +441,8 @@ fn run(init: std.process.Init) !void {
     });
     const win = &host.display.window.?;
     input.win = win.win;
+    // Fullscreen to start with (the menu's button leaves it).
+    win.setFullscreen(true);
 
     var last = sys.nowNs();
     var last_save = last;
@@ -502,15 +523,18 @@ fn run(init: std.process.Init) !void {
             last_save = now;
         }
         // Changed in the menu: kept.
-        if (game.antialias != kept.antialias or game.bump != kept.bump) {
-            kept = .{ .antialias = game.antialias, .bump = game.bump };
-            options.save(.{ .antialias = kept.antialias, .bump = kept.bump });
+        if (game.quality != kept.quality or game.bump != kept.bump) {
+            kept = .{ .quality = game.quality, .bump = game.bump };
+            options.save(.{ .quality = kept.quality, .bump = kept.bump });
         }
+        // Drawn as big as the quality chosen: the shell (or the display)
+        // stretches it to the window's size.
+        win.win.render_scale = game.quality;
         // While "what is drawn" shows, the GPU's time on each part is
         // measured: the frames are drawn one at a time, each waited for.
         if (game.stats != measuring) {
             measuring = game.stats;
-            if (scene.upscaler) |up| up.count(measuring);
+            counting.count(measuring);
             if (measuring) {
                 win.win.setPipelined(false) catch {};
                 _ = host.renderer.setPipelined(false);
@@ -519,8 +543,6 @@ fn run(init: std.process.Init) !void {
                 win.win.setPipelined(true) catch {};
             }
         }
-        // Antialiased: 4x multisampled (see vc4.render.Frame).
-        host.renderer.multisampled = game.antialias;
         const stats = host.renderer.takeStats();
         frames += stats.frames;
         timing.frames += stats.frames;
@@ -535,23 +557,13 @@ fn run(init: std.process.Init) !void {
         if (now - log_since >= 10 * std.time.ns_per_s) {
             const s = renderer.stats;
             print("dazzle-blocks: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
-            timing.report(host.dev.fd, now - log_since, game.antialias, game.bump, scene.scale);
+            timing.report(host.dev.fd, now - log_since, game.quality, game.bump, scene.reach.k);
             if (measuring) {
                 const n: f64 = @floatFromInt(@max(timing.frames, 1));
-                const wn: f64 = @floatFromInt(@max(scene.world_frames, 1));
-                print("dazzle-blocks: measured on the GPU, per frame: the world's image {d:.1} ms ({d} of {d} frames), the window's frame {d:.1} ms\n", .{
-                    @as(f64, @floatFromInt(scene.world_ns)) / std.time.ns_per_ms / wn,
-                    scene.world_frames,
-                    timing.frames,
-                    @as(f64, @floatFromInt(timing.window_gpu_ns)) / std.time.ns_per_ms / n,
-                });
+                print("dazzle-blocks: measured on the GPU: {d:.1} ms a frame\n", .{@as(f64, @floatFromInt(timing.window_gpu_ns)) / std.time.ns_per_ms / n});
+                var counts: [Counting.counted.len]u64 = undefined;
+                if (counting.take(&counts)) reportCounts(&counts, timing.frames);
             }
-            if (measuring) if (scene.upscaler) |up| {
-                var counts: [upscale.Upscaler.counted.len]u64 = undefined;
-                if (up.takeCounts(&counts)) reportCounts(&counts, scene.world_frames);
-            };
-            scene.world_ns = 0;
-            scene.world_frames = 0;
             timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
             log_since = now;
         }
@@ -572,5 +584,5 @@ test {
     _ = @import("view.zig");
     _ = @import("net.zig");
     _ = @import("options.zig");
-    _ = @import("upscale.zig");
+    _ = @import("reach.zig");
 }

@@ -80,7 +80,6 @@ pub const Blocks = struct {
             .spacing = 8,
             .children = bottom.items,
         }) }) })) catch {};
-        if (g.help) layers.append(a, cx.make(kete.Align{ .alignment = .top_left, .child = cx.make(kete.Padding{ .padding = .all(14), .child = help(cx) }) })) catch {};
         const fullscreen_button = cx.make(kete.RoundedBox{
             .color = button_bg,
             .radius = kete.CornerRadii.all(fullscreen_size / 2),
@@ -90,20 +89,23 @@ pub const Blocks = struct {
                 .on_press = on_fullscreen,
             }),
         });
-        // What is drawn, below the fullscreen button.
+        // What is drawn, top right.
         if (g.stats) layers.append(a, cx.make(kete.Align{
             .alignment = .top_right,
-            .child = cx.make(kete.Padding{ .padding = .{ .top = 12 + fullscreen_size + 8, .right = 12 }, .child = self.statsPanel(cx) }),
+            .child = cx.make(kete.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = self.statsPanel(cx) }),
         })) catch {};
         if (g.palette_open) layers.append(a, cx.make(kete.Align{ .alignment = .center, .child = self.palette(cx) })) catch {};
         // With the mouse taken, a mark in the middle: what it acts on.
         if (g.captured and !g.menu_open) layers.append(a, cx.make(kete.Align{ .child = crosshair(cx) })) catch {};
-        if (g.menu_open) layers.append(a, self.menu(cx)) catch {};
-        // Fullscreen, top right as in the other apps; over the menu too.
-        layers.append(a, cx.make(kete.Align{
-            .alignment = .top_right,
-            .child = cx.make(kete.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = fullscreen_button }),
-        })) catch {};
+        // The menu, and fullscreen, top right as in the other apps (only
+        // with the menu: while playing, the mouse is the game's).
+        if (g.menu_open) {
+            layers.append(a, self.menu(cx)) catch {};
+            layers.append(a, cx.make(kete.Align{
+                .alignment = .top_right,
+                .child = cx.make(kete.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = fullscreen_button }),
+            })) catch {};
+        }
         if (g.net.request) |who| layers.append(a, cx.make(kete.Align{
             .alignment = .top_center,
             .child = cx.make(kete.Padding{ .padding = .{ .top = 12 }, .child = joinRequest(cx, g, who) }),
@@ -188,10 +190,23 @@ pub const Blocks = struct {
             }
         }.f;
         // The options get more room: the time of day has a slider.
+        // The quality: how big the window is drawn (the display stretches
+        // it), from half to all of it.
+        const quality = cx.make(kete.Row{
+            .spacing = 12,
+            .children = cx.arena.dupe(kete.Widget, &.{
+                cx.make(kete.Text{ .text = "Quality", .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
+                cx.make(kete.Expanded{ .child = cx.make(kete.Slider{ .value = g.qualitySlider(), .on_changed = .of(g, Game.setQuality) }) }),
+                cx.make(kete.SizedBox{ .width = 80, .child = cx.make(kete.Text{
+                    .text = cx.fmt("{d:.0}%", .{g.quality * 100}),
+                    .style = .{ .size = t.body_size, .color = t.on_surface_variant },
+                    .wrap = false,
+                }) }),
+            }) catch &.{},
+        });
         const options = column(cx, 3, &.{
-            cx.make(kete.SwitchRow{ .value = g.antialias, .on_changed = .of(g, Game.setAntialias), .label = "Antialiasing" }),
+            quality,
             cx.make(kete.SwitchRow{ .value = g.bump, .on_changed = .of(g, Game.setBump), .label = "Bumps and ripples" }),
-            cx.make(kete.SwitchRow{ .value = g.help, .on_changed = .of(g, Game.setHelp), .label = "The controls" }),
             cx.make(kete.SwitchRow{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
             time,
         });
@@ -213,9 +228,9 @@ pub const Blocks = struct {
     fn statsPanel(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
         const s = self.stats;
         const p = self.game.player.pos;
-        const text = cx.fmt("{d:.0} fps{s}{s}\n{d} chunks, {d} draws ({d} detailed)\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
+        const text = cx.fmt("{d:.0} fps  ·  drawn at {d:.0}%{s}\n{d} chunks, {d} draws ({d} detailed)\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
             self.fps,
-            if (self.game.antialias) "  ·  4x antialiased" else "",
+            self.game.quality * 100,
             if (self.game.bump) "  ·  bump mapped" else "",
             s.chunks,
             s.draws,
@@ -329,17 +344,6 @@ fn crosshair(cx: *kete.BuildContext) kete.Widget {
     }) catch &.{} });
 }
 
-const help_text =
-    \\W A S D  walk  ·  Space  jump  ·  Space twice  fly (Space, Shift: up, down)
-    \\Mouse  look around  ·  Click  build  ·  Right click  take away
-    \\Middle click  copy a block  ·  1–9 or wheel  choose  ·  E  all blocks
-    \\Esc  menu
-;
-
-fn help(cx: *kete.BuildContext) kete.Widget {
-    return panel(cx, cx.make(kete.Text{ .text = help_text, .style = .{ .size = 15, .color = gfx.Color.argb(0xffffffff) } }));
-}
-
 fn panel(cx: *kete.BuildContext, child: kete.Widget) kete.Widget {
     return cx.make(kete.RoundedBox{ .color = gfx.Color.argb(0xa0000000), .radius = .all(10), .child = cx.make(kete.Padding{ .padding = .{ .left = 14, .right = 14, .top = 10, .bottom = 10 }, .child = child }) });
 }
@@ -450,7 +454,7 @@ fn findText(n: *kete.WidgetNode, text: []const u8) ?*kete.WidgetNode {
     return null;
 }
 
-test "the hotbar, palette, help and stats fit from the smallest window up; clicking them chooses" {
+test "the hotbar, palette and stats fit from the smallest window up; clicking them chooses" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
     const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
@@ -471,8 +475,7 @@ test "the hotbar, palette, help and stats fit from the smallest window up; click
         try testing.expect(!overflows(u.root.?));
     }
     try testing.expect(findText(u.root.?, "Bricks") != null);
-    try testing.expect(findText(u.root.?, "fps") != null);
-    try testing.expect(findText(u.root.?, "W A S D") != null);
+    try testing.expect(findText(u.root.?, "fps  ·  drawn at 100%") != null);
     // The world's view is the whole window (kete draws the title bar outside it).
     try testing.expect(g.view_size[0] == 1920 and g.view_size[1] > 900);
 }
@@ -495,15 +498,23 @@ test "the menu fits from the smallest window up, and its switches set the option
     }
     try testing.expect(findText(u.root.?, "Menu") != null);
     try testing.expect(findText(u.root.?, "Resume") != null);
-    // Its antialiasing switch turns it off.
-    try testing.expect(g.antialias);
-    const label_node = findText(u.root.?, "Antialiasing").?;
+    // Its bumps switch turns them off.
+    try testing.expect(g.bump);
+    const label_node = findText(u.root.?, "Bumps and ripples").?;
     const at = label_node.position();
     const p: kete.Point = .{ at[0] + 4, at[1] + 4 };
     u.pointerMotion(p);
     u.pointerButton(p, .left, true);
     u.pointerButton(p, .left, false);
-    try testing.expect(!g.antialias);
+    try testing.expect(!g.bump);
+    // The quality: as big as the window, to start with; the slider goes
+    // down to half.
+    try testing.expect(findText(u.root.?, "100%") != null);
+    g.setQuality(0);
+    try testing.expectEqual(@as(f32, 0.5), g.quality);
+    g.setQuality(0.42);
+    try testing.expectEqual(@as(f32, 0.7), g.quality);
+    try testing.expectApproxEqAbs(@as(f32, 0.4), g.qualitySlider(), 0.001);
     // Clicking beside it goes back to the game.
     u.frame(1920, 1036, 0, view);
     const beside: kete.Point = .{ 20, 500 };
@@ -568,7 +579,7 @@ test "playing together: games nearby to join, someone asking to join, and leavin
     try testing.expect(g.net.leave);
 }
 
-test "the top-right fullscreen button toggles fullscreen" {
+test "the top-right fullscreen button toggles fullscreen, and shows only with the menu" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
     const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
@@ -585,11 +596,11 @@ test "the top-right fullscreen button toggles fullscreen" {
         }
     };
     var toggle: Toggle = .{};
-    u.frame(800, 600, 0, Blocks{
+    const view: Blocks = .{
         .game = &g,
         .icons = icons,
         .on_fullscreen = .of(&toggle, Toggle.call),
-    });
+    };
     const Find = struct {
         fn first(node: *kete.WidgetNode, comptime T: type) ?*kete.WidgetNode {
             if (node.widget.is(T)) return node;
@@ -597,6 +608,13 @@ test "the top-right fullscreen button toggles fullscreen" {
             return null;
         }
     };
+    // Playing: none.
+    g.closeMenu();
+    u.frame(800, 600, 0, view);
+    try testing.expect(Find.first(u.root.?, kete.IconButton) == null);
+    // In the menu: top right.
+    g.openMenu();
+    u.frame(800, 600, 1, view);
     const btn = Find.first(u.root.?, kete.IconButton).?;
     const at = btn.position();
     // Top right of the world view (below the title bar).
