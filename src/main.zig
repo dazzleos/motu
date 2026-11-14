@@ -201,8 +201,9 @@ fn reportCounts(counts: *const [upscale.Upscaler.counted.len]u64, frames: u32) v
     var per: [upscale.Upscaler.counted.len]f64 = undefined;
     for (counts, &per) |c, *p| p.* = @as(f64, @floatFromInt(c)) / n;
     const at = struct {
-        fn f(v: []const f64, c: vc4.device.PerfCounter) f64 {
-            const i = std.mem.indexOfScalar(vc4.device.PerfCounter, &upscale.Upscaler.counted, c).?;
+        fn f(v: []const f64, comptime c: vc4.device.PerfCounter) f64 {
+            // Counted, or this does not build.
+            const i = comptime std.mem.indexOfScalar(vc4.device.PerfCounter, &upscale.Upscaler.counted, c).?;
             return v[i];
         }
     }.f;
@@ -214,10 +215,17 @@ fn reportCounts(counts: *const [upscale.Upscaler.counted.len]u64, frames: u32) v
         all / 1e6,                                     100 * vertex / all,                       100 * fragment / all,                           100 * idle / all,
         at(&per, .qpu_valid_instruction_cycles) / 1e6, at(&per, .qpu_waiting_tmus_cycles) / 1e6, at(&per, .qpu_waiting_scoreboard_cycles) / 1e6, at(&per, .qpu_waiting_varyings_cycles) / 1e6,
     });
-    print("dazzle-blocks: GPU counters per world image: triangles drawn {d:.0}k, not drawn {d:.0}k, clipped {d:.1}k; quads {d:.0}k, written {d:.0}k; texture quads {d:.0}k, texture cache misses {d:.0}k; vertex writes stalled {d:.1}M cycles; L2 cache misses {d:.0}k\n", .{
-        at(&per, .fep_valid_prims_render) / 1e3,   at(&per, .fep_valid_prims_no_render) / 1e3,      at(&per, .plb_prims_need_clipping) / 1e3,
-        at(&per, .fep_valid_quads) / 1e3,          at(&per, .tlb_quads_written_to_color_buf) / 1e3, at(&per, .tmu_texture_quads) / 1e3,
-        at(&per, .tmu_texture_cache_misses) / 1e3, at(&per, .vpm_vdw_stalled_cycles) / 1e6,         at(&per, .l2_cache_misses) / 1e3,
+    print("dazzle-blocks: GPU counters per world image: triangles drawn {d:.0}k; quads {d:.0}k, written {d:.0}k; texture quads {d:.0}k, texture cache misses {d:.0}k; L2 cache misses {d:.0}k; instruction cache {d:.0}k hits, {d:.0}k misses; uniform cache {d:.0}k hits, {d:.0}k misses\n", .{
+        at(&per, .fep_valid_prims_render) / 1e3,
+        at(&per, .fep_valid_quads) / 1e3,
+        at(&per, .tlb_quads_written_to_color_buf) / 1e3,
+        at(&per, .tmu_texture_quads) / 1e3,
+        at(&per, .tmu_texture_cache_misses) / 1e3,
+        at(&per, .l2_cache_misses) / 1e3,
+        at(&per, .qpu_inst_cache_hits) / 1e3,
+        at(&per, .qpu_inst_cache_misses) / 1e3,
+        at(&per, .qpu_uniform_cache_hits) / 1e3,
+        at(&per, .qpu_uniform_cache_misses) / 1e3,
     });
 }
 
