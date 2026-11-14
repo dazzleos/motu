@@ -75,9 +75,10 @@ const Scene = struct {
             .bump = g.bump,
             .outline = if (g.target) |t| t.cell else null,
             .avatars = g.net.others,
+            .reach = s.scale.reach(),
         };
         // Smaller, into an image stretched over the view.
-        if (s.upscaler) |up| if (s.scale.k < 1) {
+        if (s.upscaler) |up| if (s.scale.resolution() < 1) {
             const full = [2]u32{ vp.width, vp.height };
             const size = s.scale.of(full);
             if (up.begin(full, size, g.antialias)) |image| {
@@ -158,7 +159,7 @@ const Timing = struct {
     waited_ns: u64,
     gpu: GpuTime,
 
-    fn report(t: *const Timing, fd: linux.fd_t, elapsed_ns: u64, antialias: bool, bump: bool, scale: f32) void {
+    fn report(t: *const Timing, fd: linux.fd_t, elapsed_ns: u64, antialias: bool, bump: bool, scale: upscale.Scale) void {
         const n: f64 = @floatFromInt(@max(t.frames, 1));
         const ms = struct {
             fn per(ns: u64, frames: f64) f64 {
@@ -175,10 +176,11 @@ const Timing = struct {
             }) catch "GPU time not known"
         else
             "GPU time not known";
-        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels, the world at {d:.0}%{s}{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
+        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels, seen {d:.0} blocks away, the world at {d:.0}%{s}{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
             gpu_text,
             t.pixels / n / 1e6,
-            scale * 100,
+            renderer_mod.view_distance * scale.reach(),
+            scale.resolution() * 100,
             if (antialias) ", antialiased" else "",
             if (bump) ", bump mapped" else "",
             ms(t.step_ns, n),
@@ -496,7 +498,7 @@ fn run(init: std.process.Init) !void {
         if (now - log_since >= 10 * std.time.ns_per_s) {
             const s = renderer.stats;
             print("dazzle-blocks: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
-            timing.report(host.dev.fd, now - log_since, game.antialias, game.bump, scene.scale.k);
+            timing.report(host.dev.fd, now - log_since, game.antialias, game.bump, scene.scale);
             if (measuring) {
                 const n: f64 = @floatFromInt(@max(timing.frames, 1));
                 const wn: f64 = @floatFromInt(@max(scene.world_frames, 1));

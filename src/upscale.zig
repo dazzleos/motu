@@ -5,10 +5,10 @@
 //! (the menu, the hints, the blocks to build with) is drawn at the
 //! window's own size, so it stays sharp.
 //!
-//! How much smaller (`Scale`) follows how the frames go: while the GPU
+//! How much is drawn (`Scale`) follows how the frames go: while the GPU
 //! holds them up (they are waited for, and come slower than the display
-//! shows them), smaller; while it is idle when they are asked for, bigger
-//! again, up to the view's own size.
+//! shows them), less (seen less far, then smaller); while it is idle when
+//! they are asked for, more again, up to all of it.
 
 const std = @import("std");
 const vc4 = @import("vc4");
@@ -101,9 +101,14 @@ pub const Upscaler = struct {
     }
 };
 
-/// How big the world is drawn, of the view's size (across and down).
+/// How much is drawn: as the GPU allows, from the frames so far. The
+/// world is mostly triangles for it (its time on them is much the same
+/// however many pixels they cover), so first it is seen less far (from
+/// `quality` 1 to 0.5: the fog nearer, from the whole view distance to
+/// half), and only then drawn smaller (to 0.3: to `min_resolution` across
+/// and down).
 pub const Scale = struct {
-    k: f32 = 1,
+    quality: f32 = 1,
     /// The frames since it last changed, and how they went: how long
     /// apart they came, and how long each waited for the GPU.
     frames: u32 = 0,
@@ -111,16 +116,27 @@ pub const Scale = struct {
     waited_ns: u64 = 0,
     last_ns: ?u64 = null,
 
-    /// The smallest it is drawn: half across and down (a quarter of the
-    /// pixels).
-    pub const min: f32 = 0.5;
+    pub const min: f32 = 0.3;
+    pub const min_resolution: f32 = 0.6;
     /// The frames it waits for before changing.
     const window = 12;
-    /// The display's rate: 60 frames a second, and a little slack.
+    /// The display's rate: 60 frames a second.
     const frame_ns = std.time.ns_per_s / 60;
 
+    /// How far one sees, of the whole view distance.
+    pub fn reach(s: Scale) f32 {
+        return @max(s.quality, 0.5);
+    }
+
+    /// How big the world is drawn, of the view's size across and down.
+    pub fn resolution(s: Scale) f32 {
+        if (s.quality >= 0.5) return 1;
+        return min_resolution + (1 - min_resolution) * (s.quality - min) / (0.5 - min);
+    }
+
     /// A frame is being drawn, at `now`, `waited_ns` having been spent
-    /// waiting for the GPU since the last. Returns whether `k` changed.
+    /// waiting for the GPU since the last. Returns whether `quality`
+    /// changed.
     pub fn frame(s: *Scale, now: u64, waited_ns: u64) bool {
         const last = s.last_ns orelse {
             s.last_ns = now;
@@ -138,61 +154,60 @@ pub const Scale = struct {
         s.frames = 0;
         s.interval_ns = 0;
         s.waited_ns = 0;
-        const was = s.k;
-        // Slower than the display, and the GPU holding them up: smaller.
+        const was = s.quality;
+        // Slower than the display, and the GPU holding them up: less.
         if (interval > frame_ns + frame_ns / 10 and waited > 2 * std.time.ns_per_ms) {
-            // As much smaller as there are too many pixels (at most a
-            // fifth across at once).
-            const over = @as(f32, @floatFromInt(frame_ns)) / @as(f32, @floatFromInt(interval));
-            s.k = @max(min, s.k * @max(0.8, @sqrt(over)));
+            s.quality = @max(min, s.quality - 0.05);
         } else if (waited < std.time.ns_per_ms / 2) {
-            // The GPU idle when asked: a little bigger.
-            s.k = @min(1, s.k * 1.05);
+            // The GPU idle when asked: a little more.
+            s.quality = @min(1, s.quality + 0.025);
         }
-        // Not drawn smaller for a few pixels' sake.
-        if (s.k > 0.97) s.k = 1;
-        return s.k != was;
+        return s.quality != was;
     }
 
     /// The size to draw the world at, for a view `view` big.
     pub fn of(s: Scale, view: [2]u32) [2]u32 {
+        const k = s.resolution();
         return .{
-            @max(16, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(view[0])) * s.k)))),
-            @max(16, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(view[1])) * s.k)))),
+            @max(16, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(view[0])) * k)))),
+            @max(16, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(view[1])) * k)))),
         };
     }
 };
 
 const testing = std.testing;
 
-test "the world is drawn smaller while the GPU holds the frames up, and bigger again when it does not" {
+test "less is drawn while the GPU holds the frames up (first less far, then smaller), and more again when it does not" {
     var s: Scale = .{};
     const ms = std.time.ns_per_ms;
-    // At 30 frames a second, waiting for the GPU: smaller.
+    // At 30 frames a second, waiting for the GPU: seen less far, still
+    // drawn whole.
     var t: u64 = 0;
-    var changed = false;
     for (0..13) |_| {
         t += 33 * ms;
-        if (s.frame(t, 20 * ms)) changed = true;
+        _ = s.frame(t, 20 * ms);
     }
-    try testing.expect(changed);
-    try testing.expect(s.k < 1 and s.k >= 0.8);
-    // Never smaller than half.
-    for (0..200) |_| {
+    try testing.expect(s.quality < 1);
+    try testing.expect(s.reach() < 1);
+    try testing.expectEqual(@as(f32, 1), s.resolution());
+    // Then smaller too, but never less than the least.
+    for (0..400) |_| {
         t += 50 * ms;
         _ = s.frame(t, 30 * ms);
     }
-    try testing.expectEqual(Scale.min, s.k);
-    try testing.expectEqual([2]u32{ 960, 492 }, s.of(.{ 1920, 984 }));
-    // At the display's rate, the GPU idle: bigger, back to the whole view.
+    try testing.expectEqual(Scale.min, s.quality);
+    try testing.expectEqual(@as(f32, 0.5), s.reach());
+    try testing.expectApproxEqAbs(Scale.min_resolution, s.resolution(), 0.001);
+    try testing.expectEqual([2]u32{ 1152, 590 }, s.of(.{ 1920, 984 }));
+    // At the display's rate, the GPU idle: more, back to all of it.
     for (0..2000) |_| {
         t += 16 * ms;
         _ = s.frame(t, 0);
     }
-    try testing.expectEqual(@as(f32, 1), s.k);
+    try testing.expectEqual(@as(f32, 1), s.quality);
     // A pause is not counted as a slow frame.
-    const k = s.k;
+    const q = s.quality;
     t += 5 * std.time.ns_per_s;
     try testing.expect(!s.frame(t, 0));
-    try testing.expectEqual(k, s.k);
+    try testing.expectEqual(q, s.quality);
 }

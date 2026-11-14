@@ -272,6 +272,9 @@ pub const View = struct {
     outline: ?world_mod.Pos = null,
     /// The other players.
     avatars: []const player_mod.Other = &.{},
+    /// How far one sees, of `view_distance` (the fog nearer to match):
+    /// less to draw.
+    reach: f32 = 1,
 };
 
 /// What the last frame drew.
@@ -541,8 +544,8 @@ pub fn Renderer(comptime Device: type) type {
             const env = v.env;
             const light = env.lightDir();
             const fog: V3 = if (v.underwater) V3{ 0.07, 0.34, 0.44 } * math.splat(0.25 + 0.75 * env.daylight) else env.horizon;
-            const start: f32 = if (v.underwater) 0 else fog_start;
-            const depth: f32 = if (v.underwater) 26 else fog_depth;
+            const start: f32 = if (v.underwater) 0 else fog_start * v.reach;
+            const depth: f32 = if (v.underwater) 26 else fog_depth * v.reach;
             const scene: Scene = .{
                 .mvp = vp,
                 .camera = .{ cam.eye[0], cam.eye[1], cam.eye[2], @mod(v.time, 1000) },
