@@ -20,9 +20,9 @@ const blocks = @import("blocks.zig");
 
 const Block = blocks.Block;
 
-pub const size_x = 128;
+pub const size_x = 256;
 pub const size_y = 64;
-pub const size_z = 128;
+pub const size_z = 256;
 /// Water fills everything below this height that is not land.
 pub const sea_level = 24;
 
@@ -62,6 +62,9 @@ pub const World = struct {
     spawn_yaw: f32 = 0,
     /// For spreading light.
     queue: std.ArrayList(u32) = .empty,
+    /// How far what was read was moved (a world from before the atoll
+    /// is put in the middle of this one), for what was saved with it.
+    moved_by: [2]i32 = .{ 0, 0 },
 
     pub fn create(gpa: std.mem.Allocator) !*World {
         const w = try gpa.create(World);
@@ -524,30 +527,32 @@ pub const World = struct {
         }
     }
 
-    /// On the widest beach, at the water's edge, looking inland at the
-    /// mountain.
+    /// On the widest beach on the lagoon's side, at the water's edge,
+    /// looking out over the lagoon.
     fn findSpawn(w: *World, heights: []const i32) void {
         const centre = [2]f32{ size_x / 2, size_z / 2 };
         var best: [2]i32 = .{ size_x / 2, size_z / 2 };
         var best_width: i32 = -1;
-        // Out from the middle in each of 32 directions: the sand before
-        // the sea.
-        for (0..32) |i| {
-            const a = @as(f32, @floatFromInt(i)) * std.math.pi / 16;
+        // Out from the middle in each of 64 directions: over the lagoon to
+        // the first sand, and how much sand there is.
+        for (0..64) |i| {
+            const a = @as(f32, @floatFromInt(i)) * std.math.pi / 32;
+            var shore: ?[2]i32 = null;
             var sand: i32 = 0;
-            var edge: ?[2]i32 = null;
-            var r: f32 = 4;
+            var r: f32 = 20;
             while (r < size_x / 2) : (r += 1) {
                 const x: i32 = @intFromFloat(centre[0] + @cos(a) * r);
                 const z: i32 = @intFromFloat(centre[1] + @sin(a) * r);
                 const h = heights[@intCast(z * size_x + x)];
-                if (h < sea_level - 1) break;
-                if (w.get(x, h, z) == .sand and w.get(x, h + 1, z) == .air) {
-                    sand += 1;
-                    edge = .{ x, z };
-                } else sand = 0;
+                const is_sand = h == sea_level - 1 and w.get(x, h, z) == .sand and w.get(x, h + 1, z) == .air;
+                if (shore == null) {
+                    if (is_sand) {
+                        shore = .{ x, z };
+                        sand = 1;
+                    } else if (h >= sea_level - 1) break;
+                } else if (is_sand) sand += 1 else break;
             }
-            if (edge) |e| if (sand > best_width) {
+            if (shore) |e| if (sand > best_width) {
                 best_width = sand;
                 best = e;
             };
@@ -557,9 +562,9 @@ pub const World = struct {
         var y = w.top(x, z) + 1;
         while (y < size_y - 2 and (w.get(x, y, z).isSolid() or w.get(x, y + 1, z).isSolid())) : (y += 1) {}
         w.spawn = .{ @as(f32, @floatFromInt(x)) + 0.5, @floatFromInt(y), @as(f32, @floatFromInt(z)) + 0.5 };
-        // Facing the mountain (yaw 0 faces -z; positive turns to +x).
-        const dx = size_x * 0.58 - w.spawn[0];
-        const dz = size_z * 0.42 - w.spawn[2];
+        // Facing the middle (yaw 0 faces -z; positive turns to +x).
+        const dx = centre[0] - w.spawn[0];
+        const dz = centre[1] - w.spawn[2];
         w.spawn_yaw = std.math.atan2(dx, -dz);
     }
 
@@ -623,11 +628,59 @@ pub const World = struct {
         }
     }
 
+    /// Where a world from before (128 across) is put in this one.
+    pub const small_offset: [2]i32 = .{ (size_x - 128) / 2, (size_z - 128) / 2 };
+
+    /// A world from before the atoll, 128 across, read into the middle of
+    /// this one, the deep sea round it; returns how many bytes it took.
+    fn decodeSmall(w: *World, data: []const u8) !usize {
+        const from = data[4];
+        w.seed = std.mem.readInt(u32, data[11..15], .little);
+        const small_volume = 128 * size_y * 128;
+        const old = try w.gpa.alloc(Block, small_volume);
+        defer w.gpa.free(old);
+        var at: usize = 15;
+        var i: usize = 0;
+        while (i < old.len) {
+            if (at + 2 > data.len) return error.Truncated;
+            const n = @as(usize, data[at]) + 1;
+            const b: Block = @enumFromInt(data[at + 1]);
+            if (!b.current().isValid() or i + n > old.len) return error.Corrupt;
+            @memset(old[i..][0..n], b);
+            i += n;
+            at += 2;
+        }
+        // The sea, then the old world in its middle.
+        for (0..size_z) |zu| for (0..size_x) |xu| for (0..size_y) |yu| {
+            const y: i32 = @intCast(yu);
+            w.blocks[index(@intCast(xu), y, @intCast(zu))] = if (y < sea_level - 11) .volcanic_rock else if (y < sea_level - 9) .sand else if (y < sea_level) .water else .air;
+        };
+        for (0..128) |zu| for (0..size_y) |yu| {
+            const src = (yu * 128 + zu) * 128;
+            const dst = index(small_offset[0], @intCast(yu), @as(i32, @intCast(zu)) + small_offset[1]);
+            @memcpy(w.blocks[dst..][0..128], old[src..][0..128]);
+        };
+        if (from < 2) w.fromTrees();
+        for (w.blocks) |*b| b.* = b.current();
+        try w.computeLight();
+        w.dirty = .full;
+        w.moved_by = small_offset;
+        return at;
+    }
+
     /// Reads what `encode` wrote; returns how many bytes it took.
     pub fn decode(w: *World, data: []const u8) !usize {
         if (data.len < 15 or !std.mem.eql(u8, data[0..4], magic) or data[4] < 1 or data[4] > version) return error.NotAWorld;
         const from = data[4];
-        if (std.mem.readInt(u16, data[5..7], .little) != size_x or std.mem.readInt(u16, data[7..9], .little) != size_y or std.mem.readInt(u16, data[9..11], .little) != size_z) return error.WrongSize;
+        w.moved_by = .{ 0, 0 };
+        const sx = std.mem.readInt(u16, data[5..7], .little);
+        const sy = std.mem.readInt(u16, data[7..9], .little);
+        const sz = std.mem.readInt(u16, data[9..11], .little);
+        // A world from before the atoll (128 across): in the middle of
+        // this one, the deep sea round it.
+        const small = sx == 128 and sy == size_y and sz == 128;
+        if (!small and (sx != size_x or sy != size_y or sz != size_z)) return error.WrongSize;
+        if (small) return w.decodeSmall(data);
         w.seed = std.mem.readInt(u32, data[11..15], .little);
         var at: usize = 15;
         var i: usize = 0;
@@ -695,67 +748,84 @@ fn fbm(seed: u32, x: f32, z: f32, octaves: u32) f32 {
 /// The ground at a place: how high it is, and whether it is bare rock.
 pub const Ground = struct { h: f32, rock: bool = false };
 
-/// The ground at a place: an island in the middle, its coast made uneven
-/// by noise; a beach all at one height (a block above the sea) and wide;
-/// shallow sea around it, then the sea bed falling away. In places rocky
-/// headlands take the beach's place and run out into the sea, and rocks
-/// stand on the beaches. Inland, rolling hills, and a mountain
-/// off-centre.
+/// How far the atoll's ring of reef and islands is from the middle, and
+/// half how wide it is.
+pub const atoll_radius: f32 = 86;
+const ring_half: f32 = 18;
+
+/// The ground at a place: an atoll. A ring of reef round a lagoon, with
+/// islands of different sizes along it, the biggest with a hill; between
+/// them, reef a block or two under the water; inside, the lagoon, a few
+/// blocks deep; outside, the reef falling away to the deep sea. Each
+/// island has a beach all at one height (a block above the sea... at the
+/// water's surface), rocks on it, and in places rocky headlands instead.
 pub fn groundAt(seed: u32, x: f32, z: f32) Ground {
     const sea: f32 = sea_level;
     // The beach's top is at the water's surface.
     const beach: f32 = sea - 1;
-    const dx = (x - size_x / 2) / 58;
-    const dz = (z - size_z / 2) / 58;
-    const warp = (fbm(seed +% 1, x / 26, z / 26, 4) - 0.5) * 0.7;
-    const r = @sqrt(dx * dx + dz * dz) + warp;
-    const land = 1 - r;
-    // Where the coast is, and how far the beach reaches inland.
-    const coast = 0.36;
-    const beach_end = 0.52;
-    // Headlands: rock in stretches of the coast, out into the sea.
-    const headland = std.math.clamp((fbm(seed +% 5, x / 22, z / 22, 3) - 0.56) * 7, 0, 1);
+    const dx = x - size_x / 2;
+    const dz = z - size_z / 2;
+    const warp = (fbm(seed +% 1, x / 40, z / 40, 3) - 0.5) * 26;
+    const dist = @sqrt(dx * dx + dz * dz) + warp;
+    // Islands along the ring: noise round it (smooth all the way round),
+    // a little across it too, so they are of different sizes. Where it
+    // is strongest, the ring widens: the main island.
+    const a = std.math.atan2(dz, dx);
+    const round = fbm(seed +% 8, @cos(a) * 3.6 + 5, @sin(a) * 3.6 + 5, 3);
+    const isle = round * 0.8 + fbm(seed +% 9, x / 30, z / 30, 2) * 0.2;
+    // The main islands: where an island is, bigger and with a hill, in
+    // places of their own (not along the ring, so they are round).
+    const main = smoothstep(0.58, 0.7, fbm(seed +% 10, x / 45, z / 45, 2)) * smoothstep(0.45, 0.6, isle);
+    const across = (dist - atoll_radius) / (ring_half * (1 + main * 0.5));
+    const ring = 1 - across * across;
+    const land = ring - (0.55 - isle) * 4;
     const rough = fbm(seed +% 6, x / 4, z / 4, 2);
-    if (land < beach_end and headland > 0) {
-        const out = @max(0, coast - land);
-        const rock_h = beach + 1 + headland * 3 + rough * 2.5 - out * 40 - @max(0, land - coast) * 4;
-        if (rock_h >= beach and (land < coast or headland > 0.25)) return .{ .h = @max(rock_h, beach), .rock = true };
+    const bed = fbm(seed +% 2, x / 10, z / 10, 2);
+    // Headlands: rock in stretches of the coast, out into the water.
+    const headland = std.math.clamp((fbm(seed +% 5, x / 22, z / 22, 3) - 0.58) * 7, 0, 1);
+    if (land < 0.3 and land > -0.25 and headland > 0) {
+        const rock_h = beach + 1 + headland * 3 + rough * 2.5 + @min(land, 0) * 16;
+        if (rock_h >= beach and (land < 0 or headland > 0.25)) return .{ .h = @max(rock_h, beach), .rock = true };
     }
-    if (land < coast) {
-        // Shallow sea, a block or two deep; further out, the sea bed falls
-        // away.
-        const bed = fbm(seed +% 2, x / 10, z / 10, 2);
-        if (land > coast - 0.22) return .{ .h = beach - 1 - bed * 1.6 };
-        return .{ .h = @max(beach - 2.6 - (coast - 0.22 - land) * 40, sea - 11) + bed * 2 };
+    if (land <= 0) {
+        // Inside, the lagoon, a few blocks deep.
+        if (across < -1) return .{ .h = beach - 2 - bed * 2.6 };
+        // Outside, the reef falling away to the deep.
+        if (across > 1) return .{ .h = @max(beach - 2 - (across - 1) * ring_half * 0.55, sea - 11) + bed * 2 };
+        // The reef between the islands, a block or two down.
+        return .{ .h = beach - 1 - bed * 1.6 };
     }
-    if (land < beach_end) {
-        // Rocks here and there on the sand.
+    if (land < 0.25) {
+        // The beach; rocks here and there on it.
         if (fbm(seed +% 7, x / 3.5, z / 3.5, 2) > 0.74) return .{ .h = beach + 1 + rough, .rock = true };
         return .{ .h = beach };
     }
-    const inland = std.math.clamp((land - beach_end) / 0.4, 0, 1);
-    const hills = (fbm(seed +% 3, x / 22, z / 22, 4) - 0.3) * 14 * inland;
-    // The mountain.
-    const mx = x - size_x * 0.58;
-    const mz = z - size_z * 0.42;
-    const md = @max(0, 1 - @sqrt(mx * mx + mz * mz) / 34);
+    const inland = std.math.clamp((land - 0.25) / 0.5, 0, 1);
+    const hills = (fbm(seed +% 3, x / 18, z / 18, 4) - 0.3) * 10 * inland;
+    // The main island's hill.
     const ridge = 1 - @abs(fbm(seed +% 4, x / 12, z / 12, 3) * 2 - 1);
-    const mountain = md * md * (22 + ridge * 12);
-    return .{ .h = std.math.clamp(beach + inland * 7 + @max(hills, 0) + mountain, 3, size_y - 6) };
+    const hill = main * inland * inland * (14 + ridge * 10);
+    return .{ .h = std.math.clamp(beach + 1 + inland * 4 + @max(hills, 0) + hill, 3, size_y - 8) };
+}
+
+fn smoothstep(lo: f32, hi: f32, x: f32) f32 {
+    const t = std.math.clamp((x - lo) / (hi - lo), 0, 1);
+    return t * t * (3 - 2 * t);
 }
 
 const testing = std.testing;
 
-test "the island: land in the middle, sea at the edges, a beach, trees and plants" {
+test "the atoll: a ring of islands round a lagoon, sea at the edges, beaches, trees and plants" {
     const w = try World.create(testing.allocator);
     defer w.destroy();
     try w.generate(1234);
     // The edges are under the sea.
-    for ([_][2]i32{ .{ 0, 0 }, .{ 127, 0 }, .{ 0, 127 }, .{ 127, 127 }, .{ 64, 0 }, .{ 0, 64 } }) |c| {
+    const e = size_x - 1;
+    for ([_][2]i32{ .{ 0, 0 }, .{ e, 0 }, .{ 0, e }, .{ e, e }, .{ size_x / 2, 0 }, .{ 0, size_z / 2 } }) |c| {
         try testing.expect(w.top(c[0], c[1]) == sea_level - 1);
         try testing.expectEqual(Block.water, w.get(c[0], sea_level - 1, c[1]));
     }
-    // Land above the sea in the middle, high in places.
+    // Land above the sea round the ring, high in places.
     var land: u32 = 0;
     var highest: i32 = 0;
     var counts = std.EnumArray(Block, u32).initFill(0);
@@ -765,7 +835,9 @@ test "the island: land in the middle, sea at the edges, a beach, trees and plant
         highest = @max(highest, t);
     };
     for (w.blocks) |b| counts.getPtr(b).* += 1;
-    try testing.expect(land > 3000 and land < 12000);
+    try testing.expect(land > 8000 and land < 30000);
+    // The lagoon in the middle.
+    try testing.expectEqual(Block.water, w.get(size_x / 2, sea_level - 1, size_z / 2));
     try testing.expect(highest > sea_level + 16);
     for ([_]Block{ .grass, .sand, .palm, .tall_grass, .leafy_plant, .volcanic_rock, .coral }) |b| try testing.expect(counts.get(b) > 0);
     var flowers: usize = 0;
@@ -946,4 +1018,39 @@ test "the island has caves: shelters in the rock, none deep" {
     try testing.expect(hollow > 300);
     // Bare rock up high, not all grass.
     try testing.expect(rock > 300);
+}
+
+test "a world from before the atoll (128 across) is read into the middle of this one" {
+    // Saved as they were: below 30 rock, a lamp at (10, 30, 20), air.
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(testing.allocator);
+    try data.appendSlice(testing.allocator, World.magic);
+    try data.append(testing.allocator, World.version);
+    var hdr: [10]u8 = undefined;
+    std.mem.writeInt(u16, hdr[0..2], 128, .little);
+    std.mem.writeInt(u16, hdr[2..4], size_y, .little);
+    std.mem.writeInt(u16, hdr[4..6], 128, .little);
+    std.mem.writeInt(u32, hdr[6..10], 5, .little);
+    try data.appendSlice(testing.allocator, &hdr);
+    const old = try testing.allocator.alloc(Block, 128 * size_y * 128);
+    defer testing.allocator.free(old);
+    for (old, 0..) |*b, i| b.* = if (i / (128 * 128) < 30) .volcanic_rock else .air;
+    old[(30 * 128 + 20) * 128 + 10] = .lamp;
+    var i: usize = 0;
+    while (i < old.len) {
+        var n: usize = 1;
+        while (n < 256 and i + n < old.len and old[i + n] == old[i]) n += 1;
+        try data.appendSlice(testing.allocator, &.{ @intCast(n - 1), @intFromEnum(old[i]) });
+        i += n;
+    }
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    _ = try w.decode(data.items);
+    const o = World.small_offset;
+    try testing.expectEqual(o, w.moved_by);
+    try testing.expectEqual(Block.lamp, w.get(o[0] + 10, 30, o[1] + 20));
+    try testing.expectEqual(Block.volcanic_rock, w.get(o[0] + 10, 29, o[1] + 20));
+    // Round it, the sea.
+    try testing.expectEqual(Block.water, w.get(2, sea_level - 1, 2));
+    try testing.expectEqual(Block.air, w.get(2, sea_level, 2));
 }

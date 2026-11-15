@@ -145,9 +145,10 @@ pub const Creatures = struct {
                 },
                 // Opposite coast.
                 1 => .{ world_mod.size_x - w.spawn[0], world_mod.size_z - w.spawn[2] },
+                // Songbirds over the atoll's islands.
                 else => blk: {
                     const a = (@as(f32, @floatFromInt(flock - 2)) + 0.35) * (std.math.pi / 2.0);
-                    const r: f32 = 22 + 12 * rand01(s +% 1);
+                    const r: f32 = world_mod.atoll_radius - 6 + 12 * rand01(s +% 1);
                     break :blk .{
                         world_mod.size_x * 0.5 + @cos(a) * r,
                         world_mod.size_z * 0.5 + @sin(a) * r,
@@ -541,8 +542,8 @@ pub fn planeAt(seed: u32, day: u32, secs: f32) ?Plane {
     const heading = world_mod.hash(s, d, 2) * 2 * std.math.pi;
     const dir = V3{ @sin(heading), 0, -@cos(heading) };
     const side = V3{ @cos(heading), 0, @sin(heading) };
-    // Past the island's middle, off to one side: along its coast.
-    const offset = (35 + world_mod.hash(s, d, 3) * 15) * (if (world_mod.hash(s, d, 4) < 0.5) @as(f32, -1) else 1);
+    // Past the atoll's middle, off to one side: over its ring.
+    const offset = (world_mod.atoll_radius - 12 + world_mod.hash(s, d, 3) * 24) * (if (world_mod.hash(s, d, 4) < 0.5) @as(f32, -1) else 1);
     const centre = V3{ world_mod.size_x / 2, plane_y, world_mod.size_z / 2 } + side * math.splat(offset);
     return .{
         .pos = centre + dir * math.splat(along) + V3{ 0, @sin(secs * 0.3) * 0.8, 0 },
@@ -669,8 +670,9 @@ fn findWaterFor(w: *const World, kind: Swimmer.Kind, seed: u32, i: usize) [2]f32
     const base_a = @as(f32, @floatFromInt(i)) * 2.4 + rand01(seed) * 0.5;
     for (0..48) |attempt| {
         const a = base_a + @as(f32, @floatFromInt(attempt)) * 0.37;
-        var r: f32 = if (kind == .turtle) 30 else 50;
-        while (r <= 80) : (r += 2) {
+        // Turtles in the lagoon; sharks outside the reef.
+        var r: f32 = if (kind == .turtle) 30 else world_mod.atoll_radius + 24;
+        while (r <= (if (kind == .turtle) world_mod.atoll_radius else world_mod.atoll_radius + 60)) : (r += 2) {
             const x = world_mod.size_x * 0.5 + @cos(a) * r;
             const z = world_mod.size_z * 0.5 + @sin(a) * r;
             if (waterFor(kind, w, x, z)) return .{ x, z };
@@ -1098,7 +1100,7 @@ test "creature meshes: every quad uses strip 2 and is wound counter-clockwise fa
     var c: Creatures = .{};
     c.sync(w, 2.5);
 
-    const cam: math.Camera = .{ .eye = .{ 64, 90, 150 }, .yaw = 0, .pitch = -0.6 };
+    const cam: math.Camera = .{ .eye = .{ world_mod.size_x / 2, 90, world_mod.size_z / 2 + 86 }, .yaw = 0, .pitch = -0.6 };
     const frustum = math.Frustum.of(math.mul(cam.projection(1.5), cam.view()));
     const verts = try testing.allocator.alloc(Vertex, max_quads * 4);
     defer testing.allocator.free(verts);
@@ -1142,9 +1144,9 @@ test "the seaplane flies past once a day, for a while, high over the sea by the 
         var nearest: f32 = 999;
         secs = 0;
         while (secs < 600) : (secs += 0.5) if (planeAt(7, @intCast(day), secs)) |p| {
-            const d = p.pos - V3{ 64, p.pos[1], 64 };
+            const d = p.pos - V3{ world_mod.size_x / 2, p.pos[1], world_mod.size_z / 2 };
             nearest = @min(nearest, @sqrt(math.dot(d, d)));
         };
-        try testing.expect(nearest > 30 and nearest < 55);
+        try testing.expect(nearest > world_mod.atoll_radius - 15 and nearest < world_mod.atoll_radius + 15);
     }
 }

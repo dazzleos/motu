@@ -38,8 +38,8 @@ pub const max_nearby = 8;
 
 const beacon_magic = "DZBN";
 /// 2: palms and new plants (a world sent is the new kind). 3: the day,
-/// for the weather.
-const protocol_version: u8 = 3;
+/// for the weather. 4: the atoll (worlds 256 across).
+const protocol_version: u8 = 4;
 const beacon_every = std.time.ns_per_s;
 /// A game not heard for this long has gone.
 const nearby_for = 4 * std.time.ns_per_s;
@@ -754,7 +754,7 @@ test "beacons, changes and players, there and back" {
     const e: game_mod.Edit = .{ .cell = .{ 10, 31, 127 }, .block = .volcanic_wall };
     try testing.expectEqual(e, decodeEdit(&encodeEdit(e)).?);
     // Outside the world, or not a block: not taken.
-    try testing.expect(decodeEdit(&encodeEdit(.{ .cell = .{ 128, 0, 0 }, .block = .volcanic_rock })) == null);
+    try testing.expect(decodeEdit(&encodeEdit(.{ .cell = .{ world_mod.size_x, 0, 0 }, .block = .volcanic_rock })) == null);
     var bad = encodeEdit(e);
     bad[6] = 255;
     try testing.expect(decodeEdit(&bad) == null);

@@ -733,5 +733,6 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
     std.log.info("island: {d} solid, {d} water, {d} see-through quads; at most {d} in a chunk", .{ solid, water, clear, most });
     // A chunk's meshes fit one index range (16384 quads).
     try testing.expect(most < 16384);
-    try testing.expect(solid < 80000);
+    // The atoll: a quarter of a million at most.
+    try testing.expect(solid < 250000);
 }

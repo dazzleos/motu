@@ -915,10 +915,21 @@ fn chunkDistance(i: usize, p: V3) f32 {
 // --- Fixed geometry ----------------------------------------------------------------------
 
 const sea_patch_size = 64;
-const sea_grid = 7;
-/// Of the 7x7 grid of 64x64 patches across -160..288, the middle one
-/// (32..96) is wholly inside the island.
-const sea_patch_count = sea_grid * sea_grid - 1;
+/// How far the sea is drawn past the world's edges.
+const sea_reach = 160;
+const sea_grid = (world_mod.size_x + 2 * sea_reach + sea_patch_size - 1) / sea_patch_size;
+/// The patches of the grid, from -sea_reach, with sea in them: all but
+/// those wholly inside the world.
+const sea_patch_count = blk: {
+    var n = 0;
+    for (0..sea_grid) |gz| for (0..sea_grid) |gx| {
+        const x0 = -sea_reach + @as(i32, gx) * sea_patch_size;
+        const z0 = -sea_reach + @as(i32, gz) * sea_patch_size;
+        const inside = x0 >= 0 and x0 + sea_patch_size <= world_mod.size_x and z0 >= 0 and z0 + sea_patch_size <= world_mod.size_z;
+        if (!inside) n += 1;
+    };
+    break :blk n;
+};
 
 const SeaPatch = struct {
     x0: f32,
@@ -949,12 +960,12 @@ fn seaRingPatches(gpa: std.mem.Allocator, patches: *[sea_patch_count]SeaPatch) !
         .{ .inner = 0, .far = 4, .step = 1, .info = wave },
         .{ .inner = 4, .far = 16, .step = 2, .info = wave },
         .{ .inner = 16, .far = 48, .step = 4, .info = flat },
-        .{ .inner = 48, .far = 160, .step = 16, .info = flat },
+        .{ .inner = 48, .far = sea_reach, .step = 16, .info = flat },
     };
     var pi: usize = 0;
     for (0..sea_grid) |gz| for (0..sea_grid) |gx| {
-        const px0: i32 = -160 + @as(i32, @intCast(gx)) * sea_patch_size;
-        const pz0: i32 = -160 + @as(i32, @intCast(gz)) * sea_patch_size;
+        const px0: i32 = -sea_reach + @as(i32, @intCast(gx)) * sea_patch_size;
+        const pz0: i32 = -sea_reach + @as(i32, @intCast(gz)) * sea_patch_size;
         const first: u32 = @intCast(out.items.len / 4);
         for (rings) |ring| {
             var z: i32 = @max(pz0, -ring.far);

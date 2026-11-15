@@ -371,11 +371,12 @@ test "the island from its beach, drawn with the real shaders: sky above, land an
     try testing.expect(sky > width / 2);
     // Something was drawn over every pixel (none left black).
     for (img.pixels) |c| try testing.expect(c & 0xffffff != 0);
-    // The bottom row (the ground at the player's feet) is not sky-coloured.
+    // The bottom row (the beach and the lagoon at the player's feet) is
+    // not the sky: darker, or not blue.
     var ground: u32 = 0;
     for (0..width) |x| {
         const c = img.pixels[(height - 1) * width + x];
-        if (channel(c, 0) < channel(c, 16) + 20) ground += 1;
+        if (channel(c, 0) < channel(c, 16) + 20 or channel(c, 0) < 150) ground += 1;
     }
     try testing.expect(ground > width / 2);
 }
