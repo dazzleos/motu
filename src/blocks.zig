@@ -28,7 +28,7 @@ pub const Block = enum(u8) {
     glass,
     sandstone_bricks,
     volcanic_bricks,
-    roof,
+    thatch,
     plaster,
     iron,
     gold,
@@ -56,6 +56,7 @@ pub const Block = enum(u8) {
     /// Grass with flat round stones set in it, for paths: the stones join
     /// up with the next paving's.
     paving,
+    coral_stone,
     _,
 
     pub const Shape = enum {
@@ -148,7 +149,8 @@ pub const Block = enum(u8) {
             .glass => .glass,
             .sandstone_bricks => .sandstone_bricks,
             .volcanic_bricks => .volcanic_bricks,
-            .roof => .roof,
+            .thatch => .thatch,
+            .coral_stone => .coral_stone,
             .plaster => .plaster,
             .iron => .iron,
             .gold => .gold,
@@ -198,7 +200,7 @@ pub const Block = enum(u8) {
             .glass => "Glass",
             .sandstone_bricks => "Sandstone bricks",
             .volcanic_bricks => "Volcanic bricks",
-            .roof => "Roof tiles",
+            .thatch => "Thatch",
             .plaster => "Plaster",
             .iron => "Iron",
             .gold => "Gold",
@@ -224,13 +226,14 @@ pub const Block = enum(u8) {
             .white_flower => "White flowers",
             .orange_flower => "Orange flowers",
             .paving => "Paving stones",
+            .coral_stone => "Coral stone",
             _ => "?",
         };
     }
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.paving);
+        return @intFromEnum(b) <= @intFromEnum(Block.coral_stone);
     }
 
     /// Flowers: grass with flowers among it.
@@ -253,7 +256,7 @@ pub const Section = struct {
 
 pub const sections = [_]Section{
     .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .gravel, .clay, .snow, .water } },
-    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .volcanic_bricks, .sandstone_bricks, .paving, .planks, .dark_planks, .plaster, .roof, .glass, .iron, .gold, .lamp, .bookshelf } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .volcanic_bricks, .sandstone_bricks, .coral_stone, .paving, .planks, .dark_planks, .plaster, .thatch, .glass, .iron, .gold, .lamp, .bookshelf } },
     .{ .name = "Plants", .blocks = &.{ .palm, .leaves, .fern, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
@@ -279,7 +282,7 @@ pub const palette = blk: {
 };
 
 /// The hotbar's blocks to start with.
-pub const starting_hotbar = [9]Block{ .grass, .volcanic_rock, .planks, .palm, .glass, .sandstone_bricks, .roof, .lamp, .pink_flower };
+pub const starting_hotbar = [9]Block{ .grass, .volcanic_rock, .planks, .palm, .glass, .sandstone_bricks, .thatch, .lamp, .pink_flower };
 
 /// A cube's faces, by the direction they face: +x, -x, +y (up), -y, +z, -z.
 pub const Face = enum(u3) {
@@ -334,7 +337,7 @@ pub const Tile = enum(u6) {
     glass,
     sandstone_bricks,
     volcanic_bricks,
-    roof,
+    thatch,
     plaster,
     iron,
     gold,
@@ -343,6 +346,7 @@ pub const Tile = enum(u6) {
     /// For water's icon (the water itself is drawn by its own shader).
     water,
     leaves,
+    coral_stone,
     // Colours.
     white = 32,
     black,
