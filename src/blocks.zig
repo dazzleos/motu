@@ -61,7 +61,7 @@ pub const Block = enum(u8) {
     red_flower,
     yellow_flower,
     /// Big arrow-shaped leaves on tall stalks.
-    tropical_plant,
+    leafy_plant,
     pink_flower,
     purple_flower,
     blue_flower,
@@ -113,7 +113,7 @@ pub const Block = enum(u8) {
             .water => .water,
             .glass => .clear,
             .palm => .pole,
-            .tall_grass, .tropical_plant, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
+            .tall_grass, .leafy_plant, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
             _ => .none,
             else => .cube,
         };
@@ -187,7 +187,7 @@ pub const Block = enum(u8) {
             .pink => .pink,
             .cyan => .cyan,
             .tall_grass => .tall_grass,
-            .tropical_plant => .tropical_plant,
+            .leafy_plant => .leafy_plant,
             .red_flower => .red_flower,
             .yellow_flower => .yellow_flower,
             .pink_flower => .pink_flower,
@@ -229,7 +229,7 @@ pub const Block = enum(u8) {
             .pink => "Pink",
             .cyan => "Cyan",
             .tall_grass => "Tall grass",
-            .tropical_plant => "Tropical plant",
+            .leafy_plant => "Leafy plant",
             .red_flower => "Red flowers",
             .yellow_flower => "Yellow flowers",
             .pink_flower => "Pink flowers",
@@ -289,7 +289,7 @@ pub const sections = [_]Section{
     .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .glass } },
     // Made of sticks.
     .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp } },
-    .{ .name = "Plants", .blocks = &.{ .palm, .tropical_plant, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
+    .{ .name = "Plants", .blocks = &.{ .palm, .leafy_plant, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
 };
@@ -361,7 +361,7 @@ pub const Tile = enum(u6) {
     tall_grass,
     red_flower,
     yellow_flower,
-    tropical_plant,
+    leafy_plant,
     // Building.
     volcanic_wall = 16,
     glass,
@@ -426,7 +426,7 @@ test "every block that can be placed has a name and its own look" {
     }
     for (std.enums.values(Tile)) |t| try std.testing.expect(t.strip() < Tile.strips);
     // What the island is made of is all in the first strip.
-    for ([_]Block{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .palm, .tall_grass, .tropical_plant }) |b|
+    for ([_]Block{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .palm, .tall_grass, .leafy_plant }) |b|
         for (Face.all) |f| try std.testing.expectEqual(@as(u2, 0), b.tile(f).strip());
     try std.testing.expectEqual(Tile.grass_top, Block.grass.tile(.up));
     try std.testing.expectEqual(Tile.grass_side, Block.grass.tile(.north));

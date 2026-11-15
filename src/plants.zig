@@ -7,7 +7,7 @@
 //!   block has a crown: fronds arching out and drooping, folded a little
 //!   along their ribs, and coconuts under them. The fronds reach well
 //!   past the block, into nothing's way: they are only drawn.
-//! - Tropical plants: big arrow-shaped leaves held out on tall stalks.
+//! - Leafy plants: big arrow-shaped leaves held out on tall stalks.
 //! - Tall grass: blades on two planes crossing; flowers, a fan of blades
 //!   with flowers among them.
 //! - Paving: flat round stones on grass, which join up into paths.
@@ -339,7 +339,7 @@ pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
     const seed: u32 = @bitCast(p[0] *% 73856093 ^ p[2] *% 19349663 ^ p[1] *% 83492791);
     const turn = hash(seed, 0, 0) * 2 * std.math.pi;
     const base: V = .{ @as(f32, @floatFromInt(p[0])) + 0.5, @floatFromInt(p[1]), @as(f32, @floatFromInt(p[2])) + 0.5 };
-    if (blk == .tropical_plant) return tropicalPlant(o, base, seed, turn);
+    if (blk == .leafy_plant) return leafyPlant(o, base, seed, turn);
     if (blk == .tall_grass) {
         // Two planes crossing on the block's diagonals.
         const x = base[0] - 0.5;
@@ -409,9 +409,9 @@ test "paving's stones keep in from grass, and carry on into the next paving" {
     try testing.expect(a[0] > 9.25);
 }
 
-/// Tropical plants: three to five leaves, each held out on a stalk from the
+/// Leafy plants: three to five leaves, each held out on a stalk from the
 /// middle of the block, big and arrow-shaped, their points drooping.
-fn tropicalPlant(o: Out, base: V, seed: u32, turn: f32) !void {
+fn leafyPlant(o: Out, base: V, seed: u32, turn: f32) !void {
     const n = 3 + @as(u32, @intFromFloat(hash(seed, 7, 7) * 3));
     for (0..n) |k| {
         const ki: i32 = @intCast(k);
@@ -426,7 +426,7 @@ fn tropicalPlant(o: Out, base: V, seed: u32, turn: f32) !void {
         const across = [2]V{ side, .{ dir[0], 0, dir[2] } };
         for (across) |acr| {
             const c = [4]V{ add(foot, mul(acr, -w)), add(foot, mul(acr, w)), add(top, mul(acr, w)), add(top, mul(acr, -w)) };
-            try o.twoSided(.tropical_plant, .up, .up, c, .{ .{ 0.485, 0.7 }, .{ 0.515, 0.7 }, .{ 0.515, 0.3 }, .{ 0.485, 0.3 } }, .{ .none, .none, .sway, .sway });
+            try o.twoSided(.leafy_plant, .up, .up, c, .{ .{ 0.485, 0.7 }, .{ 0.515, 0.7 }, .{ 0.515, 0.3 }, .{ 0.485, 0.3 } }, .{ .none, .none, .sway, .sway });
         }
         // The leaf, in two pieces: out and a little down, then down more
         // to its point. Its lobes reach back past the stalk.
@@ -447,8 +447,8 @@ fn tropicalPlant(o: Out, base: V, seed: u32, turn: f32) !void {
             const l1 = add(add(pts[j + 1], mul(side, -half)), cup);
             const r1 = add(add(pts[j + 1], mul(side, half)), cup);
             // Up the middle, the rib; out to each edge.
-            try o.twoSided(.tropical_plant, .up, .down, .{ pts[j], r0, r1, pts[j + 1] }, .{ .{ 0.5, ts[j] }, .{ hi, ts[j] }, .{ hi, ts[j + 1] }, .{ 0.5, ts[j + 1] } }, .{ anims[j], anims[j], anims[j + 1], anims[j + 1] });
-            try o.twoSided(.tropical_plant, .up, .down, .{ pts[j], pts[j + 1], l1, l0 }, .{ .{ 0.5, ts[j] }, .{ 0.5, ts[j + 1] }, .{ lo, ts[j + 1] }, .{ lo, ts[j] } }, .{ anims[j], anims[j + 1], anims[j + 1], anims[j] });
+            try o.twoSided(.leafy_plant, .up, .down, .{ pts[j], r0, r1, pts[j + 1] }, .{ .{ 0.5, ts[j] }, .{ hi, ts[j] }, .{ hi, ts[j + 1] }, .{ 0.5, ts[j + 1] } }, .{ anims[j], anims[j], anims[j + 1], anims[j + 1] });
+            try o.twoSided(.leafy_plant, .up, .down, .{ pts[j], pts[j + 1], l1, l0 }, .{ .{ 0.5, ts[j] }, .{ 0.5, ts[j + 1] }, .{ lo, ts[j + 1] }, .{ lo, ts[j] } }, .{ anims[j], anims[j + 1], anims[j + 1], anims[j] });
         }
     }
 }
