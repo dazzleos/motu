@@ -139,7 +139,20 @@ pub const Game = struct {
     /// it (the player standing still). The game starts in it, so the mouse
     /// is not taken before it is wanted.
     menu_open: bool = true,
-    stats: bool = false,
+    /// The menu's list of islands, over it.
+    islands_open: bool = false,
+    /// The islands kept (main.zig finds them), the one played first.
+    islands: Islands = .{},
+    /// Asked for in the menu, for main.zig to do (it keeps the islands).
+    island_action: ?IslandAction = null,
+    /// The island asked to be deleted, until it is said for sure.
+    delete_asked: ?u8 = null,
+    /// Asked to quit (main.zig saves first).
+    quit_asked: bool = false,
+    /// Frames a second, each second, the oldest first (for the menu's
+    /// graph).
+    fps_history: [fps_seconds]f32 = @splat(0),
+    fps_count: u8 = 0,
     /// How big the window is drawn, of its size across and down (the
     /// display stretches it): from half to all of it.
     quality: f32 = 1,
@@ -325,13 +338,45 @@ pub const Game = struct {
         return (g.quality - 0.5) / 0.5;
     }
 
-    pub fn setStats(g: *Game, on: bool) void {
-        g.stats = on;
+    /// A second's frames a second, for the menu's graph.
+    pub fn noteFps(g: *Game, fps: f32) void {
+        std.mem.copyForwards(f32, g.fps_history[0 .. fps_seconds - 1], g.fps_history[1..]);
+        g.fps_history[fps_seconds - 1] = fps;
+        g.fps_count = @min(g.fps_count + 1, fps_seconds);
     }
 
-    /// Through the day, 0 (midnight) to 1.
-    pub fn setTimeOfDay(g: *Game, t: f32) void {
-        g.time_of_day = @mod(t, 1);
+    pub fn showIslands(g: *Game) void {
+        g.islands_open = true;
+        g.delete_asked = null;
+    }
+
+    pub fn hideIslands(g: *Game) void {
+        g.islands_open = false;
+        g.delete_asked = null;
+    }
+
+    pub fn newIsland(g: *Game) void {
+        g.island_action = .new;
+    }
+
+    pub fn openIsland(g: *Game, i: u8) void {
+        g.island_action = .{ .open = i };
+    }
+
+    /// Asks first: the second time, deletes.
+    pub fn deleteIsland(g: *Game, i: u8) void {
+        if (g.delete_asked == i) {
+            g.island_action = .{ .delete = i };
+            g.delete_asked = null;
+        } else g.delete_asked = i;
+    }
+
+    pub fn keepIsland(g: *Game) void {
+        g.delete_asked = null;
+    }
+
+    pub fn quit(g: *Game) void {
+        g.quit_asked = true;
     }
 
     pub fn choose(g: *Game, slot: u8) void {
@@ -571,6 +616,36 @@ pub const Game = struct {
         g.slot = rest[39] % 9;
         g.unsaved = false;
     }
+};
+
+/// How many seconds the menu's frame rate graph shows.
+pub const fps_seconds = 30;
+
+/// The islands kept, by name (their files' names, less ".blocks").
+pub const Islands = struct {
+    pub const max = 16;
+    names: [max][48]u8 = undefined,
+    lens: [max]u8 = @splat(0),
+    count: u8 = 0,
+    /// The one played now.
+    current: u8 = 0,
+
+    pub fn name(i: *const Islands, k: usize) []const u8 {
+        return i.names[k][0..i.lens[k]];
+    }
+
+    pub fn add(i: *Islands, n: []const u8) void {
+        if (i.count == max or n.len > 48) return;
+        @memcpy(i.names[i.count][0..n.len], n);
+        i.lens[i.count] = @intCast(n.len);
+        i.count += 1;
+    }
+};
+
+pub const IslandAction = union(enum) {
+    new,
+    open: u8,
+    delete: u8,
 };
 
 pub fn timeName(t: f32) []const u8 {

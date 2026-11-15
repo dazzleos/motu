@@ -31,7 +31,8 @@ export fn vertex() callconv(.spirv_vertex) void {
     // same place, so neighbours stay joined.
     const sway = 0.035 * info.anim * info.anim * u.misc[1];
     const t = u.camera[3];
-    const phase = t * 0.9 + p[0] * 0.31 + p[2] * 0.23;
+    // Slowly, as a breeze moves them.
+    const phase = t * 0.4 + p[0] * 0.31 + p[2] * 0.23;
     p[0] += common.wave(phase) * sway;
     p[2] += common.wave(phase * 0.8 + 0.35) * sway * 0.7;
     gpu.position.* = common.project(u, p);

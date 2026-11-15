@@ -21,8 +21,9 @@ pub const bird_count = 24;
 pub const fish_count = 40;
 pub const turtle_count = 3;
 pub const shark_count = 2;
-/// Enough for every creature in view at once (each is under 40 quads).
-pub const max_quads = (bird_count + fish_count + turtle_count + shark_count) * 40;
+/// Enough for every creature in view at once (each is under 40 quads),
+/// and the seaplane.
+pub const max_quads = (bird_count + fish_count + turtle_count + shark_count) * 40 + 120;
 
 pub const BirdKind = enum(u2) {
     /// White with grey-shaded wings, black wingtips and an orange beak;
@@ -349,10 +350,11 @@ pub const Creatures = struct {
             b.roll += (want_roll - b.roll) * @min(1, 5 * dt);
 
             // Stay well clear of hills, trees and anything built below or
-            // ahead.
-            const look_x = b.pos[0] + @sin(b.yaw) * 4.0;
-            const look_z = b.pos[2] - @cos(b.yaw) * 4.0;
-            const ground = @max(groundUnder(w, b.pos[0], b.pos[2]), groundUnder(w, look_x, look_z));
+            // ahead, looking far enough ahead to rise in time.
+            var ground = groundUnder(w, b.pos[0], b.pos[2]);
+            for ([_]f32{ 3, 6, 10 }) |ahead| {
+                ground = @max(ground, groundUnder(w, b.pos[0] + @sin(b.yaw) * ahead, b.pos[2] - @cos(b.yaw) * ahead));
+            }
             const safe_y = @min(ground + 5.0, world_mod.size_y - 4.0);
             const wave_y = @sin(b.phase * 0.18 + @as(f32, @floatFromInt(idx))) * 1.4;
             const target_y = std.math.clamp(@max(b.cruise_y + wave_y, safe_y), world_mod.sea_level + 5.0, world_mod.size_y - 4.0);
@@ -371,7 +373,8 @@ pub const Creatures = struct {
 
             const fwd = V3{ @sin(b.yaw) * @cos(b.pitch), @sin(b.pitch), -@cos(b.yaw) * @cos(b.pitch) };
             b.pos += fwd * math.splat(b.speed * dt);
-            if (b.pos[1] < safe_y - 0.5) b.pos[1] = safe_y - 0.5;
+            // Too low after all: rise, quickly but smoothly.
+            if (b.pos[1] < safe_y - 0.5) b.pos[1] += (safe_y - 0.5 - b.pos[1]) * @min(1, 2.5 * dt);
         }
     }
 
@@ -462,12 +465,19 @@ pub const Creatures = struct {
         }
     }
 
-    /// Writes the visible birds and fish into `out` (a slice of at least
-    /// `max_quads * 4` vertices) and returns how many quads were written.
-    pub fn buildMesh(c: *const Creatures, w: *const World, frustum: *const math.Frustum, eye: V3, max_dist: f32, out: []Vertex) u32 {
+    /// Writes the visible creatures (and the seaplane, if it is flying,
+    /// on day `day`, `day_seconds` into it) into `out` (a slice of at
+    /// least `max_quads * 4` vertices) and returns how many quads were
+    /// written.
+    pub fn buildMesh(c: *const Creatures, w: *const World, frustum: *const math.Frustum, eye: V3, max_dist: f32, day: u32, day_seconds: f32, out: []Vertex) u32 {
         if (!c.spawned) return 0;
         var builder: Builder = .{ .out = out };
         const max_d2 = max_dist * max_dist;
+
+        if (planeAt(w.seed, day, day_seconds)) |plane| {
+            const d = plane.pos - eye;
+            if (math.dot(d, d) < max_d2 and frustum.sees(plane.pos - V3{ 8, 3, 8 }, plane.pos + V3{ 8, 3, 8 })) emitPlane(&builder, plane);
+        }
 
         for (&c.birds) |*b| {
             const d = b.pos - eye;
@@ -499,6 +509,72 @@ pub const Creatures = struct {
         return @intCast(builder.at / 4);
     }
 };
+
+// --- The seaplane --------------------------------------------------------------------------
+
+/// The seaplane, where it is.
+pub const Plane = struct {
+    pos: V3,
+    yaw: f32,
+    roll: f32,
+    /// The propeller's turn, in radians.
+    prop: f32,
+};
+
+/// How fast the seaplane flies, blocks a second, and how high.
+const plane_speed: f32 = 24;
+const plane_y: f32 = world_mod.sea_level + 24;
+/// How far it flies, from out at sea to out at sea.
+const plane_path: f32 = 720;
+
+/// Where the seaplane is on day `day`, `secs` seconds into it (it flies
+/// past once a day, at a time between morning and afternoon, along one
+/// side of the island, over the beaches and shallows), or null.
+pub fn planeAt(seed: u32, day: u32, secs: f32) ?Plane {
+    const s = seed ^ 0x5ea91a4e;
+    const d: i32 = @intCast(day % 1000000);
+    const length_secs = plane_path / plane_speed;
+    // From 0.32 to 0.62 of a 600 second day.
+    const start = 192 + world_mod.hash(s, d, 1) * 180;
+    const along = (secs - start) * plane_speed - plane_path / 2;
+    if (secs < start or secs > start + length_secs) return null;
+    const heading = world_mod.hash(s, d, 2) * 2 * std.math.pi;
+    const dir = V3{ @sin(heading), 0, -@cos(heading) };
+    const side = V3{ @cos(heading), 0, @sin(heading) };
+    // Past the island's middle, off to one side: along its coast.
+    const offset = (35 + world_mod.hash(s, d, 3) * 15) * (if (world_mod.hash(s, d, 4) < 0.5) @as(f32, -1) else 1);
+    const centre = V3{ world_mod.size_x / 2, plane_y, world_mod.size_z / 2 } + side * math.splat(offset);
+    return .{
+        .pos = centre + dir * math.splat(along) + V3{ 0, @sin(secs * 0.3) * 0.8, 0 },
+        .yaw = heading,
+        .roll = @sin(secs * 0.25) * 0.08,
+        .prop = @mod(secs * 40, 2 * std.math.pi),
+    };
+}
+
+fn emitPlane(b: *Builder, p: Plane) void {
+    const light: u8 = 0xf0;
+    const f = Frame.fromAngles(p.yaw, 0, p.roll);
+    const body = BoxLook.uniform(.white);
+    const red = BoxLook.uniform(.red);
+    // The fuselage, its cockpit's windows, and its tail, thinner.
+    b.box(f, f.point(p.pos, .{ 0, 0, -0.4 }), .{ 0.55, 0.6, 2.2 }, .{ 0.75, 0.75 }, .{ 0.9, 0.9 }, body, light);
+    b.box(f, f.point(p.pos, .{ 0, 0.32, -1.5 }), .{ 0.57, 0.2, 0.55 }, .{ 0.8, 1 }, .{ 1, 1 }, BoxLook.uniform(.black), light);
+    b.box(f, f.point(p.pos, .{ 0, 0.15, 2.8 }), .{ 0.38, 0.38, 1.4 }, .{ 1, 1 }, .{ 0.35, 0.45 }, body, light);
+    // The wings, high on it, and the tail's.
+    b.box(f, f.point(p.pos, .{ 0, 0.68, -0.8 }), .{ 6.5, 0.08, 0.8 }, .{ 1, 1 }, .{ 1, 1 }, red, light);
+    b.box(f, f.point(p.pos, .{ 0, 0.3, 4.0 }), .{ 2.0, 0.06, 0.45 }, .{ 1, 1 }, .{ 1, 1 }, red, light);
+    b.box(f, f.point(p.pos, .{ 0, 1.05, 4.0 }), .{ 0.06, 0.75, 0.5 }, .{ 1, 0.6 }, .{ 1, 1 }, red, light);
+    // Its floats, under it, and the struts to them.
+    for ([2]f32{ -1, 1 }) |side| {
+        b.box(f, f.point(p.pos, .{ side * 1.25, -1.45, -0.4 }), .{ 0.24, 0.22, 2.6 }, .{ 0.6, 0.6 }, .{ 0.8, 0.8 }, body, light);
+        for ([2]f32{ -1.4, 0.6 }) |z| b.box(f, f.point(p.pos, .{ side * 0.9, -0.95, z }), .{ 0.05, 0.4, 0.05 }, .{ 1, 1 }, .{ 1, 1 }, BoxLook.uniform(.black), light);
+    }
+    // The propeller, turning, at its nose.
+    const nose = f.point(p.pos, .{ 0, 0, -2.75 });
+    b.box(f, nose, .{ 0.14, 0.14, 0.12 }, .{ 1, 1 }, .{ 1, 1 }, BoxLook.uniform(.black), light);
+    b.box(f.rollBy(p.prop), f.point(p.pos, .{ 0, 0, -2.88 }), .{ 1.1, 0.07, 0.025 }, .{ 1, 1 }, .{ 1, 1 }, BoxLook.uniform(.black), light);
+}
 
 // --- Terrain and water queries -------------------------------------------------------------
 
@@ -1027,7 +1103,7 @@ test "creature meshes: every quad uses strip 2 and is wound counter-clockwise fa
     const verts = try testing.allocator.alloc(Vertex, max_quads * 4);
     defer testing.allocator.free(verts);
 
-    const quads = c.buildMesh(w, &frustum, cam.eye, 250, verts);
+    const quads = c.buildMesh(w, &frustum, cam.eye, 250, 0, 0, verts);
     try testing.expect(quads > 400);
     try testing.expect(quads <= max_quads);
 
@@ -1048,5 +1124,27 @@ test "creature meshes: every quad uses strip 2 and is wound counter-clockwise fa
         const face_n = info.face.normal();
         const fn_v = V3{ @floatFromInt(face_n[0]), @floatFromInt(face_n[1]), @floatFromInt(face_n[2]) };
         try testing.expect(math.dot(n1, fn_v) > 0);
+    }
+}
+
+test "the seaplane flies past once a day, for a while, high over the sea by the island" {
+    for (0..20) |day| {
+        var seen: u32 = 0;
+        var secs: f32 = 0;
+        while (secs < 600) : (secs += 0.5) {
+            const p = planeAt(7, @intCast(day), secs) orelse continue;
+            seen += 1;
+            try testing.expect(p.pos[1] > world_mod.sea_level + 20 and p.pos[1] < world_mod.size_y);
+        }
+        // Half a minute or so, once.
+        try testing.expect(seen > 40 and seen < 80);
+        // Near the island at the middle of its flight.
+        var nearest: f32 = 999;
+        secs = 0;
+        while (secs < 600) : (secs += 0.5) if (planeAt(7, @intCast(day), secs)) |p| {
+            const d = p.pos - V3{ 64, p.pos[1], 64 };
+            nearest = @min(nearest, @sqrt(math.dot(d, d)));
+        };
+        try testing.expect(nearest > 30 and nearest < 55);
     }
 }

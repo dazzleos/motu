@@ -51,17 +51,11 @@ pub const Draw = struct {
 };
 
 
-/// How finely the menu's time of day slider shows the time.
-const time_steps = 200;
-
 pub const Blocks = struct {
     game: *Game,
     icons: *const Icons,
     /// How to draw the world (none in tests).
     draw: ?Draw = null,
-    /// What the last frame drew, and how fast frames come.
-    stats: renderer.Stats = .{},
-    fps: f32 = 0,
     on_fullscreen: ?kete.Callback = null,
     fullscreen: bool = false,
 
@@ -93,18 +87,13 @@ pub const Blocks = struct {
                 .on_press = on_fullscreen,
             }),
         });
-        // What is drawn, top right.
-        if (g.stats) layers.append(a, cx.make(kete.Align{
-            .alignment = .top_right,
-            .child = cx.make(kete.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = self.statsPanel(cx) }),
-        })) catch {};
         if (g.palette_open) layers.append(a, cx.make(kete.Align{ .alignment = .center, .child = self.palette(cx) })) catch {};
         // With the mouse taken, a mark in the middle: what it acts on.
         if (g.captured and !g.menu_open) layers.append(a, cx.make(kete.Align{ .child = crosshair(cx) })) catch {};
         // The menu, and fullscreen, top right as in the other apps (only
         // with the menu: while playing, the mouse is the game's).
         if (g.menu_open) {
-            layers.append(a, self.menu(cx)) catch {};
+            layers.append(a, if (g.islands_open) islandsMenu(cx, g) else self.menu(cx)) catch {};
             layers.append(a, cx.make(kete.Align{
                 .alignment = .top_right,
                 .child = cx.make(kete.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = fullscreen_button }),
@@ -182,51 +171,47 @@ pub const Blocks = struct {
     fn menu(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
         const t = cx.theme();
-        const time = cx.make(kete.Row{
-            .spacing = 12,
-            .cross_axis_alignment = .center,
-            .children = cx.arena.dupe(kete.Widget, &.{
-                cx.make(kete.Text{ .text = "Time of day", .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
-                // The day goes on behind the menu: shown in steps, so the
-                // slider (and the menu with it) is only drawn again when
-                // it moves enough to see.
-                cx.make(kete.Expanded{ .child = cx.make(kete.Slider{ .value = @round(g.time_of_day * time_steps) / time_steps, .on_changed = .of(g, Game.setTimeOfDay) }) }),
-                cx.make(kete.SizedBox{ .width = 80, .child = cx.make(kete.Text{
-                    .text = game_mod.timeName(g.time_of_day),
-                    .style = .{ .size = t.body_size, .color = t.on_surface_variant },
-                    .wrap = false,
-                }) }),
-            }) catch &.{},
-        });
         const arena = cx.arena;
         const column = struct {
             fn f(c: *kete.BuildContext, flex: f32, children: []const kete.Widget) kete.Widget {
                 return c.make(kete.Expanded{ .flex = flex, .child = c.make(kete.Column{
                     .fill = false,
+                    .spacing = 8,
                     .cross_axis_alignment = .stretch,
                     .children = c.ui.arena().dupe(kete.Widget, children) catch &.{},
                 }) });
             }
         }.f;
-        // The options get more room: the time of day has a slider.
         // The quality: how big the window is drawn (the display stretches
-        // it), from half to all of it.
+        // it), from half to all of it; beside it, how fast frames come,
+        // to choose it by.
         const quality = cx.make(kete.Row{
             .spacing = 12,
-            .children = cx.arena.dupe(kete.Widget, &.{
+            .children = arena.dupe(kete.Widget, &.{
                 cx.make(kete.Text{ .text = "Quality", .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
                 cx.make(kete.Expanded{ .child = cx.make(kete.Slider{ .value = g.qualitySlider(), .on_changed = .of(g, Game.setQuality) }) }),
-                cx.make(kete.SizedBox{ .width = 80, .child = cx.make(kete.Text{
+                cx.make(kete.SizedBox{ .width = 60, .child = cx.make(kete.Text{
                     .text = cx.fmt("{d:.0}%", .{g.quality * 100}),
                     .style = .{ .size = t.body_size, .color = t.on_surface_variant },
                     .wrap = false,
                 }) }),
             }) catch &.{},
         });
+        const n = g.fps_count;
+        const now: f32 = if (n > 0) g.fps_history[game_mod.fps_seconds - 1] else 0;
+        const fps_label = cx.make(kete.Text{
+            .text = if (n > 0) cx.fmt("{d:.0} frames a second", .{now}) else "Frames a second",
+            .style = .{ .size = t.body_size - 1, .color = t.on_surface_variant },
+            .wrap = false,
+        });
         const options = column(cx, 3, &.{
             quality,
-            cx.make(kete.SwitchRow{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
-            time,
+            fps_label,
+            cx.make(FpsGraph{ .history = g.fps_history[game_mod.fps_seconds - n ..] }),
+            cx.make(kete.Row{ .spacing = 8, .children = arena.dupe(kete.Widget, &.{
+                cx.make(kete.OutlinedButton{ .label = "Islands", .on_press = .of(g, Game.showIslands) }),
+                cx.make(kete.TextButton{ .label = "Quit", .on_press = .of(g, Game.quit) }),
+            }) catch &.{} }),
         });
         return cx.make(kete.Dialog{
             .title = "Menu",
@@ -242,22 +227,90 @@ pub const Blocks = struct {
             .on_dismiss = .of(g, Game.closeMenu),
         });
     }
+};
 
-    fn statsPanel(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
-        const s = self.stats;
-        const p = self.game.player.pos;
-        const text = cx.fmt("{d:.0} fps  ·  drawn at {d:.0}%\n{d} chunks, {d} draws\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
-            self.fps,
-            self.game.quality * 100,
-            s.chunks,
-            s.draws,
-            s.triangles / 1000,
-            p[0],
-            p[1],
-            p[2],
-            game_mod.timeName(self.game.time_of_day),
-        });
-        return panel(cx, cx.make(kete.Text{ .text = text, .style = .{ .size = 15, .color = gfx.Color.argb(0xffffffff) } }));
+/// The islands kept: play one, delete one (asked twice), or make a new
+/// one.
+fn islandsMenu(cx: *kete.BuildContext, g: *Game) kete.Widget {
+    const a = cx.arena;
+    var items: std.ArrayList(kete.Widget) = .empty;
+    for (0..g.islands.count) |k| {
+        const i: u8 = @intCast(k);
+        const act = a.create(IslandPick) catch break;
+        act.* = .{ .game = g, .index = i };
+        const current = i == g.islands.current;
+        const trailing: ?kete.Widget = if (current) null else if (g.delete_asked == i) cx.make(kete.Row{ .fill = false, .spacing = 4, .children = a.dupe(kete.Widget, &.{
+            cx.make(kete.TextButton{ .label = "Keep", .on_press = .of(g, Game.keepIsland) }),
+            cx.make(kete.FilledButton{ .label = "Delete", .on_press = .of(act, IslandPick.delete) }),
+        }) catch &.{} }) else cx.make(kete.IconButton{ .icon = .delete, .size = 36, .on_press = .of(act, IslandPick.delete) });
+        items.append(a, cx.make(kete.ListItem{
+            .headline = g.islands.name(k),
+            .supporting_text = if (current) "Playing now" else if (g.delete_asked == i) "Delete it for good?" else "",
+            .leading_icon = .landscape,
+            .selected = current,
+            .trailing = trailing,
+            .on_press = if (current) null else .of(act, IslandPick.open),
+        })) catch {};
+    }
+    return cx.make(kete.Dialog{
+        .title = "Islands",
+        .width = 480,
+        .content = cx.make(kete.Column{ .fill = false, .spacing = 12, .cross_axis_alignment = .stretch, .children = a.dupe(kete.Widget, &.{
+            cx.make(kete.SizedBox{ .height = 150, .child = cx.make(kete.ScrollView{ .child = cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 2, .children = items.items }) }) }),
+            cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
+                cx.make(kete.FilledButton{ .label = "New island", .on_press = .of(g, Game.newIsland) }),
+            }) catch &.{} }),
+        }) catch &.{} }),
+        .confirm_label = "Back",
+        .on_confirm = .of(g, Game.hideIslands),
+        .on_dismiss = .of(g, Game.hideIslands),
+    });
+}
+
+const IslandPick = struct {
+    game: *Game,
+    index: u8,
+
+    fn open(p: *IslandPick) void {
+        p.game.openIsland(p.index);
+    }
+
+    fn delete(p: *IslandPick) void {
+        p.game.deleteIsland(p.index);
+    }
+};
+
+/// The frame rate over the last seconds, a bar a second (the newest on the
+/// right): green where it was good, yellow where it was all right, red
+/// where it was slow.
+const FpsGraph = struct {
+    history: []const f32,
+
+    const height = 56;
+    /// At this or more, good; at `ok` or more, all right.
+    pub const good: f32 = 50;
+    pub const ok: f32 = 30;
+
+    pub fn colorOf(fps: f32) gfx.Color {
+        return gfx.Color.argb(if (fps >= good) 0xff4caf50 else if (fps >= ok) 0xffffc107 else 0xfff44336);
+    }
+
+    pub fn layout(_: *const FpsGraph, _: *kete.WidgetNode, c: kete.Constraints) kete.Size {
+        return c.constrain(.{ .w = if (std.math.isFinite(c.max_w)) c.max_w else 300, .h = height });
+    }
+
+    pub fn paint(self: *const FpsGraph, n: *kete.WidgetNode, p: *kete.Painter) void {
+        const c = p.canvas();
+        const w = n.size.w;
+        const h = n.size.h;
+        c.fillRoundedRect(.{ .x = 0, .y = 0, .w = w, .h = h }, .all(6), gfx.Color.argb(0x22ffffff));
+        const slot = w / game_mod.fps_seconds;
+        // 60 frames a second at the top.
+        for (self.history, 0..) |fps, i| {
+            const bh = @max(2, @min(fps / 60, 1) * (h - 4));
+            const x = w - @as(f32, @floatFromInt(self.history.len - i)) * slot;
+            c.fillRect(.{ .x = x + 1, .y = h - 2 - bh, .w = slot - 2, .h = bh }, colorOf(fps));
+        }
     }
 };
 
@@ -470,7 +523,7 @@ fn findText(n: *kete.WidgetNode, text: []const u8) ?*kete.WidgetNode {
     return null;
 }
 
-test "the hotbar, palette and stats fit from the smallest window up; clicking them chooses" {
+test "the hotbar and palette fit from the smallest window up; clicking them chooses" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
     const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
@@ -478,7 +531,6 @@ test "the hotbar, palette and stats fit from the smallest window up; clicking th
     defer w.destroy();
     try w.computeLight();
     var g = Game.init(testing.allocator, w);
-    g.stats = true;
     g.palette_open = true;
     g.message = "Bricks";
     g.message_until = 10;
@@ -491,7 +543,6 @@ test "the hotbar, palette and stats fit from the smallest window up; clicking th
         try testing.expect(!overflows(u.root.?));
     }
     try testing.expect(findText(u.root.?, "Bricks") != null);
-    try testing.expect(findText(u.root.?, "fps  ·  drawn at 100%") != null);
     // The world's view is the whole window (kete draws the title bar outside it).
     try testing.expect(g.view_size[0] == 1920 and g.view_size[1] > 900);
 }
@@ -514,6 +565,8 @@ test "the menu fits from the smallest window up, and its switches set the option
     }
     try testing.expect(findText(u.root.?, "Menu") != null);
     try testing.expect(findText(u.root.?, "Resume") != null);
+    try testing.expect(findText(u.root.?, "Quit") != null);
+    try testing.expect(findText(u.root.?, "Time of day") == null);
     // The quality: as big as the window, to start with; the slider goes
     // down to half.
     try testing.expect(findText(u.root.?, "100%") != null);
@@ -631,4 +684,36 @@ test "the top-right fullscreen button toggles fullscreen, and shows only with th
     u.pointerButton(p, .left, true);
     u.pointerButton(p, .left, false);
     try testing.expect(toggle.toggled);
+}
+
+test "the menu's islands: listed, played, deleted only when asked twice, and a frame rate graph" {
+    const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
+    const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
+    defer u.destroy();
+    const w = try world_mod.World.create(testing.allocator);
+    defer w.destroy();
+    var g = Game.init(testing.allocator, w);
+    g.openMenu();
+    for (0..40) |i| g.noteFps(@floatFromInt(i * 2));
+    try testing.expectEqual(@as(u8, game_mod.fps_seconds), g.fps_count);
+    try testing.expectEqual(@as(f32, 78), g.fps_history[game_mod.fps_seconds - 1]);
+    try testing.expect(FpsGraph.colorOf(58).toArgb() != FpsGraph.colorOf(40).toArgb() and FpsGraph.colorOf(40).toArgb() != FpsGraph.colorOf(10).toArgb());
+    for ([_][]const u8{ "Island", "Island 2", "Island 3" }) |n| g.islands.add(n);
+    g.showIslands();
+    const icons = try testing.allocator.create(Icons);
+    defer testing.allocator.destroy(icons);
+    icons.init();
+    const view: Blocks = .{ .game = &g, .icons = icons };
+    for ([_][2]u32{ min_size, .{ 1920, 1036 } }) |size| {
+        u.frame(size[0], size[1], 0, view);
+        try testing.expect(!overflows(u.root.?));
+    }
+    try testing.expect(findText(u.root.?, "Island 3") != null);
+    try testing.expect(findText(u.root.?, "Playing now") != null);
+    g.deleteIsland(2);
+    try testing.expect(g.island_action == null);
+    g.deleteIsland(2);
+    try testing.expectEqual(game_mod.IslandAction{ .delete = 2 }, g.island_action.?);
+    g.openIsland(1);
+    try testing.expectEqual(game_mod.IslandAction{ .open = 1 }, g.island_action.?);
 }

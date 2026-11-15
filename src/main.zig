@@ -3,12 +3,14 @@
 //!
 //!     dazzle-blocks
 //!
-//! The world is kept in the user's files (`save_path`): loaded when the
-//! game starts (or a new island made), and saved every minute it has
-//! changed and when the window closes, also while others play in it
-//! (their changes too: the host saves). Playing in another's game (see
-//! net.zig), their world is not saved here: this island is saved before
-//! joining, and loaded again on leaving.
+//! Islands are kept in the user's files, each a file named for it (`Island
+//! 2.blocks`): the one played last is loaded when the game starts (or, the
+//! first time, an island made and kept), and saved every minute it has
+//! changed, when another is played, and on quitting, also while others
+//! play in it (their changes too: the host saves). The menu lists them, to
+//! play another, make a new one or delete one. Playing in another's game
+//! (see net.zig), their world is not saved here: this island is saved
+//! before joining, and loaded again on leaving.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -30,8 +32,102 @@ const upscale = @import("upscale.zig");
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(vc4.Device);
 
-/// Where the world is kept.
-pub const save_path = sys.system.user_dir ++ "/Island.blocks";
+/// Where the islands are kept, and how their files end.
+const islands_dir = sys.system.user_dir;
+const island_ext = ".blocks";
+
+/// The island played now: its name (its file's, less the ending).
+const Current = struct {
+    buf: [48]u8 = undefined,
+    len: usize = 0,
+
+    fn name(c: *const Current) []const u8 {
+        return c.buf[0..c.len];
+    }
+
+    fn set(c: *Current, n: []const u8) void {
+        c.len = @min(n.len, c.buf.len);
+        @memcpy(c.buf[0..c.len], n[0..c.len]);
+    }
+
+    /// Its file's path.
+    fn path(c: *const Current, buf: *[256]u8) [:0]const u8 {
+        return pathOf(c.name(), buf);
+    }
+};
+
+fn pathOf(n: []const u8, buf: *[256]u8) [:0]const u8 {
+    return std.fmt.bufPrintSentinel(buf, "{s}/{s}{s}", .{ islands_dir, n, island_ext }, 0) catch buf[0..0 :0];
+}
+
+/// The islands kept, by name, into `g.islands` (the current one marked);
+/// returns the one changed most recently, if any.
+fn findIslands(g: *game_mod.Game, current: []const u8) ?u8 {
+    g.islands = .{};
+    var newest: ?u8 = null;
+    var newest_time: i64 = std.math.minInt(i64);
+    const dir = sys.open(islands_dir, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }) catch return null;
+    defer sys.close(dir);
+    var buf: [4096]u8 align(8) = undefined;
+    while (true) {
+        const len = sys.check(linux.getdents64(dir, &buf, buf.len)) catch break;
+        if (len == 0) break;
+        var at: usize = 0;
+        while (at < len) {
+            const reclen = std.mem.readInt(u16, buf[at + 16 ..][0..2], .little);
+            const file = std.mem.sliceTo(buf[at + 19 .. at + reclen], 0);
+            at += reclen;
+            if (!std.mem.endsWith(u8, file, island_ext) or file.len == island_ext.len) continue;
+            const n = file[0 .. file.len - island_ext.len];
+            if (n.len > 48 or g.islands.count == game_mod.Islands.max) continue;
+            // In order of name.
+            var k: usize = g.islands.count;
+            while (k > 0 and std.mem.order(u8, g.islands.name(k - 1), n) == .gt) : (k -= 1) {}
+            g.islands.add(n);
+            var j: usize = g.islands.count - 1;
+            while (j > k) : (j -= 1) {
+                std.mem.swap([48]u8, &g.islands.names[j], &g.islands.names[j - 1]);
+                std.mem.swap(u8, &g.islands.lens[j], &g.islands.lens[j - 1]);
+            }
+            if (newest) |nw| {
+                if (nw >= k) newest = nw + 1;
+            }
+            var pbuf: [256]u8 = undefined;
+            var st: linux.Statx = undefined;
+            if (linux.errno(linux.statx(linux.AT.FDCWD, pathOf(n, &pbuf), 0, .{ .MTIME = true }, &st)) == .SUCCESS and st.mtime.sec > newest_time) {
+                newest_time = st.mtime.sec;
+                newest = @intCast(k);
+            }
+        }
+    }
+    for (0..g.islands.count) |k| if (std.mem.eql(u8, g.islands.name(k), current)) {
+        g.islands.current = @intCast(k);
+    };
+    return newest;
+}
+
+/// A name for a new island: "Island", or the first "Island N" not kept.
+fn newName(g: *const game_mod.Game, buf: []u8) []const u8 {
+    var k: u32 = 1;
+    while (true) : (k += 1) {
+        const n = if (k == 1) "Island" else std.fmt.bufPrint(buf, "Island {d}", .{k}) catch "Island";
+        const taken = for (0..g.islands.count) |i| {
+            if (std.mem.eql(u8, g.islands.name(i), n)) break true;
+        } else false;
+        if (!taken) return n;
+    }
+}
+
+/// Makes a new island (from `seed`), to play from its start.
+fn makeIsland(g: *game_mod.Game, seed: u32) !void {
+    const started = sys.nowNs();
+    try g.world.generate(seed);
+    g.player = .{ .pos = g.world.spawn, .yaw = g.world.spawn_yaw };
+    g.time_of_day = 0.34;
+    g.day = 0;
+    g.target = null;
+    print("dazzle-blocks: made an island in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
+}
 /// How often a changed world is saved, in seconds.
 const save_every = 60;
 
@@ -78,6 +174,8 @@ const Scene = struct {
             .time = g.clock,
             .env = renderer_mod.Environment.at(g.time_of_day).withWeather(g.weather()),
             .weather = g.weather(),
+            .day = g.day,
+            .day_seconds = g.time_of_day * game_mod.day_length,
             .underwater = g.player.underwater(g.world),
             .outline = if (g.target) |t| t.cell else null,
             .avatars = g.net.others,
@@ -95,28 +193,73 @@ const Scene = struct {
     }
 };
 
-fn load(gpa: std.mem.Allocator, g: *game_mod.Game) !void {
+fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !void {
+    var pbuf: [256]u8 = undefined;
+    const save_path = cur.path(&pbuf);
     const data = sys.readFileAlloc(gpa, save_path, 64 * 1024 * 1024) catch |err| {
-        if (err != error.FileNotFound) print(sys.log_warning ++ "dazzle-blocks: cannot read {s} ({s}): a new island\n", .{ save_path, @errorName(err) });
+        if (err != error.FileNotFound) print(sys.log_warning ++ "dazzle-blocks: cannot read {s} ({s})\n", .{ save_path, @errorName(err) });
         return error.NoSave;
     };
     defer gpa.free(data);
     g.decode(data) catch |err| {
-        print("dazzle-blocks: {s} is not a world this can read ({s}): a new island\n", .{ save_path, @errorName(err) });
+        print("dazzle-blocks: {s} is not a world this can read ({s})\n", .{ save_path, @errorName(err) });
         return error.NoSave;
     };
 }
 
 /// Back from another's game: this island, as saved before joining.
-fn backHome(gpa: std.mem.Allocator, g: *game_mod.Game) void {
-    load(gpa, g) catch {
-        g.world.generate(world_mod.default_seed) catch {};
-        g.player = .{ .pos = g.world.spawn, .yaw = g.world.spawn_yaw };
+fn backHome(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
+    load(gpa, g, cur) catch {
+        makeIsland(g, world_mod.default_seed) catch {};
     };
     g.unsaved = false;
 }
 
-fn save(gpa: std.mem.Allocator, g: *game_mod.Game) void {
+/// Does what the menu asked with the islands.
+fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, action: game_mod.IslandAction) void {
+    if (g.net.status != .alone) {
+        g.say("Not while playing together");
+        return;
+    }
+    switch (action) {
+        .new => {
+            save(gpa, g, cur);
+            var nbuf: [48]u8 = undefined;
+            cur.set(newName(g, &nbuf));
+            makeIsland(g, @truncate(sys.nowNs() *% 0x9e3779b97f4a7c15 >> 32)) catch |err| {
+                print(sys.log_warning ++ "dazzle-blocks: cannot make an island ({s})\n", .{@errorName(err)});
+                return;
+            };
+            save(gpa, g, cur);
+            g.say(cur.name());
+        },
+        .open => |i| {
+            if (i >= g.islands.count) return;
+            save(gpa, g, cur);
+            var nbuf: [48]u8 = undefined;
+            const n = g.islands.name(i);
+            @memcpy(nbuf[0..n.len], n);
+            cur.set(nbuf[0..n.len]);
+            backHome(gpa, g, cur);
+            g.say(cur.name());
+        },
+        .delete => |i| {
+            if (i >= g.islands.count or i == g.islands.current) return;
+            var pbuf: [256]u8 = undefined;
+            _ = linux.unlink(pathOf(g.islands.name(i), &pbuf));
+            print("dazzle-blocks: deleted {s}\n", .{g.islands.name(i)});
+        },
+    }
+    _ = findIslands(g, cur.name());
+    if (action != .delete) {
+        g.hideIslands();
+        g.closeMenu();
+    }
+}
+
+fn save(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
+    var pbuf: [256]u8 = undefined;
+    const save_path = cur.path(&pbuf);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     g.encode(&out) catch |err| {
@@ -124,7 +267,8 @@ fn save(gpa: std.mem.Allocator, g: *game_mod.Game) void {
         return;
     };
     // Written whole, then put in place of the old.
-    const tmp = save_path ++ ".new";
+    var tbuf: [260]u8 = undefined;
+    const tmp = std.fmt.bufPrintSentinel(&tbuf, "{s}.new", .{save_path}, 0) catch return;
     _ = linux.unlink(tmp);
     sys.files.writeNew(tmp, out.items) catch |err| {
         print(sys.log_warning ++ "dazzle-blocks: cannot save {s}: {s}\n", .{ save_path, @errorName(err) });
@@ -132,7 +276,7 @@ fn save(gpa: std.mem.Allocator, g: *game_mod.Game) void {
     };
     _ = linux.rename(tmp, save_path);
     g.unsaved = false;
-    print("dazzle-blocks: saved ({d} KB)\n", .{out.items.len / 1024});
+    print("dazzle-blocks: saved {s} ({d} KB)\n", .{ cur.name(), out.items.len / 1024 });
 }
 
 /// Where the frames' time goes, since it was last said: each part of
@@ -263,15 +407,12 @@ const Root = struct {
     game: *game_mod.Game,
     icons: *const view.Icons,
     scene: *Scene,
-    fps: *const f32,
 
     pub fn build(r: *const Root, cx: *kete.BuildContext) kete.Widget {
         return cx.make(view.Blocks{
             .game = r.game,
             .icons = r.icons,
             .draw = .{ .ctx = r.scene, .f = Scene.draw },
-            .stats = r.scene.renderer.stats,
-            .fps = r.fps.*,
         });
     }
 };
@@ -328,12 +469,15 @@ fn run(init: std.process.Init) !void {
     const world = try world_mod.World.create(gpa);
     var game = game_mod.Game.init(gpa, world);
     defer game.deinit();
-    load(gpa, &game) catch {
-        const started = sys.nowNs();
-        try world.generate(world_mod.default_seed);
-        game = game_mod.Game.init(gpa, world);
-        print("dazzle-blocks: made an island in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
-    };
+    // The island played last; the first time, one made (and kept).
+    var cur: Current = .{};
+    if (findIslands(&game, "")) |newest| cur.set(game.islands.name(newest));
+    if (cur.len == 0 or (load(gpa, &game, &cur) catch null) == null) {
+        if (cur.len == 0) cur.set("Island");
+        try makeIsland(&game, world_mod.default_seed);
+        save(gpa, &game, &cur);
+    }
+    _ = findIslands(&game, cur.name());
     // The options as chosen, or as suit the GPU (the Pi 4's and 5's draws
     // them fast enough; the older one's does not).
     var kept = options.effective(options.load(), host.dev.is_v3d);
@@ -350,8 +494,6 @@ fn run(init: std.process.Init) !void {
     var upscaler = try upscale.Upscaler.init(gpa, host.dev);
     defer upscaler.deinit();
     var scene: Scene = .{ .game = &game, .renderer = renderer, .window_renderer = &host.renderer, .upscaler = &upscaler };
-    var counting: app.gpu_counters.Counting = .{ .dev = host.dev };
-    defer counting.count(false);
     const icons = try gpa.create(view.Icons);
     icons.init();
 
@@ -364,7 +506,7 @@ fn run(init: std.process.Init) !void {
     defer if (session) |*s| s.deinit();
 
     var fps: f32 = 0;
-    const root: Root = .{ .game = &game, .icons = icons, .scene = &scene, .fps = &fps };
+    const root: Root = .{ .game = &game, .icons = icons, .scene = &scene };
     var input: Input = .{ .game = &game };
     const window = try host.app.openWindow(.{
         .title = "Blocks",
@@ -385,7 +527,6 @@ fn run(init: std.process.Init) !void {
     var frames: u32 = 0;
     var fps_since = last;
     var log_since = last;
-    var measuring = false;
     // Where the frames' time goes, said with the frame rate.
     var timing: Timing = .{ .gpu = .read(host.dev.fd), .waited_ns = app.window.gpu_waited_ns };
     while (true) {
@@ -397,7 +538,7 @@ fn run(init: std.process.Init) !void {
             // The shell is gone: nothing more can be shown. The island is
             // kept first.
             if (lostShell(err)) {
-                if (game.wantsSave()) save(gpa, &game);
+                if (game.wantsSave()) save(gpa, &game, &cur);
                 return err;
             }
             // Anything else (the GPU slow, or out of memory for a frame):
@@ -408,7 +549,7 @@ fn run(init: std.process.Init) !void {
         };
         timing.step_ns += sys.nowNs() - step_started;
         if (!going) {
-            if (game.wantsSave()) save(gpa, &game);
+            if (game.wantsSave()) save(gpa, &game, &cur);
             return;
         }
         // The mouse can be taken if the shell can lock the pointer.
@@ -431,7 +572,7 @@ fn run(init: std.process.Init) !void {
         if (session) |*s| if (s.poll(&game, now)) |event| switch (event) {
             .joined => |j| {
                 // This island, kept for coming back to.
-                save(gpa, &game);
+                save(gpa, &game, &cur);
                 game.joinWorld(j.world, j.pos, j.yaw, j.time, j.day) catch |err| {
                     print(sys.log_warning ++ "dazzle-blocks: cannot play in that world ({s})\n", .{@errorName(err)});
                     game.leaveGame();
@@ -439,7 +580,7 @@ fn run(init: std.process.Init) !void {
                 mesh(renderer, world, game.player.eye(), 12, &trouble);
             },
             .left => {
-                backHome(gpa, &game);
+                backHome(gpa, &game, &cur);
                 mesh(renderer, world, game.player.eye(), 12, &trouble);
                 game.say("Back on your island");
             },
@@ -455,7 +596,7 @@ fn run(init: std.process.Init) !void {
         timing.tick_ns += mesh_started - tick_started;
         timing.mesh_ns += sys.nowNs() - mesh_started;
         if (game.wantsSave() and now - last_save > save_every * std.time.ns_per_s) {
-            save(gpa, &game);
+            save(gpa, &game, &cur);
             last_save = now;
         }
         // Changed in the menu: kept.
@@ -474,18 +615,15 @@ fn run(init: std.process.Init) !void {
         scene.stretch = !whole_screen;
         scene.quality = game.quality;
         if (whole_screen) upscaler.release();
-        // While "what is drawn" shows, the GPU's time on each part is
-        // measured: the frames are drawn one at a time, each waited for.
-        if (game.stats != measuring) {
-            measuring = game.stats;
-            counting.count(measuring);
-            if (measuring) {
-                win.win.setPipelined(false) catch {};
-                _ = host.renderer.setPipelined(false);
-            } else {
-                _ = host.renderer.setPipelined(true);
-                win.win.setPipelined(true) catch {};
-            }
+        // Asked for in the menu.
+        if (game.island_action) |action| {
+            game.island_action = null;
+            islandAction(gpa, &game, &cur, action);
+            mesh(renderer, world, game.player.eye(), 12, &trouble);
+        }
+        if (game.quit_asked) {
+            if (game.wantsSave()) save(gpa, &game, &cur);
+            return;
         }
         const stats = host.renderer.takeStats();
         frames += stats.frames;
@@ -495,6 +633,7 @@ fn run(init: std.process.Init) !void {
         timing.pixels += stats.pixels;
         if (now - fps_since >= std.time.ns_per_s) {
             fps = @as(f32, @floatFromInt(frames)) / (@as(f32, @floatFromInt(now - fps_since)) / std.time.ns_per_s);
+            game.noteFps(fps);
             frames = 0;
             fps_since = now;
         }
@@ -502,12 +641,6 @@ fn run(init: std.process.Init) !void {
             const s = renderer.stats;
             print("dazzle-blocks: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
             timing.report(host.dev.fd, now - log_since, game.quality, scene.reach.k);
-            if (measuring) {
-                const n: f64 = @floatFromInt(@max(timing.frames, 1));
-                print("dazzle-blocks: measured on the GPU: {d:.1} ms a frame\n", .{@as(f64, @floatFromInt(timing.window_gpu_ns)) / std.time.ns_per_ms / n});
-                var counts: app.gpu_counters.Counting.Counts = undefined;
-                if (counting.take(&counts)) app.gpu_counters.report("dazzle-blocks", &counts, timing.frames);
-            }
             timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
             log_since = now;
         }

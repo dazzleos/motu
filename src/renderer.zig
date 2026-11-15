@@ -317,6 +317,9 @@ pub const View = struct {
     reach: f32 = 1,
     /// The clouds and rain (the light is in `env`).
     weather: weather_mod.Weather = .{},
+    /// The day, and how far into it (in seconds): for the seaplane.
+    day: u32 = 0,
+    day_seconds: f32 = 0,
 };
 
 /// What the last frame drew.
@@ -669,7 +672,7 @@ pub fn Renderer(comptime Device: type) type {
                 const cbo = r.creatures_bo[r.creatures_frame];
                 r.creatures_frame ^= 1;
                 const cverts = std.mem.bytesAsSlice(Vertex, cbo.map[0 .. (creatures.max_quads + weather_mod.max_quads) * 4 * @sizeOf(Vertex)]);
-                var cquads = r.creatures.buildMesh(w, &frustum, cam.eye, depth + start + 12, cverts[0 .. creatures.max_quads * 4]);
+                var cquads = r.creatures.buildMesh(w, &frustum, cam.eye, depth + start + 12, v.day, v.day_seconds, cverts[0 .. creatures.max_quads * 4]);
                 cquads += weather_mod.buildMesh(v.weather, w.seed, w, cam.eye, v.time, cverts[cquads * 4 ..]);
                 if (cquads > 0) {
                     try target.quads(&r.terrain, cbo.handle, 0, cquads, .{ tex[2], null, null });
