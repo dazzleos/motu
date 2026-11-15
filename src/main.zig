@@ -25,6 +25,7 @@ const view = @import("view.zig");
 const net = @import("net.zig");
 const options = @import("options.zig");
 const reach_mod = @import("reach.zig");
+const upscale = @import("upscale.zig");
 
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(vc4.Device);
@@ -50,6 +51,12 @@ const Scene = struct {
     /// The window's renderer: how much smaller than the window its buffer
     /// is (the quality chosen), which the world is drawn in.
     window_renderer: *const kete_vc4.Renderer,
+    /// While the window's buffer is its full size (the menu or a title
+    /// bar is drawn sharp in it): the world drawn `quality` as big, and
+    /// stretched over the view (see upscale.zig).
+    upscaler: *upscale.Upscaler,
+    stretch: bool = false,
+    quality: f32 = 1,
     reach: reach_mod.Reach = .{},
     /// `app.window.gpu_waited_ns` at the last frame.
     waited_ns: u64 = 0,
@@ -65,7 +72,7 @@ const Scene = struct {
         const waited = app.window.gpu_waited_ns -% s.waited_ns;
         s.waited_ns = app.window.gpu_waited_ns;
         _ = s.reach.frame(sys.nowNs(), waited);
-        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, scissor, .{
+        const v: renderer_mod.View = .{
             .camera = g.camera(),
             .aspect = @as(f32, @floatFromInt(vp.width)) / @as(f32, @floatFromInt(@max(vp.height, 1))),
             .time = g.clock,
@@ -74,7 +81,16 @@ const Scene = struct {
             .outline = if (g.target) |t| t.cell else null,
             .avatars = g.net.others,
             .reach = s.reach.k,
-        });
+        };
+        if (s.stretch and s.quality < 1) {
+            const size = upscale.sizeOf(.{ vp.width, vp.height }, s.quality);
+            if (s.upscaler.begin(.{ vp.width, vp.height }, size)) |image| {
+                try s.renderer.draw(renderer_mod.FrameSink{ .frame = image }, .{ .x = 0, .y = 0, .width = size[0], .height = size[1] }, null, v);
+                return s.upscaler.finish(f, size, vp, scissor);
+            }
+        }
+        // Without memory for the image: as big as the view.
+        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, scissor, v);
     }
 };
 
@@ -413,7 +429,9 @@ fn run(init: std.process.Init) !void {
         mesh(renderer, world, game.player.eye(), 12, &trouble);
         print("dazzle-blocks: meshed the nearest chunks in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
     }
-    var scene: Scene = .{ .game = &game, .renderer = renderer, .window_renderer = &host.renderer };
+    var upscaler = try upscale.Upscaler.init(gpa, host.dev);
+    defer upscaler.deinit();
+    var scene: Scene = .{ .game = &game, .renderer = renderer, .window_renderer = &host.renderer, .upscaler = &upscaler };
     var counting: Counting = .{ .dev = host.dev };
     defer counting.count(false);
     const icons = try gpa.create(view.Icons);
@@ -527,15 +545,17 @@ fn run(init: std.process.Init) !void {
             kept = game.quality;
             options.save(.{ .quality = kept });
         }
-        // Drawn as big as the quality chosen: the shell (or the display)
-        // stretches it to the window's size.
-        win.win.render_scale = game.quality;
-        // The widgets drawn sharp, on a layer over the world, while the
-        // menu or the palette is open, or in a window (its title bar).
-        // Playing on the whole screen, there is only the world (the hotbar
-        // drawn with it): the display shows it as it is, with no layer to
-        // read as well.
-        win.layered = game.menu_open or game.palette_open or !win.win.fullscreen;
+        // The world drawn as big as the quality chosen. Playing on the
+        // whole screen, the window's buffer is drawn that much smaller
+        // (the hotbar with it), and the display stretches it: one buffer,
+        // shown as it is. With the menu or the palette open, or in a
+        // window (its title bar), the buffer is the window's full size, so
+        // they are sharp, and the world is stretched into it by the GPU.
+        const whole_screen = win.win.fullscreen and !game.menu_open and !game.palette_open;
+        win.win.render_scale = if (whole_screen) game.quality else 1;
+        scene.stretch = !whole_screen;
+        scene.quality = game.quality;
+        if (whole_screen) upscaler.release();
         // While "what is drawn" shows, the GPU's time on each part is
         // measured: the frames are drawn one at a time, each waited for.
         if (game.stats != measuring) {
@@ -592,4 +612,5 @@ test {
     _ = @import("net.zig");
     _ = @import("options.zig");
     _ = @import("reach.zig");
+    _ = @import("upscale.zig");
 }
