@@ -156,11 +156,13 @@ pub const Blocks = struct {
                 .child = cx.make(kete.Align{ .child = cx.make(kete.Image{ .source = .{ .image = self.icons.of(b).? } }) }),
             }) })) catch {};
         }
-        const title = cx.make(kete.Row{ .fill = false, .spacing = 8, .children = a.dupe(kete.Widget, &.{
-            cx.make(kete.IconButton{ .icon = .close, .size = 36, .on_press = .of(g, Game.closePalette) }),
+        // The title, and a close button at the top right, as windows have.
+        const title = cx.make(kete.SizedBox{ .width = palette_width + 8, .child = cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
             cx.make(kete.Text{ .text = "Blocks", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
-        }) catch &.{} });
-        return cx.make(kete.RoundedBox{ .color = gfx.Color.argb(0xe0202024), .radius = .all(16), .child = cx.make(kete.Padding{ .padding = .{ .left = 12, .top = 12, .right = 20, .bottom = 20 }, .child = cx.make(kete.Column{
+            cx.make(kete.Expanded{ .child = cx.make(kete.SizedBox.empty) }),
+            cx.make(kete.IconButton{ .icon = .close, .size = 36, .on_press = .of(g, Game.closePalette) }),
+        }) catch &.{} }) });
+        return cx.make(kete.RoundedBox{ .color = gfx.Color.argb(0xe0202024), .radius = .all(16), .child = cx.make(kete.Padding{ .padding = .{ .left = 20, .top = 12, .right = 12, .bottom = 20 }, .child = cx.make(kete.Column{
             .fill = false,
             .spacing = 12,
             .children = a.dupe(kete.Widget, &.{
