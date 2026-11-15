@@ -525,48 +525,126 @@ pub fn canoeMesh(gpa: std.mem.Allocator, len: i32, mesh: *mesher.Mesh) !void {
     while (k < len) : (k += 1) try canoePart(o, .{ -canoe_centre, 0, @as(f32, @floatFromInt(k)) - half }, false, k, len);
 }
 
+/// A canoe's hull, across at a place along it (`t` blocks from its
+/// start, of `len`): how far out its sides are from its middle, how high
+/// its rim and its bottom are, and how far in and down it is hollowed.
+/// It narrows to a point at each end, its bottom and rim rising there,
+/// and is not hollowed near the points.
+const Station = struct {
+    w: f32,
+    rim: f32,
+    bottom: f32,
+    wi: f32,
+    di: f32,
+
+    fn at(t: f32, len: f32) Station {
+        const d = @min(t, len - t);
+        const s = @sin(std.math.pi / 2.0 * std.math.clamp(d / @min(1.1, len / 2), 0, 1));
+        const lift = (1 - s) * (1 - s);
+        const w = 0.025 + 0.22 * s;
+        const rim = 0.42 + 0.1 * lift;
+        const bottom = 0.05 + 0.25 * lift;
+        const open = std.math.clamp((s - 0.45) / 0.35, 0, 1);
+        return .{ .w = w, .rim = rim, .bottom = bottom, .wi = (w - 0.04) * open, .di = (rim - bottom - 0.07) * open };
+    }
+
+    /// A point round its outside, from the left rim (k 0) under it to
+    /// the right rim (k `round`): across and up.
+    fn outside(st: Station, k: usize) [2]f32 {
+        const th = std.math.pi * (1 + @as(f32, @floatFromInt(k)) / round);
+        return .{ st.w * @cos(th), st.rim + (st.rim - st.bottom) * @sin(th) };
+    }
+
+    fn hollow(st: Station) bool {
+        return st.wi > 0.005 and st.di > 0.005;
+    }
+
+    const round = 5;
+};
+
 /// The block of a canoe `len_n` long, `before_n` from its start, at
-/// `origin`.
+/// `origin`: one smooth hull, hollowed, and its outrigger.
 fn canoePart(o: Out, origin: V, ax: bool, before_n: i32, len_n: i32) !void {
-    const x = origin[0];
-    const y = origin[1];
-    const z = origin[2];
-    const r = [2]i32{ before_n, len_n - 1 - before_n };
     const len: f32 = @floatFromInt(len_n);
     const before: f32 = @floatFromInt(before_n);
-    const sticks = sticks_tiles;
-    const a: Axis = .{ .o = o, .x = x, .y = y, .z = z, .along_x = ax };
-    const hull: Tiles = .{ .top = .canoe, .side = .canoe, .bottom = .canoe };
-    // The hull, in slices: narrowing to points at the ends, its bottom
-    // and sides rising there.
     const centre = canoe_centre;
-    const slices = 8;
-    for (0..slices) |k| {
-        const a0 = @as(f32, @floatFromInt(k)) / slices;
-        const a1 = @as(f32, @floatFromInt(k + 1)) / slices;
-        const mid = before + (a0 + a1) / 2;
-        const from_end = @min(mid, len - mid);
-        const taper = std.math.pow(f32, @min(1, from_end / @min(1.2, len / 2)), 0.6);
-        const hw = 0.04 + 0.2 * taper;
-        const wall = @min(0.05, hw * 0.5);
-        const floor0 = 0.04 + 0.16 * (1 - taper);
-        const rim = 0.4 + 0.12 * (1 - taper);
-        var skip: std.EnumSet(Face) = .{};
-        if (k > 0 or r[0] > 0) skip.insert(a.endFace(-1));
-        if (k < slices - 1 or r[1] > 0) skip.insert(a.endFace(1));
-        try a.part(a0, a1, floor0, floor0 + 0.08, centre - hw + wall, centre + hw - wall, hull, skip);
-        try a.part(a0, a1, floor0, rim, centre - hw, centre - hw + wall, hull, skip);
-        try a.part(a0, a1, floor0, rim, centre + hw - wall, centre + hw, hull, skip);
+    const a: Axis = .{ .o = o, .x = origin[0], .y = origin[1], .z = origin[2], .along_x = ax };
+    const H = struct {
+        a: Axis,
+        fn pt(h: @This(), along: f32, ac: [2]f32) V {
+            return h.a.at(along, ac[1], centre + ac[0]);
+        }
+        fn dir(h: @This(), along: f32, up_: f32, across: f32) V {
+            return if (h.a.along_x) .{ along, up_, across } else .{ across, up_, along };
+        }
+        fn quad(h: @This(), c: [4]V, uv: [4][2]f32, out: V) !void {
+            try plants.facing(h.a.o, .canoe, c, uv, out, @splat(.none));
+        }
+    };
+    const h: H = .{ .a = a };
+    const steps = 4;
+    for (0..steps) |k| {
+        const a0 = @as(f32, @floatFromInt(k)) / steps;
+        const a1 = @as(f32, @floatFromInt(k + 1)) / steps;
+        const s0 = Station.at(before + a0, len);
+        const s1 = Station.at(before + a1, len);
+        // Round the outside.
+        for (0..Station.round) |j| {
+            const p00 = s0.outside(j);
+            const p01 = s0.outside(j + 1);
+            const p10 = s1.outside(j);
+            const p11 = s1.outside(j + 1);
+            const th = std.math.pi * (1 + (@as(f32, @floatFromInt(j)) + 0.5) / Station.round);
+            const v = struct {
+                fn f(st: Station, p: [2]f32) f32 {
+                    return std.math.clamp((st.rim - p[1]) / @max(st.rim - st.bottom, 0.01), 0, 1);
+                }
+            }.f;
+            try h.quad(.{ h.pt(a0, p00), h.pt(a0, p01), h.pt(a1, p11), h.pt(a1, p10) }, .{ .{ a0, v(s0, p00) }, .{ a0, v(s0, p01) }, .{ a1, v(s1, p11) }, .{ a1, v(s1, p10) } }, h.dir(0, @sin(th), @cos(th)));
+        }
+        const up_dir = h.dir(0, 1, 0);
+        const deck_v: [4][2]f32 = .{ .{ a0, 0.45 }, .{ a0, 0.45 }, .{ a1, 0.45 }, .{ a1, 0.45 } };
+        const floor_v: [4][2]f32 = .{ .{ a0, 0.6 }, .{ a0, 0.6 }, .{ a1, 0.6 }, .{ a1, 0.6 } };
+        if (s0.hollow() and s1.hollow()) {
+            // The rims, the sides inside, the floor.
+            for ([2]f32{ -1, 1 }) |side| {
+                try h.quad(.{ h.pt(a0, .{ side * s0.w, s0.rim }), h.pt(a0, .{ side * s0.wi, s0.rim }), h.pt(a1, .{ side * s1.wi, s1.rim }), h.pt(a1, .{ side * s1.w, s1.rim }) }, deck_v, up_dir);
+                try h.quad(.{ h.pt(a0, .{ side * s0.wi, s0.rim }), h.pt(a0, .{ side * s0.wi, s0.rim - s0.di }), h.pt(a1, .{ side * s1.wi, s1.rim - s1.di }), h.pt(a1, .{ side * s1.wi, s1.rim }) }, .{ .{ a0, 0.25 }, .{ a0, 0.6 }, .{ a1, 0.6 }, .{ a1, 0.25 } }, h.dir(0, 0, -side));
+            }
+            try h.quad(.{ h.pt(a0, .{ -s0.wi, s0.rim - s0.di }), h.pt(a0, .{ s0.wi, s0.rim - s0.di }), h.pt(a1, .{ s1.wi, s1.rim - s1.di }), h.pt(a1, .{ -s1.wi, s1.rim - s1.di }) }, floor_v, up_dir);
+        } else {
+            // Decked over, near the points; where the hollow starts, its
+            // end.
+            try h.quad(.{ h.pt(a0, .{ -s0.w, s0.rim }), h.pt(a0, .{ s0.w, s0.rim }), h.pt(a1, .{ s1.w, s1.rim }), h.pt(a1, .{ -s1.w, s1.rim }) }, deck_v, up_dir);
+            for ([2]Station{ s0, s1 }, [2]f32{ a0, a1 }, [2]f32{ 1, -1 }) |st, at, toward| {
+                if (!st.hollow()) continue;
+                try h.quad(.{ h.pt(at, .{ -st.wi, st.rim }), h.pt(at, .{ st.wi, st.rim }), h.pt(at, .{ st.wi, st.rim - st.di }), h.pt(at, .{ -st.wi, st.rim - st.di }) }, .{ .{ 0.1, 0.25 }, .{ 0.9, 0.25 }, .{ 0.9, 0.6 }, .{ 0.1, 0.6 } }, h.dir(toward, 0, 0));
+            }
+        }
+        // Its points, closed.
+        for ([2]bool{ before + a0 == 0, before + a1 == len }, [2]Station{ s0, s1 }, [2]f32{ a0, a1 }, [2]f32{ -1, 1 }) |is_end, st, at, toward| {
+            if (!is_end) continue;
+            const p = [6][2]f32{ st.outside(0), st.outside(1), st.outside(2), st.outside(3), st.outside(4), st.outside(5) };
+            const uv: [4][2]f32 = .{ .{ 0.1, 0.1 }, .{ 0.3, 0.5 }, .{ 0.6, 0.5 }, .{ 0.9, 0.1 } };
+            try h.quad(.{ h.pt(at, p[0]), h.pt(at, p[1]), h.pt(at, p[2]), h.pt(at, p[3]) }, uv, h.dir(toward, 0, 0));
+            try h.quad(.{ h.pt(at, p[0]), h.pt(at, p[3]), h.pt(at, p[4]), h.pt(at, p[5]) }, uv, h.dir(toward, 0, 0));
+        }
     }
-    // The outrigger: a float on two booms, at the row's ends (or the
-    // middle of one alone).
+    // The outrigger: a float beside it, on two booms resting across the
+    // hull, at the canoe's ends (or the middle of one alone), each held
+    // on the float by a peg.
+    const float_lo: f32 = 0.08;
+    const float_hi: f32 = 0.2;
+    const float_c: f32 = 0.5;
+    const wood: Tiles = .{ .top = .canoe, .side = .canoe, .bottom = .canoe, .fit = true };
     const f0 = @max(0, 0.3 - before);
     const f1 = @min(1, len - 0.3 - before);
-    if (f1 > f0) try a.part(f0, f1, 0.08, 0.18, 0.82, 0.92, hull, .{});
-    const booms: []const f32 = if (len == 1) &.{0.5} else if (r[0] == 0) &.{0.6} else if (r[1] == 0) &.{0.4} else &.{};
+    if (f1 > f0) try a.part(f0, f1, float_lo, float_hi, centre + float_c - 0.06, centre + float_c + 0.06, wood, .{});
+    const booms: []const f32 = if (len_n == 1) &.{0.5} else if (before_n == 0) &.{0.6} else if (before_n == len_n - 1) &.{0.4} else &.{};
     for (booms) |at| {
-        try a.part(at - 0.03, at + 0.03, 0.44, 0.5, centre - 0.12, 0.9, sticks, .{});
-        try a.part(at - 0.025, at + 0.025, 0.18, 0.44, 0.845, 0.895, sticks, std.EnumSet(Face).initMany(&.{ .up, .down }));
+        const st = Station.at(before + at, len);
+        try a.part(at - 0.03, at + 0.03, st.rim, st.rim + 0.05, centre - st.w - 0.02, centre + float_c + 0.04, sticks_tiles, .{});
+        try a.part(at - 0.02, at + 0.02, float_hi, st.rim, centre + float_c - 0.02, centre + float_c + 0.02, sticks_tiles, std.EnumSet(Face).initMany(&.{ .up, .down }));
     }
 }
 

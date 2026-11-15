@@ -534,7 +534,7 @@ fn nearestFace(n: V) Face {
 /// A quad, wound to face `out`, lit as the cube face nearest it. A quad
 /// a little twisted is split (into its two triangles, 0 1 2 and 0 2 3)
 /// along the diagonal that keeps both facing out.
-fn facing(o: Out, tile: Tile, c_in: [4]V, uv_in: [4][2]f32, out: V, anims_in: [4]Anim) !void {
+pub fn facing(o: Out, tile: Tile, c_in: [4]V, uv_in: [4][2]f32, out: V, anims_in: [4]Anim) !void {
     var c = c_in;
     var uv = uv_in;
     var anims = anims_in;
