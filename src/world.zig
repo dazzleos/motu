@@ -393,7 +393,7 @@ pub const World = struct {
         while (i < trunk) : (i += 1) w.blocks[index(x, y + i, z)] = .palm;
     }
 
-    /// Grass and elephant ears about the island, and meadows: grass with patches
+    /// Grass and tropical plants about the island, and meadows: grass with patches
     /// of flowers, each patch its own colour.
     fn growPlants(w: *World) void {
         const seed = w.seed;
@@ -415,7 +415,7 @@ pub const World = struct {
                     if (r < 0.8) break :blk .tall_grass;
                     continue;
                 } else if (r < 0.012)
-                    .elephant_ear
+                    .tropical_plant
                 else if (r < meadow * 0.35)
                     .tall_grass
                 else
@@ -668,7 +668,7 @@ test "the island: land in the middle, sea at the edges, a beach, trees and plant
     for (w.blocks) |b| counts.getPtr(b).* += 1;
     try testing.expect(land > 3000 and land < 12000);
     try testing.expect(highest > sea_level + 16);
-    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .elephant_ear, .volcanic_rock, .coral }) |b| try testing.expect(counts.get(b) > 0);
+    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .tropical_plant, .volcanic_rock, .coral }) |b| try testing.expect(counts.get(b) > 0);
     var flowers: usize = 0;
     for (Block.flowers) |b| flowers += counts.get(b);
     try testing.expect(flowers > 0);

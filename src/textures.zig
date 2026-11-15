@@ -266,7 +266,7 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk tx(scale(c, 0.85 + hash(@intFromFloat(x), @intFromFloat(y), s) * 0.15), husk * 2);
         },
         .tall_grass => blades(u, v, s),
-        .elephant_ear => blk: {
+        .tropical_plant => blk: {
             // A big leaf like an arrowhead, its base (two round lobes, a
             // notch between them where the stalk meets it) at the top of
             // the tile and its point at the bottom: a pale rib down the
@@ -612,8 +612,8 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             fan(out, &px[1], .{ 24, 12 }, &.{ 2.8, 3.6, -1.57, -0.45, 0.35 }, 22, 7);
             return;
         },
-        .elephant_ear => {
-            tilePixels(.elephant_ear, &px[0]);
+        .tropical_plant => {
+            tilePixels(.tropical_plant, &px[0]);
             fan(out, &px[0], .{ 24, 46 }, &.{ -0.55, -1.2, -1.95, -2.6 }, 26, 10);
             return;
         },
@@ -787,7 +787,7 @@ test "every tile is in its strip, opaque except where things are see-through, an
             if (t.strip() != strip) continue;
             const oy = @as(u32, t.slot()) * tile_size;
             const see_through = switch (t) {
-                .glass, .water, .tall_grass, .frond, .elephant_ear, .lamp, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
+                .glass, .water, .tall_grass, .frond, .tropical_plant, .lamp, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
                 else => false,
             };
             var clear: u32 = 0;
