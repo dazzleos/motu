@@ -616,7 +616,8 @@ fn canoePart(o: Out, origin: V, ax: bool, before_n: i32, len_n: i32) !void {
             // Decked over, near the points; where the hollow starts, its
             // end.
             try h.quad(.{ h.pt(a0, .{ -s0.w, s0.rim }), h.pt(a0, .{ s0.w, s0.rim }), h.pt(a1, .{ s1.w, s1.rim }), h.pt(a1, .{ -s1.w, s1.rim }) }, deck_v, up_dir);
-            for ([2]Station{ s0, s1 }, [2]f32{ a0, a1 }, [2]f32{ 1, -1 }) |st, at, toward| {
+            // (Facing into the hollow, beyond it.)
+            for ([2]Station{ s0, s1 }, [2]f32{ a0, a1 }, [2]f32{ -1, 1 }) |st, at, toward| {
                 if (!st.hollow()) continue;
                 try h.quad(.{ h.pt(at, .{ -st.wi, st.rim }), h.pt(at, .{ st.wi, st.rim }), h.pt(at, .{ st.wi, st.rim - st.di }), h.pt(at, .{ -st.wi, st.rim - st.di }) }, .{ .{ 0.1, 0.25 }, .{ 0.9, 0.25 }, .{ 0.9, 0.6 }, .{ 0.1, 0.6 } }, h.dir(toward, 0, 0));
             }

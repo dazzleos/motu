@@ -530,15 +530,15 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk tx(scale(c, 0.55 + 0.5 * round), 3 * round);
         },
         .canoe => blk: {
-            // Wood hollowed out, its grain along it, a band of red and
-            // white triangles carved along the top.
+            // Wood hollowed out, its grain along it, a band of zigzags
+            // carved along the top: cut into the wood, darker in the cuts.
             const grain = noise(u * 0.25, v * 4, 16, s) * 0.5 + 0.5 * noise(u, v * 2, 8, s +% 1);
             const wood = scale(mix(rgb(0x5a3a1e), rgb(0x8a5e34), grain), 0.9 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.06);
-            if (y < 14) {
-                const tri = @abs(@mod(x, 10) - 5) < (y - 2) * 0.45;
-                if (y < 2 or y > 12) break :blk tx(rgb(0x2a1a0e), 0);
-                break :blk tx(if (tri) rgb(0xb83020) else rgb(0xe8dcc0), 1.5);
+            if (y >= 2 and y < 13) {
+                const zig = @abs(@mod(x, 10) - 5) * 1.6 + 2.5;
+                if (@abs(y - zig) < 1.2) break :blk tx(scale(wood, 0.55), -1.5);
             }
+            if (y < 1.5 or (y >= 13 and y < 14.5)) break :blk tx(scale(wood, 0.6), -1);
             break :blk tx(wood, grain * 2);
         },
     };
