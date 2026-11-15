@@ -356,6 +356,9 @@ pub const World = struct {
                     var ry = h + 1;
                     const tall: i32 = if (reef > 0.72) 2 else if (reef > 0.64) 1 else 0;
                     while (ry <= h + tall and ry <= sea_level - 2) : (ry += 1) w.blocks[index(x, ry, z)] = .coral;
+                    // Seagrass in patches on the sand where there is no reef.
+                    if (reef <= 0.58 and w.blocks[index(x, h, z)] == .sand and fbm(seed +% 43, fx / 6, fz / 6, 2) > 0.58 and hash(seed +% 44, x, z) < 0.7)
+                        w.blocks[index(x, h + 1, z)] = .seagrass;
                 }
             }
         }
@@ -509,6 +512,13 @@ pub const World = struct {
                 const fz: f32 = @floatFromInt(z);
                 const meadow = fbm(seed +% 31, fx / 12, fz / 12, 2);
                 const r = hash(seed +% 32, x, z);
+                // Bamboo in clumps, here and there.
+                if (fbm(seed +% 35, fx / 9, fz / 9, 2) > 0.79 and r < 0.25 and h + 5 < size_y) {
+                    const tall: i32 = 2 + @as(i32, @intFromFloat(hash(seed +% 36, x, z) * 3));
+                    var k: i32 = 1;
+                    while (k <= tall) : (k += 1) w.blocks[index(x, h + k, z)] = .bamboo;
+                    continue;
+                }
                 const b: Block = if (meadow > 0.56) blk: {
                     // Patches a few blocks across, each of one colour.
                     const patch = fbm(seed +% 33, fx / 4, fz / 4, 1);
@@ -839,7 +849,7 @@ test "the atoll: a ring of islands round a lagoon, sea at the edges, beaches, tr
     // The lagoon in the middle.
     try testing.expectEqual(Block.water, w.get(size_x / 2, sea_level - 1, size_z / 2));
     try testing.expect(highest > sea_level + 16);
-    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .leafy_plant, .volcanic_rock, .coral }) |b| try testing.expect(counts.get(b) > 0);
+    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .leafy_plant, .volcanic_rock, .coral, .bamboo, .seagrass }) |b| try testing.expect(counts.get(b) > 0);
     var flowers: usize = 0;
     for (Block.flowers) |b| flowers += counts.get(b);
     try testing.expect(flowers > 0);

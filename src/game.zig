@@ -491,6 +491,8 @@ pub const Game = struct {
         }
         const there = g.world.get(t.before[0], t.before[1], t.before[2]);
         if (there != .air and there != .water) return false;
+        // Seagrass grows only under water.
+        if (b == .seagrass and there != .water) return false;
         return g.edit(t.before, b);
     }
 
@@ -502,13 +504,14 @@ pub const Game = struct {
         const fill: Block = if (c[1] < world_mod.sea_level and g.besideWater(c)) .water else .air;
         if (!g.edit(c, fill)) return false;
         const above = g.world.get(c[0], c[1] + 1, c[2]);
-        if (above.shape() == .plant) _ = g.edit(.{ c[0], c[1] + 1, c[2] }, .air);
+        // What grew on it goes too (seagrass leaving its water).
+        if (above.shape() == .plant) _ = g.edit(.{ c[0], c[1] + 1, c[2] }, if (above == .seagrass) .water else .air);
         return true;
     }
 
     fn besideWater(g: *const Game, c: world_mod.Pos) bool {
         for ([_][3]i32{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 }, .{ 0, 1, 0 } }) |d| {
-            if (g.world.get(c[0] + d[0], c[1] + d[1], c[2] + d[2]) == .water) return true;
+            if (g.world.get(c[0] + d[0], c[1] + d[1], c[2] + d[2]).isWatery()) return true;
         }
         return false;
     }

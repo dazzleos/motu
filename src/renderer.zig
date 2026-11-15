@@ -213,7 +213,7 @@ pub const Environment = struct {
 /// across at a time (`regions`): fewer draws, each of more triangles,
 /// which the Pi Zero to Pi 3's GPU draws faster (it goes over each draw
 /// again in each 64 by 64 tile of the screen it covers).
-pub const region_chunks = 1;
+pub const region_chunks = 2;
 pub const region_size = world_mod.chunk_size * region_chunks;
 /// How far a palm's fronds (and its trunk's lean) reach past its block.
 const palm_reach = 3.5;
@@ -1267,10 +1267,13 @@ test "faces turned away are not drawn, and none that can be seen are left out" {
                     // stones) look every way, and are drawn with the faces
                     // looking up: from anywhere but under the chunk's
                     // lowest face, where the ground hides them. A cube's
-                    // face is on a whole block's edge.
+                    // face has its corners on whole blocks.
                     const n = mesher.Info.unpack(v.info).face.normal();
-                    const axis: usize = if (n[0] != 0) 0 else if (n[1] != 0) 1 else 2;
-                    if (v.pos[axis] != @floor(v.pos[axis])) continue;
+                    const whole = for (list[q * 4 ..][0..4]) |corner| {
+                        const cp = corner.pos;
+                        if (cp[0] != @floor(cp[0]) or cp[1] != @floor(cp[1]) or cp[2] != @floor(cp[2])) break false;
+                    } else true;
+                    if (!whole) continue;
                     const to = eye - v.pos;
                     const front = @as(f32, @floatFromInt(n[0])) * to[0] + @as(f32, @floatFromInt(n[1])) * to[1] + @as(f32, @floatFromInt(n[2])) * to[2] > 0;
                     if (!front) continue;

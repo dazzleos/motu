@@ -222,7 +222,7 @@ fn cap(o: Out, ring: [8]V, face: Face) !void {
 /// A frond from `base`, out at angle `a`, rising at `rise` radians and
 /// drooping by `droop` blocks over its `length`; `half` its half-width;
 /// in `segs` pieces. Folded a little along its rib.
-fn frond(o: Out, base: V, a: f32, rise: f32, length: f32, droop: f32, half: f32, comptime segs: usize) !void {
+pub fn frond(o: Out, base: V, a: f32, rise: f32, length: f32, droop: f32, half: f32, comptime segs: usize) !void {
     const dir: V = .{ @cos(a), 0, @sin(a) };
     const side: V = .{ -dir[2], 0, dir[0] };
     const fold = 0.35;
@@ -340,7 +340,7 @@ pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
     const turn = hash(seed, 0, 0) * 2 * std.math.pi;
     const base: V = .{ @as(f32, @floatFromInt(p[0])) + 0.5, @floatFromInt(p[1]), @as(f32, @floatFromInt(p[2])) + 0.5 };
     if (blk == .leafy_plant) return leafyPlant(o, base, seed, turn);
-    if (blk == .tall_grass) {
+    if (blk == .tall_grass or blk == .seagrass) {
         // Two planes crossing on the block's diagonals.
         const x = base[0] - 0.5;
         const y = base[1];
@@ -348,7 +348,7 @@ pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
         const planes = [2][2][2]f32{ .{ .{ x, z }, .{ x + 1, z + 1 } }, .{ .{ x + 1, z }, .{ x, z + 1 } } };
         for (planes) |pl| {
             const c = [4]V{ .{ pl[0][0], y, pl[0][1] }, .{ pl[1][0], y, pl[1][1] }, .{ pl[1][0], y + 1, pl[1][1] }, .{ pl[0][0], y + 1, pl[0][1] } };
-            try o.twoSided(.tall_grass, .up, .up, c, .{ .{ lo, 1 }, .{ hi, 1 }, .{ hi, 0 }, .{ lo, 0 } }, .{ .none, .none, .plant, .plant });
+            try o.twoSided(blk.tile(.north), .up, .up, c, .{ .{ lo, 1 }, .{ hi, 1 }, .{ hi, 0 }, .{ lo, 0 } }, .{ .none, .none, .plant, .plant });
         }
         return;
     }

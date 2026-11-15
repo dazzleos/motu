@@ -86,6 +86,20 @@ pub const Block = enum(u8) {
     chest,
     /// A single stick of bamboo, upright: a lamp on one is raised.
     post,
+    /// Half a block, its lower half: sandstone, rock and thatch.
+    sandstone_slab,
+    rock_slab,
+    thatch_slab,
+    /// Rungs between two rails, against the wall beside it: climbed.
+    ladder,
+    /// A post, with rails to fences (and walls) beside it.
+    fence,
+    /// A fire in a ring of stones, giving light.
+    campfire,
+    /// Ribbons of grass under the water (the block is water too).
+    seagrass,
+    /// Canes of bamboo, leaves at their tops.
+    bamboo,
     _,
 
     pub const Shape = enum {
@@ -109,11 +123,11 @@ pub const Block = enum(u8) {
     pub fn shape(b: Block) Shape {
         return switch (b) {
             .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf => .none,
-            .table, .bed, .chest, .post, .lamp => .furniture,
+            .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo => .furniture,
             .water => .water,
             .glass => .clear,
             .palm => .pole,
-            .tall_grass, .leafy_plant, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
+            .tall_grass, .seagrass, .leafy_plant, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
             _ => .none,
             else => .cube,
         };
@@ -127,10 +141,25 @@ pub const Block = enum(u8) {
 
     /// The player cannot walk through it.
     pub fn isSolid(b: Block) bool {
-        return switch (b.shape()) {
-            .cube, .clear, .pole, .furniture => true,
-            else => false,
+        return b.solidHeight() > 0;
+    }
+
+    /// How high the part of it the player cannot walk through is, from
+    /// its bottom (0: none of it; 1: all of it).
+    pub fn solidHeight(b: Block) f32 {
+        return switch (b) {
+            .sandstone_slab, .rock_slab, .thatch_slab => 0.5,
+            .ladder, .campfire => 0,
+            else => switch (b.shape()) {
+                .cube, .clear, .pole, .furniture => 1,
+                else => 0,
+            },
         };
+    }
+
+    /// Water, or what is in water (and holds it too).
+    pub fn isWatery(b: Block) bool {
+        return b == .water or b == .seagrass;
     }
 
     /// How much more than a step light loses going through it: sunlight
@@ -151,6 +180,7 @@ pub const Block = enum(u8) {
     pub fn emits(b: Block) u4 {
         return switch (b) {
             .lamp => 15,
+            .campfire => 14,
             else => 0,
         };
     }
@@ -173,7 +203,13 @@ pub const Block = enum(u8) {
             .sticks => if (top or bottom) .sticks_top else .sticks_side,
             .lamp => .lamp,
             .table => if (top or bottom) .sticks_top else .sticks_side,
-            .post => .bamboo,
+            .post, .bamboo => .bamboo,
+            .sandstone_slab => if (top or bottom) .sandstone_top else .sandstone_side,
+            .rock_slab => .volcanic_rock,
+            .thatch_slab => .thatch,
+            .ladder, .fence => if (top or bottom) .sticks_top else .sticks_side,
+            .campfire => .lamp,
+            .seagrass => .seagrass,
             .bed => .bed_cover,
             .chest => if (top or bottom) .chest_top else .chest_side,
             .white => .white,
@@ -218,6 +254,14 @@ pub const Block = enum(u8) {
             .bed => "Bed",
             .chest => "Treasure chest",
             .post => "Stick",
+            .sandstone_slab => "Sandstone slab",
+            .rock_slab => "Rock slab",
+            .thatch_slab => "Thatch slab",
+            .ladder => "Ladder",
+            .fence => "Fence",
+            .campfire => "Campfire",
+            .seagrass => "Seagrass",
+            .bamboo => "Bamboo",
             .white => "White",
             .black => "Black",
             .red => "Red",
@@ -246,7 +290,7 @@ pub const Block = enum(u8) {
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.post) and b.current() == b;
+        return @intFromEnum(b) <= @intFromEnum(Block.bamboo) and b.current() == b;
     }
 
     /// What a block is now: a kind that was removed is read as the one
@@ -286,10 +330,10 @@ pub const Section = struct {
 
 pub const sections = [_]Section{
     .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .water, .coral } },
-    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .glass } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .glass, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder } },
     // Made of sticks.
-    .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp } },
-    .{ .name = "Plants", .blocks = &.{ .palm, .leafy_plant, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
+    .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp, .campfire } },
+    .{ .name = "Plants", .blocks = &.{ .palm, .bamboo, .leafy_plant, .tall_grass, .seagrass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
 };
@@ -353,7 +397,8 @@ pub const Tile = enum(u6) {
     sand,
     sandstone_top,
     sandstone_side,
-    sticks_top,
+    /// Under the lagoon, with the island's.
+    seagrass,
     coral,
     palm_bark,
     frond,
@@ -377,6 +422,7 @@ pub const Tile = enum(u6) {
     chest_side,
     chest_top,
     bamboo,
+    sticks_top,
     // Colours.
     white = 32,
     black,

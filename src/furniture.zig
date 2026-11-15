@@ -11,6 +11,12 @@
 //! - A stick: one pole of bamboo, upright, the height of the block.
 //! - A lamp: a bamboo torch, its flame burning at its top (on a stick,
 //!   raised). The flame is see-through, and flickers as plants sway.
+//! - Slabs: the lower half of a block.
+//! - A fence: a post, with rails to fences (and walls) beside it.
+//! - A ladder: two rails and rungs, against the wall beside it.
+//! - A campfire: a ring of stones, logs crossed, a fire burning.
+//! - Bamboo: canes, the same in each block up a stack, sprigs of leaves
+//!   at the top.
 
 const std = @import("std");
 const blocks = @import("blocks.zig");
@@ -161,6 +167,101 @@ pub fn build(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
                     .{ x + 0.5 + d[1][0] * r, y + 1.12, z + 0.5 + d[1][1] * r }, .{ x + 0.5 + d[0][0] * r, y + 1.12, z + 0.5 + d[0][1] * r },
                 };
                 try f.twoSided(.lamp, .up, .up, c, .{ .{ 0.002, 1 }, .{ 0.998, 1 }, .{ 0.998, 0 }, .{ 0.002, 0 } }, .{ .none, .none, .plant, .plant });
+            }
+        },
+        .sandstone_slab, .rock_slab, .thatch_slab => {
+            var skip: std.EnumSet(Face) = .{};
+            if (w.get(p[0], p[1] - 1, p[2]).isOpaque()) skip.insert(.down);
+            for (same, side_faces) |sm, f| if (sm) skip.insert(f);
+            const t: Tiles = .{ .top = blk.tile(.up), .side = blk.tile(.north), .bottom = blk.tile(.down) };
+            try box(o, .{ x, y, z }, .{ x + 1, y + 0.5, z + 1 }, t, skip);
+        },
+        .fence => {
+            try box(o, .{ x + 0.38, y, z + 0.38 }, .{ x + 0.62, y + 1, z + 0.62 }, sticks, std.EnumSet(Face).initOne(.down));
+            // Rails out to fences, and walls, beside it.
+            const dirs = [4][2]i32{ .{ -1, 0 }, .{ 1, 0 }, .{ 0, -1 }, .{ 0, 1 } };
+            for (dirs) |d| {
+                const n = w.get(p[0] + d[0], p[1], p[2] + d[1]);
+                if (n != .fence and !n.isOpaque()) continue;
+                for ([2]f32{ 0.35, 0.72 }) |ry| {
+                    const lo_x = if (d[0] < 0) x else if (d[0] > 0) x + 0.62 else x + 0.44;
+                    const hi_x = if (d[0] < 0) x + 0.38 else if (d[0] > 0) x + 1 else x + 0.56;
+                    const lo_z = if (d[1] < 0) z else if (d[1] > 0) z + 0.62 else z + 0.44;
+                    const hi_z = if (d[1] < 0) z + 0.38 else if (d[1] > 0) z + 1 else z + 0.56;
+                    try box(o, .{ lo_x, y + ry, lo_z }, .{ hi_x, y + ry + 0.12, hi_z }, sticks, .{});
+                }
+            }
+        },
+        .ladder => {
+            // Against the first wall beside it (north, south, west, east);
+            // with none, stood in the middle, across x.
+            const walls = [4]struct { [2]i32, f32, f32 }{ .{ .{ 0, -1 }, 0, 1 }, .{ .{ 0, 1 }, 1, 1 }, .{ .{ -1, 0 }, 0, 0 }, .{ .{ 1, 0 }, 1, 0 } };
+            var against: ?usize = null;
+            for (walls, 0..) |wl, k| if (w.get(p[0] + wl[0][0], p[1], p[2] + wl[0][1]).isOpaque()) {
+                against = k;
+                break;
+            };
+            const along_x = if (against) |k| walls[k][2] == 1 else true;
+            const out: f32 = if (against) |k| (if (walls[k][1] == 0) 0.06 else 0.82) else 0.44;
+            const deep: f32 = 0.12;
+            for ([2]f32{ 0.12, 0.8 }) |at| {
+                const lo_v: V = if (along_x) .{ x + at, y, z + out } else .{ x + out, y, z + at };
+                const hi_v: V = if (along_x) .{ x + at + 0.08, y + 1, z + out + deep } else .{ x + out + deep, y + 1, z + at + 0.08 };
+                try box(o, lo_v, hi_v, sticks, .{});
+            }
+            for ([4]f32{ 0.1, 0.35, 0.6, 0.85 }) |ry| {
+                const lo_v: V = if (along_x) .{ x + 0.2, y + ry, z + out + 0.03 } else .{ x + out + 0.03, y + ry, z + 0.2 };
+                const hi_v: V = if (along_x) .{ x + 0.8, y + ry + 0.06, z + out + deep - 0.03 } else .{ x + out + deep - 0.03, y + ry + 0.06, z + 0.8 };
+                try box(o, lo_v, hi_v, sticks, .{});
+            }
+        },
+        .campfire => {
+            // A ring of stones.
+            for (0..7) |k| {
+                const a = @as(f32, @floatFromInt(k)) * std.math.pi * 2 / 7;
+                const cx = x + 0.5 + @cos(a) * 0.36;
+                const cz = z + 0.5 + @sin(a) * 0.36;
+                try box(o, .{ cx - 0.09, y, cz - 0.09 }, .{ cx + 0.09, y + 0.15, cz + 0.09 }, .{ .top = .volcanic_rock, .side = .volcanic_rock, .bottom = .volcanic_rock }, std.EnumSet(Face).initOne(.down));
+            }
+            // Logs crossed.
+            try box(o, .{ x + 0.22, y, z + 0.44 }, .{ x + 0.78, y + 0.1, z + 0.56 }, sticks, std.EnumSet(Face).initOne(.down));
+            try box(o, .{ x + 0.44, y + 0.1, z + 0.22 }, .{ x + 0.56, y + 0.2, z + 0.78 }, sticks, .{});
+            // The fire, as a torch's but bigger.
+            var f = o;
+            f.solid = false;
+            const fl = [2][2][2]f32{ .{ .{ -1, 0 }, .{ 1, 0 } }, .{ .{ 0, -1 }, .{ 0, 1 } } };
+            for (fl) |d| {
+                const r = 0.26;
+                const c = [4]V{
+                    .{ x + 0.5 + d[0][0] * r, y + 0.08, z + 0.5 + d[0][1] * r }, .{ x + 0.5 + d[1][0] * r, y + 0.08, z + 0.5 + d[1][1] * r },
+                    .{ x + 0.5 + d[1][0] * r, y + 0.75, z + 0.5 + d[1][1] * r }, .{ x + 0.5 + d[0][0] * r, y + 0.75, z + 0.5 + d[0][1] * r },
+                };
+                try f.twoSided(.lamp, .up, .up, c, .{ .{ 0.002, 1 }, .{ 0.998, 1 }, .{ 0.998, 0 }, .{ 0.002, 0 } }, .{ .none, .none, .plant, .plant });
+            }
+        },
+        .bamboo => {
+            // Three canes, in the same places all the way up (from the
+            // column), sprigs of leaves at the top.
+            const top = w.get(p[0], p[1] + 1, p[2]) != .bamboo;
+            const below_too = w.get(p[0], p[1] - 1, p[2]) == .bamboo;
+            var f = o;
+            f.solid = false;
+            for (0..3) |k| {
+                const ki: i32 = @intCast(k);
+                const cx = x + 0.2 + world_mod.hash(61 +% @as(u32, @intCast(k)), p[0], p[2]) * 0.6;
+                const cz = z + 0.2 + world_mod.hash(71 +% @as(u32, @intCast(k)), p[0], p[2]) * 0.6;
+                const w2: f32 = 0.06;
+                // The last cane is shorter at the top.
+                const h: f32 = if (top and k == 2) 0.6 else 1;
+                var skip: std.EnumSet(Face) = .{};
+                if (below_too) skip.insert(.down);
+                try box(o, .{ cx - w2, y, cz - w2 }, .{ cx + w2, y + h, cz + w2 }, bamboo, skip);
+                if (top) {
+                    for (0..3) |j| {
+                        const a = world_mod.hash(81, p[0] * 3 + ki, p[2] * 5 + @as(i32, @intCast(j))) * std.math.pi * 2;
+                        try plants.frond(f, .{ cx, y + h, cz }, a, 0.5, 0.55, 0.35, 0.1, 2);
+                    }
+                }
             }
         },
         else => {},

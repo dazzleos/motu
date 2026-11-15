@@ -201,7 +201,7 @@ pub const Creatures = struct {
                 }
                 const floor = seaFloorAt(w, fx, fz);
                 const min_y = floor + 1.35;
-                const max_y = @as(f32, world_mod.sea_level) - 0.75;
+                const max_y = @max(min_y, @as(f32, world_mod.sea_level) - 0.75);
                 const fy = std.math.clamp(min_y + (max_y - min_y) * (0.35 + 0.45 * rand01(s +% 3)), min_y, max_y);
                 c.fish[idx] = .{
                     .pos = .{ fx, fy, fz },
@@ -453,7 +453,7 @@ pub const Creatures = struct {
             // `floor + 1`) and the water's surface.
             const floor = seaFloorAt(w, f.pos[0], f.pos[2]);
             const min_y = floor + 1.35;
-            const max_y = @as(f32, world_mod.sea_level) - 0.75;
+            const max_y = @max(min_y, @as(f32, world_mod.sea_level) - 0.75);
             const band_y = min_y + (max_y - min_y) * (0.45 + 0.25 * @sin(f.phase * 0.12 + @as(f32, @floatFromInt(idx))));
             const target_y = std.math.clamp(band_y, min_y, max_y);
             const dy = target_y - f.pos[1];

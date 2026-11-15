@@ -266,6 +266,27 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk tx(scale(c, 0.85 + hash(@intFromFloat(x), @intFromFloat(y), s) * 0.15), husk * 2);
         },
         .tall_grass => blades(u, v, s),
+        .seagrass => blk: {
+            // Long ribbons up from the bottom, waving, darker at their
+            // feet.
+            var best: f32 = 0;
+            var tone: f32 = 0;
+            for (0..7) |i| {
+                const bx = 0.1 + 0.8 * hash(@intCast(i), 0, s);
+                const top = 0.02 + 0.3 * hash(@intCast(i), 1, s);
+                if (v < top) continue;
+                const along = (1 - v) / (1 - top);
+                const cx = bx + @sin(along * 5 + @as(f32, @floatFromInt(i))) * 0.05 * along;
+                const width = 0.045 * (1 - along * 0.5);
+                const d = @abs(u - cx);
+                if (d < width and along > best) {
+                    best = along;
+                    tone = 1 - d / width;
+                }
+            }
+            if (best == 0) break :blk nothing;
+            break :blk tx(scale(mix(rgb(0x1f5a3a), rgb(0x6ab868), best), 0.85 + tone * 0.2), 0);
+        },
         .leafy_plant => blk: {
             // A big leaf like an arrowhead, its base (two round lobes, a
             // notch between them where the stalk meets it) at the top of
@@ -618,7 +639,7 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             fan(out, &px[0], .{ 24, 46 }, &.{ -0.55, -1.2, -1.95, -2.6 }, 26, 10);
             return;
         },
-        .table, .bed, .chest, .post, .lamp => {
+        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo => {
             furnitureIcon(b, out);
             return;
         },
@@ -696,6 +717,35 @@ fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             .{ .lo = .{ 0.14, 0.44, 0.08 }, .hi = .{ 0.86, 0.54, 0.34 }, .top = .plaster, .side = .plaster },
         },
         .chest => &.{.{ .lo = .{ 0.08, 0, 0.14 }, .hi = .{ 0.92, 0.7, 0.86 }, .top = .chest_top, .side = .chest_side }},
+        .sandstone_slab, .rock_slab, .thatch_slab => &.{.{ .lo = .{ 0, 0, 0 }, .hi = .{ 1, 0.5, 1 }, .top = b.tile(.up), .side = b.tile(.north) }},
+        .fence => &.{
+            .{ .lo = .{ 0.38, 0.35, 0 }, .hi = .{ 0.62, 0.47, 0.38 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.38, 0.72, 0 }, .hi = .{ 0.62, 0.84, 0.38 }, .top = .sticks_side, .side = .sticks_side },
+            leg(0.38, 0.38, 0.24, 1),
+            .{ .lo = .{ 0.38, 0.35, 0.62 }, .hi = .{ 0.62, 0.47, 1 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.38, 0.72, 0.62 }, .hi = .{ 0.62, 0.84, 1 }, .top = .sticks_side, .side = .sticks_side },
+        },
+        .ladder => &.{
+            .{ .lo = .{ 0.12, 0, 0.44 }, .hi = .{ 0.2, 1, 0.56 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.2, 0.1, 0.47 }, .hi = .{ 0.8, 0.16, 0.53 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.2, 0.35, 0.47 }, .hi = .{ 0.8, 0.41, 0.53 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.2, 0.6, 0.47 }, .hi = .{ 0.8, 0.66, 0.53 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.2, 0.85, 0.47 }, .hi = .{ 0.8, 0.91, 0.53 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.8, 0, 0.44 }, .hi = .{ 0.88, 1, 0.56 }, .top = .sticks_side, .side = .sticks_side },
+        },
+        .campfire => &.{
+            .{ .lo = .{ 0.1, 0, 0.4 }, .hi = .{ 0.28, 0.15, 0.58 }, .top = .volcanic_rock, .side = .volcanic_rock },
+            .{ .lo = .{ 0.4, 0, 0.1 }, .hi = .{ 0.58, 0.15, 0.28 }, .top = .volcanic_rock, .side = .volcanic_rock },
+            .{ .lo = .{ 0.22, 0, 0.44 }, .hi = .{ 0.78, 0.1, 0.56 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.44, 0.1, 0.22 }, .hi = .{ 0.56, 0.2, 0.78 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.72, 0, 0.4 }, .hi = .{ 0.9, 0.15, 0.58 }, .top = .volcanic_rock, .side = .volcanic_rock },
+            .{ .lo = .{ 0.4, 0, 0.72 }, .hi = .{ 0.58, 0.15, 0.9 }, .top = .volcanic_rock, .side = .volcanic_rock },
+        },
+        .bamboo => &.{
+            .{ .lo = .{ 0.25, 0, 0.3 }, .hi = .{ 0.37, 1, 0.42 }, .top = .bamboo, .side = .bamboo },
+            .{ .lo = .{ 0.55, 0, 0.2 }, .hi = .{ 0.67, 0.8, 0.32 }, .top = .bamboo, .side = .bamboo },
+            .{ .lo = .{ 0.45, 0, 0.62 }, .hi = .{ 0.57, 0.95, 0.74 }, .top = .bamboo, .side = .bamboo },
+        },
         .post => &.{.{ .lo = .{ 0.42, 0, 0.42 }, .hi = .{ 0.58, 1, 0.58 }, .top = .bamboo, .side = .bamboo }},
         .lamp => &.{
             .{ .lo = .{ 0.43, 0, 0.43 }, .hi = .{ 0.57, 0.6, 0.57 }, .top = .bamboo, .side = .bamboo },
@@ -748,6 +798,15 @@ fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             }
         };
     }
+    // A campfire's flames.
+    if (b == .campfire) {
+        tilePixels(.lamp, &top_px);
+        for (0..22) |y| for (0..18) |x| {
+            const t = top_px[(y * tile_size / 22) * tile_size + x * tile_size / 18];
+            if (t >> 24 < 0x80) continue;
+            out[(y + 10) * icon_size + x + 15] = t | 0xff000000;
+        };
+    }
     // A torch's flame, over its top.
     if (b == .lamp) {
         tilePixels(.lamp, &top_px);
@@ -788,7 +847,7 @@ test "every tile is in its strip, opaque except where things are see-through, an
             if (t.strip() != strip) continue;
             const oy = @as(u32, t.slot()) * tile_size;
             const see_through = switch (t) {
-                .glass, .water, .tall_grass, .frond, .leafy_plant, .lamp, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
+                .glass, .water, .tall_grass, .seagrass, .frond, .leafy_plant, .lamp, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
                 else => false,
             };
             var clear: u32 = 0;

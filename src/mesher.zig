@@ -440,7 +440,11 @@ fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
                         try emitQuad(mesh.list(.clear(blk.tile(face).strip())), gpa, face, corners, cornerLooks(face, look), @splat(.none));
                     },
                     // Leafy plants are solid (with the solid faces).
-                    .plant => if (blk != .leafy_plant) try plants.plant(gpa, w, p, blk, mesh),
+                    .plant => if (blk != .leafy_plant) {
+                        // Seagrass is in water: the water's faces too.
+                        if (blk == .seagrass) try waterFaces(gpa, w, p, mesh);
+                        try plants.plant(gpa, w, p, blk, mesh);
+                    },
                     .pole => try plants.crown(gpa, w, p, mesh),
                     else => {},
                 }
@@ -451,7 +455,7 @@ fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
 
 fn waterFaces(gpa: std.mem.Allocator, w: *const World, p: P, mesh: *Mesh) !void {
     const above = w.get(p[0], p[1] + 1, p[2]);
-    const surface = above != .water;
+    const surface = !above.isWatery();
     const top: f32 = @as(f32, @floatFromInt(p[1])) + (if (surface) water_top else 1);
     // How deep: water down to the bottom (at most 7 blocks, where the
     // shader reaches its deepest blue). Worked out only if a face shows.
@@ -460,7 +464,7 @@ fn waterFaces(gpa: std.mem.Allocator, w: *const World, p: P, mesh: *Mesh) !void 
         fn f(world: *const World, pos: P, d: *u6) u6 {
             if (d.* == 0) {
                 var n: u6 = 1;
-                while (n < 7 and world.get(pos[0], pos[1] - @as(i32, n), pos[2]) == .water) n += 1;
+                while (n < 7 and world.get(pos[0], pos[1] - @as(i32, n), pos[2]).isWatery()) n += 1;
                 d.* = n;
             }
             return d.*;
@@ -480,7 +484,7 @@ fn waterFaces(gpa: std.mem.Allocator, w: *const World, p: P, mesh: *Mesh) !void 
         const q = add(p, face.normal());
         if (!World.inBounds(q[0], @max(q[1], 0), q[2])) continue;
         const other = w.get(q[0], q[1], q[2]);
-        if (other == .water or other.isOpaque()) continue;
+        if (other.isWatery() or other.isOpaque()) continue;
         const l = w.lightAt(q[0], q[1], q[2]);
         const corners: [4][3]f32 = switch (face) {
             .east => .{ .{ x + 1, y, z + 1 }, .{ x + 1, y, z }, .{ x + 1, top, z }, .{ x + 1, top, z + 1 } },
@@ -720,6 +724,7 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
     var water: usize = 0;
     var clear: usize = 0;
     var most: usize = 0;
+    var bamboo: usize = 0;
     for (0..world_mod.chunks_z) |cz| for (0..world_mod.chunks_x) |cx| {
         try build(testing.allocator, w, cx, cz, &m);
         solid += m.solidCount() / 4;
@@ -727,9 +732,12 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
         clear += m.clearCount() / 4;
         most = @max(most, m.quads());
         try expectWound(m.items(.solid0));
-        // Nothing built: the island's strip only.
-        try testing.expectEqual(m.items(.solid0).len, m.solidCount());
+        // Nothing built: the island's strip, but for bamboo's canes (the
+        // building strip's, an extra draw where it grows).
+        try testing.expectEqual(@as(usize, 0), m.items(.solid2).len);
+        bamboo += m.items(.solid1).len / 4;
     };
+    try testing.expect(bamboo * 20 < solid);
     std.log.info("island: {d} solid, {d} water, {d} see-through quads; at most {d} in a chunk", .{ solid, water, clear, most });
     // A chunk's meshes fit one index range (16384 quads).
     try testing.expect(most < 16384);

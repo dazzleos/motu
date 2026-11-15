@@ -1,6 +1,8 @@
 //! The player: a box 0.6 blocks across and 1.8 high that walks (with
-//! gravity, jumping and swimming) or flies, and does not go through solid
-//! blocks; and picking the block a ray from the eye meets.
+//! gravity, jumping, swimming and climbing ladders) or flies, stepping up
+//! onto what is half a block high, and does not go through solid blocks
+//! (or their solid part: a slab's lower half); and picking the block a ray
+//! from the eye meets.
 
 const std = @import("std");
 const blocks = @import("blocks.zig");
@@ -20,6 +22,9 @@ const walk_speed: f32 = 4.5;
 const sprint_speed: f32 = 7.5;
 const fly_speed: f32 = 11;
 const swim_speed: f32 = 3;
+const climb_speed: f32 = 3;
+/// How high a step it walks up without jumping.
+const step_up: f32 = 0.55;
 
 /// What the player is asked to do, this moment.
 pub const Controls = struct {
@@ -70,16 +75,23 @@ pub const Player = struct {
     pub fn underwater(p: *const Player, w: *const World) bool {
         const e = p.eye();
         const b = w.get(@intFromFloat(@floor(e[0])), @intFromFloat(@floor(e[1])), @intFromFloat(@floor(e[2])));
-        if (b != .water) return false;
+        if (!b.isWatery()) return false;
         // Above a surface block's surface is out of the water.
         const above = w.get(@intFromFloat(@floor(e[0])), @as(i32, @intFromFloat(@floor(e[1]))) + 1, @intFromFloat(@floor(e[2])));
-        return above == .water or e[1] - @floor(e[1]) < 0.875;
+        return above.isWatery() or e[1] - @floor(e[1]) < 0.875;
     }
 
     fn inWater(p: *const Player, w: *const World) bool {
         const x: i32 = @intFromFloat(@floor(p.pos[0]));
         const z: i32 = @intFromFloat(@floor(p.pos[2]));
-        return w.get(x, @intFromFloat(@floor(p.pos[1] + 0.4)), z) == .water;
+        return w.get(x, @intFromFloat(@floor(p.pos[1] + 0.4)), z).isWatery();
+    }
+
+    /// Whether it is at a ladder (its feet or its middle in one).
+    fn onLadder(p: *const Player, w: *const World) bool {
+        const x: i32 = @intFromFloat(@floor(p.pos[0]));
+        const z: i32 = @intFromFloat(@floor(p.pos[2]));
+        return w.get(x, @intFromFloat(@floor(p.pos[1] + 0.1)), z) == .ladder or w.get(x, @intFromFloat(@floor(p.pos[1] + 1)), z) == .ladder;
     }
 
     /// Moves the player on by `dt` seconds.
@@ -92,6 +104,8 @@ pub const Player = struct {
         const len = math.length(wish);
         if (len > 1) wish /= math.splat(len);
         const swimming = !p.flying and p.inWater(w);
+        const climbing = !p.flying and p.onLadder(w);
+        const was_on_ground = p.on_ground;
         const speed: f32 = if (p.flying) fly_speed * @as(f32, if (c.sprint) 1.6 else 1) else if (swimming) swim_speed else if (c.sprint) sprint_speed else walk_speed;
         // Speed up quickly towards what is wanted (slower in the air).
         const target = wish * math.splat(speed);
@@ -102,6 +116,11 @@ pub const Player = struct {
         if (p.flying) {
             const vy: f32 = (if (c.up) speed else 0) - (if (c.down) speed else 0);
             p.vel[1] += (vy - p.vel[1]) * k;
+        } else if (climbing) {
+            // Up a ladder going on (or jumping), down it backing off (or
+            // sinking); else, holding on, slowly down.
+            const vy: f32 = if (c.up or c.forward > 0) climb_speed else if (c.down or c.forward < 0) -climb_speed else -0.5;
+            p.vel[1] = vy;
         } else if (swimming) {
             // Sink slowly; swim up.
             p.vel[1] -= gravity * 0.2 * dt;
@@ -118,6 +137,11 @@ pub const Player = struct {
             const d = p.vel[axis] * dt;
             if (d != 0) {
                 p.pos[axis] += d;
+                // A step up onto something low, walking into it.
+                if (axis != 1 and p.collides(w) and (was_on_ground or climbing) and !p.flying) {
+                    p.pos[1] += step_up;
+                    if (p.collides(w)) p.pos[1] -= step_up;
+                }
                 if (p.collides(w)) {
                     p.pos[axis] -= d;
                     // Up to the block, nearly touching it.
@@ -168,7 +192,11 @@ fn boxHitsSolid(w: *const World, min: V3, max: V3) bool {
         var z = z0;
         while (z <= z1) : (z += 1) {
             var x = x0;
-            while (x <= x1) : (x += 1) if (w.get(x, y, z).isSolid()) return true;
+            while (x <= x1) : (x += 1) {
+                // Only its solid part: a slab's lower half.
+                const h = w.get(x, y, z).solidHeight();
+                if (h > 0 and min[1] < @as(f32, @floatFromInt(y)) + h) return true;
+            }
         }
     }
     return false;
@@ -316,4 +344,26 @@ test "picking: the block met, the place before it and the face" {
     try testing.expect(blocksPlayer(&p, .{ 14, 32, 10 }));
     try testing.expect(!blocksPlayer(&p, .{ 14, 33, 10 }));
     try testing.expect(!blocksPlayer(&p, .{ 15, 31, 10 }));
+}
+
+test "slabs are walked up onto, half a block; ladders are climbed" {
+    const w = try flatWorld();
+    defer w.destroy();
+    // A slab in the way, north: walked onto, standing half a block up.
+    _ = w.set(20, 31, 17, .rock_slab);
+    var p: Player = .{ .pos = .{ 20.5, 31, 20.5 } };
+    for (0..30) |_| p.update(w, .{}, 1.0 / 60.0);
+    for (0..50) |_| p.update(w, .{ .forward = 1 }, 1.0 / 60.0);
+    for (0..30) |_| p.update(w, .{}, 1.0 / 60.0);
+    try testing.expect(p.pos[2] < 18);
+    try testing.expectApproxEqAbs(@as(f32, 31.5), p.pos[1], 0.02);
+    // A ladder up a wall, three high: climbed to the top of it.
+    for (0..3) |k| {
+        _ = w.set(30, @intCast(31 + k), 29, .volcanic_rock);
+        _ = w.set(30, @intCast(31 + k), 30, .ladder);
+    }
+    p = .{ .pos = .{ 30.5, 31, 30.5 } };
+    for (0..30) |_| p.update(w, .{}, 1.0 / 60.0);
+    for (0..60) |_| p.update(w, .{ .forward = 1 }, 1.0 / 60.0);
+    try testing.expect(p.pos[1] > 32.5);
 }
