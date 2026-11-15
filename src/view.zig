@@ -50,6 +50,10 @@ pub const Draw = struct {
     f: *const fn (ctx: *anyopaque, frame: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void,
 };
 
+
+/// How finely the menu's time of day slider shows the time.
+const time_steps = 200;
+
 pub const Blocks = struct {
     game: *Game,
     icons: *const Icons,
@@ -171,7 +175,10 @@ pub const Blocks = struct {
             .cross_axis_alignment = .center,
             .children = cx.arena.dupe(kete.Widget, &.{
                 cx.make(kete.Text{ .text = "Time of day", .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
-                cx.make(kete.Expanded{ .child = cx.make(kete.Slider{ .value = g.time_of_day, .on_changed = .of(g, Game.setTimeOfDay) }) }),
+                // The day goes on behind the menu: shown in steps, so the
+                // slider (and the menu with it) is only drawn again when
+                // it moves enough to see.
+                cx.make(kete.Expanded{ .child = cx.make(kete.Slider{ .value = @round(g.time_of_day * time_steps) / time_steps, .on_changed = .of(g, Game.setTimeOfDay) }) }),
                 cx.make(kete.SizedBox{ .width = 80, .child = cx.make(kete.Text{
                     .text = game_mod.timeName(g.time_of_day),
                     .style = .{ .size = t.body_size, .color = t.on_surface_variant },
