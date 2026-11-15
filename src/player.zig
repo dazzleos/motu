@@ -23,6 +23,7 @@ const sprint_speed: f32 = 7.5;
 const fly_speed: f32 = 11;
 const swim_speed: f32 = 3;
 const climb_speed: f32 = 3;
+const creep_speed: f32 = 1.4;
 /// How high a step it walks up without jumping.
 const step_up: f32 = 0.55;
 
@@ -107,7 +108,7 @@ pub const Player = struct {
         const swimming = !p.flying and p.inWater(w);
         const climbing = !p.flying and p.onLadder(w);
         const was_on_ground = p.on_ground;
-        const speed: f32 = if (p.flying) fly_speed * @as(f32, if (c.sprint) 1.6 else 1) else if (swimming) swim_speed else if (c.sprint) sprint_speed else walk_speed;
+        const speed: f32 = if (p.flying) fly_speed * @as(f32, if (c.sprint) 1.6 else 1) else if (swimming) swim_speed * @as(f32, if (c.sprint) 1.4 else 1) else if (c.down) creep_speed else if (c.sprint) sprint_speed else walk_speed;
         // Speed up quickly towards what is wanted (slower in the air).
         const target = wish * math.splat(speed);
         const grip: f32 = if (p.flying or p.on_ground) 14 else if (swimming) 6 else 3;
@@ -123,10 +124,11 @@ pub const Player = struct {
             const vy: f32 = if (c.up or c.forward > 0) climb_speed else if (c.down or c.forward < 0) -climb_speed else -0.5;
             p.vel[1] = vy;
         } else if (swimming) {
-            // Sink slowly; swim up.
+            // Sink slowly; swim up, or (Shift) down.
             p.vel[1] -= gravity * 0.2 * dt;
             if (c.up) p.vel[1] = @max(p.vel[1], 3.5);
-            p.vel[1] = @max(p.vel[1], -3);
+            if (c.down) p.vel[1] = @min(p.vel[1], -3);
+            p.vel[1] = @max(p.vel[1], -3.5);
         } else {
             p.vel[1] -= gravity * dt;
             if (c.up and p.on_ground) p.vel[1] = jump_speed;

@@ -72,7 +72,7 @@ pub const Blocks = struct {
         // The hotbar, at the bottom; what happened, above it.
         var bottom: std.ArrayList(kete.Widget) = .empty;
         if (g.messageShown()) |m| bottom.append(a, label(cx, m, 20)) catch {};
-        bottom.append(a, self.hotbar(cx)) catch {};
+        if (!g.hud_hidden) bottom.append(a, self.hotbar(cx)) catch {};
         layers.append(a, cx.make(kete.Align{ .alignment = .bottom_center, .child = cx.make(kete.Padding{ .padding = .all(14), .child = cx.make(kete.Column{
             .fill = false,
             .spacing = 8,
@@ -89,7 +89,7 @@ pub const Blocks = struct {
         });
         if (g.palette_open) layers.append(a, cx.make(kete.Align{ .alignment = .center, .child = self.palette(cx) })) catch {};
         // With the mouse taken, a mark in the middle: what it acts on.
-        if (g.captured and !g.menu_open) layers.append(a, cx.make(kete.Align{ .child = crosshair(cx) })) catch {};
+        if (g.captured and !g.menu_open and !g.hud_hidden) layers.append(a, cx.make(kete.Align{ .child = crosshair(cx) })) catch {};
         // The menu, and fullscreen, top right as in the other apps (only
         // with the menu: while playing, the mouse is the game's).
         if (g.menu_open) {

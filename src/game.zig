@@ -5,17 +5,23 @@
 //!
 //! Controls:
 //!
-//!     W A S D (or the arrows up and down)   walk (Ctrl: faster)
+//! As Minecraft's, for those who know them:
+//!
+//!     W A S D (or the arrows up and down)   walk
+//!     W twice, quickly (or Ctrl)            sprint (till W is let go)
 //!     the arrows left and right             turn
-//!     Space                                 jump (flying: rise)
+//!     Space                                 jump (swimming, flying, on a
+//!                                           ladder: up)
 //!     Space twice, quickly                  fly, or walk
-//!     Shift                                 flying: sink
+//!     Shift                                 swimming, flying, on a ladder:
+//!                                           down; walking: creep
 //!     the mouse                             look around
-//!     click                                 place a block
-//!     right click                           take a block away
+//!     click                                 take a block away
+//!     right click                           place a block
 //!     middle click                          take that kind of block
 //!     1 to 9, or the wheel                  choose a block from the hotbar
 //!     E                                     all the blocks
+//!     F1                                    hide the hotbar (and the cross)
 //!     Esc                                   the menu (the game goes on)
 //!     Y, N                                  let someone join, or not
 //!
@@ -50,7 +56,8 @@ const look_speed: f32 = 0.006;
 const turn_speed: f32 = 2.2;
 /// Pixels a press can move and still be a click.
 const click_slop: f32 = 8;
-/// Seconds between two presses of Space that fly (or walk).
+/// Seconds between two presses of Space that fly (or walk), or of W that
+/// sprint.
 const double_tap: f32 = 0.3;
 
 /// A change to the world, as sent to the others.
@@ -131,6 +138,12 @@ pub const Game = struct {
     /// When Space was last pressed, if a second press now would be a
     /// double tap.
     space_at: ?f32 = null,
+    /// The same, of W.
+    w_at: ?f32 = null,
+    /// Sprinting (W pressed twice, quickly), till W is let go.
+    sprinting: bool = false,
+    /// The hotbar and the cross in the middle hidden (F1).
+    hud_hidden: bool = false,
     palette_open: bool = false,
     /// The palette's section shown (see blocks.sections): it opens at the
     /// chosen block's.
@@ -209,6 +222,8 @@ pub const Game = struct {
     pub fn key(g: *Game, code: kete.KeyboardKey, pressed: bool) void {
         const was_held = g.held.contains(code);
         g.held.setPresent(code, pressed);
+        // Letting go of W stops a sprint.
+        if (!pressed and (code == .w or code == .up)) g.sprinting = false;
         if (!pressed or was_held) return;
         // Someone asking to join: Y lets them, N does not (in the menu
         // too).
@@ -234,6 +249,15 @@ pub const Game = struct {
                 };
                 g.space_at = g.clock;
             },
+            .w, .up => {
+                if (g.w_at) |at| if (g.clock - at <= double_tap) {
+                    g.sprinting = true;
+                    g.w_at = null;
+                    return;
+                };
+                g.w_at = g.clock;
+            },
+            .f1 => g.hud_hidden = !g.hud_hidden,
             .e => if (g.palette_open) g.closePalette() else {
                 g.palette_open = true;
                 g.palette_section = blocks.sectionOf(g.selected());
@@ -444,8 +468,10 @@ pub const Game = struct {
         if (!pressed) return;
         g.updateTarget();
         switch (code) {
-            .left => _ = g.place(),
-            .right => _ = g.remove(),
+            // As Minecraft's: the left button takes away, the right
+            // places.
+            .left => _ = g.remove(),
+            .right => _ = g.place(),
             .middle => g.pickAtPointer(),
             else => {},
         }
@@ -543,7 +569,7 @@ pub const Game = struct {
         var c: player_mod.Controls = .{
             .up = h.contains(.space),
             .down = on(h, .left_shift, .right_shift),
-            .sprint = on(h, .left_ctrl, .right_ctrl),
+            .sprint = g.sprinting or on(h, .left_ctrl, .right_ctrl),
         };
         if (on(h, .w, .up)) c.forward += 1;
         if (on(h, .s, .down)) c.forward -= 1;
@@ -713,10 +739,10 @@ test "with the mouse taken, it turns the view and builds on the middle of it" {
     g.capture_wanted = null;
     g.captured = true;
     g.pointer = .{ 10, 10 };
-    g.mouseButton(.left, true);
+    g.mouseButton(.right, true);
     const t = g.target.?;
     try testing.expectEqual(Block.grass, g.world.get(t.before[0], t.before[1], t.before[2]));
-    g.mouseButton(.right, true);
+    g.mouseButton(.left, true);
     try testing.expectEqual(Block.air, g.world.get(t.before[0], t.before[1], t.before[2]));
     // Moving it turns the view; Esc gives it back (and opens the menu).
     const yaw = g.player.yaw;
@@ -894,4 +920,29 @@ test "saving and loading keep the world, the player and the hotbar" {
     try testing.expectEqual(Block.cyan, h.selected());
     try testing.expectEqual(@as(f32, 0.8), h.time_of_day);
     try testing.expectError(error.Corrupt, h.decode(out.items[0 .. out.items.len - 3]));
+}
+
+test "keys as Minecraft's: W twice sprints till let go, Shift goes down, F1 hides the hotbar" {
+    var g = try testGame();
+    defer g.world.destroy();
+    g.closeMenu();
+    g.key(.w, true);
+    g.key(.w, false);
+    g.tick(0.1);
+    g.key(.w, true);
+    try testing.expect(g.sprinting and g.controls().sprint);
+    g.key(.w, false);
+    try testing.expect(!g.sprinting and !g.controls().sprint);
+    // Too slowly: not a sprint.
+    g.key(.w, true);
+    g.key(.w, false);
+    g.tick(0.5);
+    g.key(.w, true);
+    try testing.expect(!g.sprinting);
+    g.key(.w, false);
+    g.key(.left_shift, true);
+    try testing.expect(g.controls().down);
+    g.key(.left_shift, false);
+    g.key(.f1, true);
+    try testing.expect(g.hud_hidden);
 }
