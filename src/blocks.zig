@@ -12,8 +12,8 @@ pub const Block = enum(u8) {
     air,
     grass,
     dirt,
-    stone,
-    cobblestone,
+    volcanic_rock,
+    volcanic_wall,
     sand,
     sandstone,
     gravel,
@@ -26,8 +26,8 @@ pub const Block = enum(u8) {
     leaves,
     dark_planks,
     glass,
-    bricks,
-    stone_bricks,
+    sandstone_bricks,
+    volcanic_bricks,
     roof,
     plaster,
     iron,
@@ -53,6 +53,9 @@ pub const Block = enum(u8) {
     blue_flower,
     white_flower,
     orange_flower,
+    /// Grass with flat round stones set in it, for paths: the stones join
+    /// up with the next paving's.
+    paving,
     _,
 
     pub const Shape = enum {
@@ -129,10 +132,10 @@ pub const Block = enum(u8) {
         const top = face == .up;
         const bottom = face == .down;
         return switch (b) {
-            .grass => if (top) .grass_top else if (bottom) .dirt else .grass_side,
+            .grass, .paving => if (top) .grass_top else if (bottom) .dirt else .grass_side,
             .dirt => .dirt,
-            .stone => .stone,
-            .cobblestone => .cobblestone,
+            .volcanic_rock => .volcanic_rock,
+            .volcanic_wall => .volcanic_wall,
             .sand => .sand,
             .sandstone => if (top or bottom) .sandstone_top else .sandstone_side,
             .gravel => .gravel,
@@ -143,8 +146,8 @@ pub const Block = enum(u8) {
             .leaves => .leaves,
             .dark_planks => .dark_planks,
             .glass => .glass,
-            .bricks => .bricks,
-            .stone_bricks => .stone_bricks,
+            .sandstone_bricks => .sandstone_bricks,
+            .volcanic_bricks => .volcanic_bricks,
             .roof => .roof,
             .plaster => .plaster,
             .iron => .iron,
@@ -171,7 +174,7 @@ pub const Block = enum(u8) {
             .white_flower => .white_flower,
             .orange_flower => .orange_flower,
             .water => .water,
-            .air, _ => .stone,
+            .air, _ => .volcanic_rock,
         };
     }
 
@@ -180,8 +183,8 @@ pub const Block = enum(u8) {
             .air => "Air",
             .grass => "Grass",
             .dirt => "Dirt",
-            .stone => "Stone",
-            .cobblestone => "Cobblestone",
+            .volcanic_rock => "Volcanic rock",
+            .volcanic_wall => "Volcanic wall",
             .sand => "Sand",
             .sandstone => "Sandstone",
             .gravel => "Gravel",
@@ -193,8 +196,8 @@ pub const Block = enum(u8) {
             .leaves => "Leaves",
             .dark_planks => "Dark planks",
             .glass => "Glass",
-            .bricks => "Bricks",
-            .stone_bricks => "Stone bricks",
+            .sandstone_bricks => "Sandstone bricks",
+            .volcanic_bricks => "Volcanic bricks",
             .roof => "Roof tiles",
             .plaster => "Plaster",
             .iron => "Iron",
@@ -220,13 +223,14 @@ pub const Block = enum(u8) {
             .blue_flower => "Blue flowers",
             .white_flower => "White flowers",
             .orange_flower => "Orange flowers",
+            .paving => "Paving stones",
             _ => "?",
         };
     }
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.orange_flower);
+        return @intFromEnum(b) <= @intFromEnum(Block.paving);
     }
 
     /// Flowers: grass with flowers among it.
@@ -248,8 +252,8 @@ pub const Section = struct {
 };
 
 pub const sections = [_]Section{
-    .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .stone, .sand, .sandstone, .gravel, .clay, .snow, .water } },
-    .{ .name = "Building", .blocks = &.{ .cobblestone, .planks, .dark_planks, .stone_bricks, .bricks, .plaster, .roof, .glass, .iron, .gold, .lamp, .bookshelf } },
+    .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .gravel, .clay, .snow, .water } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .volcanic_bricks, .sandstone_bricks, .paving, .planks, .dark_planks, .plaster, .roof, .glass, .iron, .gold, .lamp, .bookshelf } },
     .{ .name = "Plants", .blocks = &.{ .palm, .leaves, .fern, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
@@ -275,7 +279,7 @@ pub const palette = blk: {
 };
 
 /// The hotbar's blocks to start with.
-pub const starting_hotbar = [9]Block{ .grass, .stone, .planks, .palm, .glass, .bricks, .roof, .lamp, .pink_flower };
+pub const starting_hotbar = [9]Block{ .grass, .volcanic_rock, .planks, .palm, .glass, .sandstone_bricks, .roof, .lamp, .pink_flower };
 
 /// A cube's faces, by the direction they face: +x, -x, +y (up), -y, +z, -z.
 pub const Face = enum(u3) {
@@ -310,7 +314,7 @@ pub const Tile = enum(u6) {
     grass_top = 0,
     grass_side,
     dirt,
-    stone,
+    volcanic_rock,
     sand,
     sandstone_top,
     sandstone_side,
@@ -324,12 +328,12 @@ pub const Tile = enum(u6) {
     red_flower,
     yellow_flower,
     // Building.
-    cobblestone = 16,
+    volcanic_wall = 16,
     planks,
     dark_planks,
     glass,
-    bricks,
-    stone_bricks,
+    sandstone_bricks,
+    volcanic_bricks,
     roof,
     plaster,
     iron,
@@ -388,7 +392,7 @@ test "every block that can be placed has a name and its own look" {
     }
     for (std.enums.values(Tile)) |t| try std.testing.expect(t.strip() < Tile.strips);
     // What the island is made of is all in the first strip.
-    for ([_]Block{ .grass, .dirt, .stone, .sand, .sandstone, .gravel, .clay, .snow, .palm, .tall_grass, .fern }) |b|
+    for ([_]Block{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .gravel, .clay, .snow, .palm, .tall_grass, .fern }) |b|
         for (Face.all) |f| try std.testing.expectEqual(@as(u2, 0), b.tile(f).strip());
     try std.testing.expectEqual(Tile.grass_top, Block.grass.tile(.up));
     try std.testing.expectEqual(Tile.grass_side, Block.grass.tile(.north));

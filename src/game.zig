@@ -549,7 +549,7 @@ pub const Game = struct {
         g.time_of_day = @mod(f[5], 1);
         for (&g.hotbar, rest[30..39]) |*h, b| {
             const blk: Block = @enumFromInt(b);
-            h.* = if (blk.isValid() and blk != .air) blk else .stone;
+            h.* = if (blk.isValid() and blk != .air) blk else .volcanic_rock;
         }
         g.slot = rest[39] % 9;
         g.unsaved = false;
@@ -761,7 +761,7 @@ test "the host saves, the guests' changes too; a game joined is not saved here" 
     defer g.world.destroy();
     defer g.deinit();
     g.net.status = .{ .hosting = 1 };
-    g.editFromNetwork(.{ .cell = .{ 10, 31, 10 }, .block = .bricks });
+    g.editFromNetwork(.{ .cell = .{ 10, 31, 10 }, .block = .sandstone_bricks });
     try testing.expect(g.wantsSave());
     g.unsaved = false;
     _ = g.edit(.{ 11, 31, 10 }, .lamp);

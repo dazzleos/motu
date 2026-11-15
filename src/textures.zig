@@ -169,7 +169,7 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk d;
         },
         .dirt => dirt(u, v),
-        .stone => stone(u, v, rgb(0x8a8a8e), s),
+        .volcanic_rock => volcanic(u, v, s),
         .sand => blk: {
             const ripple = noise(u + v * 0.25, v * 0.25, 8, s) * 0.5 + 0.5 * noise(u, v, 16, s +% 1);
             const grain = hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5;
@@ -180,10 +180,14 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk tx(scale(rgb(0xd8c48f), 0.9 + body * 0.18 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.04), body * 1.5);
         },
         .sandstone_side => blk: {
-            // Layers of different thickness, worn unevenly.
-            const layer = fbm(0.1, v + noise(u, v, 4, s) * 0.03, 8, 2, s +% 2);
-            const line = smoothstep(0.03, 0, @abs(@mod(v * 5 + noise(u, v, 4, s) * 0.3, 1) - 0.02));
-            break :blk tx(scale(mix(rgb(0xc9b07c), rgb(0xe0cc98), layer), 1 - line * 0.18 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.04), layer * 1.5 - line * 2);
+            // Layers of different thickness and tone, their edges soft
+            // and wandering, worn here and there.
+            const wander = noise(u, v, 4, s) * 0.05;
+            const layer = fbm(0.1, v + wander, 8, 2, s +% 2);
+            const band = smoothstep(0.08, 0, @abs(@mod(v * 4 + wander * 6, 1) - 0.5)) * 0.5;
+            const wear = fbm(u, v, 8, 3, s +% 4);
+            const c = mix(rgb(0xc9ae78), rgb(0xe3cd98), layer);
+            break :blk tx(scale(c, 0.95 - band * 0.12 + (wear - 0.5) * 0.1 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.04), layer * 1.5 - band + wear);
         },
         .gravel => blk: {
             const c = cellsAt(u, v, 10, s);
@@ -235,15 +239,16 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
         .blue_flower => flowers(u, v, rgb(0x4a8af0), rgb(0xfff2a0), s),
         .white_flower => flowers(u, v, rgb(0xf6f6ee), rgb(0xf2c020), s),
         .orange_flower => flowers(u, v, rgb(0xf6862a), rgb(0x8a3a10), s),
-        .cobblestone => blk: {
+        .volcanic_wall => blk: {
+            // A dry-stone wall: rounded stones fitted together, dark gaps
+            // between them.
             const c = cellsAt(u, v, 4, s);
-            const gap = smoothstep(0.12, 0.02, c.d2 - c.d1);
-            if (gap > 0.95) break :blk tx(scale(rgb(0x3e3e40), 0.8 + noise(u, v, 32, s) * 0.4), 0);
-            const tone = 0.78 + hash(@intCast(c.id), 2, s) * 0.32;
-            const st = stone(u, v, rgb(0x8c8c8c), s +% 5);
-            // Rounded stones, standing out of the mortar.
+            const gap = smoothstep(0.1, 0.02, c.d2 - c.d1);
+            if (gap > 0.95) break :blk tx(scale(rgb(0x1c1a18), 0.8 + noise(u, v, 32, s) * 0.4), -1);
+            const tone = 0.8 + hash(@intCast(c.id), 2, s) * 0.35;
+            const st = volcanic(u, v, s +% 5);
             const dome = @max(0, 1 - (c.d1 / 0.62) * (c.d1 / 0.62));
-            break :blk tx(scale(st.c, tone * (1.02 - 0.2 * c.d1) * (1 - gap * 0.6)), 4.5 * @sqrt(dome) * (1 - gap) + st.h * 0.3);
+            break :blk tx(scale(st.c, tone * (1.05 - 0.25 * c.d1) * (1 - gap * 0.7)), 5 * @sqrt(dome) * (1 - gap) + st.h * 0.3);
         },
         .planks => planks(u, v, x, y, rgb(0xa9814c), s),
         .dark_planks => planks(u, v, x, y, rgb(0x5e412a), s),
@@ -255,32 +260,34 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const streak = smoothstep(3, 0, @abs(d - 18)) * 0.6 + smoothstep(1.5, 0, @abs(d - 26)) * 0.4;
             break :blk .{ .c = mix(rgb(0xbfdfeb), rgb(0xffffff), streak), .a = 0.1 + streak * 0.45 };
         },
-        .bricks => blk: {
-            const row = @floor(y / 16);
-            const off: f32 = if (@mod(row, 2) == 0) 0 else 16;
-            const bx = @mod(x + off, 32);
-            const by = @mod(y, 16);
-            const mortar = bx < 2 or by < 2;
+        .sandstone_bricks => blk: {
+            // Big cut blocks of sandstone, two rows a tile, laid across
+            // the joints below; their layers show.
+            const row = @floor(y / 32);
+            const off: f32 = if (@mod(row, 2) == 0) 0 else 24;
+            const bx = @mod(x + off, 48);
+            const by = @mod(y, 32);
             const grit = noise(u, v, 32, s +% 1) - 0.5;
-            if (mortar) break :blk tx(scale(rgb(0xc4bcae), 0.8 + grit * 0.3), grit * 0.4);
-            const id: i32 = @intFromFloat(@floor((x + off) / 32) + row * 3);
-            const tone = 0.82 + hash(@mod(id, 64), 3, s) * 0.3;
-            const grain = grit * 0.15 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.08;
-            // Raised, with rounded edges, a little rough.
-            const edge = @min(@min(bx - 2, 31 - bx), @min(by - 2, 15 - by));
-            break :blk tx(scale(mix(rgb(0x9a3d2c), rgb(0xb3583e), noise(u, v, 8, s)), tone + grain), 3.5 * smoothstep(0, 2.5, edge) + grit * 0.8);
+            if (bx < 1.5 or by < 1.5) break :blk tx(scale(rgb(0xb8a67e), 0.8 + grit * 0.2), -1);
+            const id: i32 = @intFromFloat(@floor((x + off) / 48) + row * 3);
+            const tone = 0.9 + hash(@mod(id, 64), 3, s) * 0.14;
+            const layer = fbm(0.1, v * 1.5 + noise(u, v, 4, s) * 0.04, 8, 2, s +% @as(u32, @intCast(@mod(id, 64))));
+            const body = mix(rgb(0xd4b47a), rgb(0xecd5a0), layer);
+            const edge = @min(@min(bx - 1.5, 47 - bx), @min(by - 1.5, 31 - by));
+            const grain = (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.06;
+            break :blk tx(scale(body, tone + grit * 0.06 + grain), 3 * smoothstep(0, 2.5, edge) + layer + grit * 0.5);
         },
-        .stone_bricks => blk: {
+        .volcanic_bricks => blk: {
+            // Cut blocks of basalt, fitted tight.
             const row = @floor(y / 32);
             const off: f32 = if (@mod(row, 2) == 0) 0 else 16;
             const bx = @mod(x + off, 32);
             const by = @mod(y, 32);
-            if (bx < 2 or by < 2) break :blk tx(rgb(0x4a4a4c), 0);
+            if (bx < 1.5 or by < 1.5) break :blk tx(rgb(0x1e1c1a), -1);
             const id: i32 = @intFromFloat(@floor((x + off) / 32) + row * 2);
-            const crack = smoothstep(0.02, 0, @abs(noise(u, v, 4, s +% @as(u32, @intCast(id))) - 0.5));
-            const st = stone(u, v, rgb(0x8e8e92), s);
-            const edge = @min(@min(bx - 2, 31 - bx), @min(by - 2, 31 - by));
-            break :blk tx(scale(st.c, (0.88 + hash(id, 4, s) * 0.2) * (1 - crack * 0.35)), 4 * smoothstep(0, 3.5, edge) + st.h * 0.5 - crack * 2);
+            const st = volcanic(u, v, s +% @as(u32, @intCast(@mod(id, 64))));
+            const edge = @min(@min(bx - 1.5, 31 - bx), @min(by - 1.5, 31 - by));
+            break :blk tx(scale(st.c, 0.92 + hash(id, 4, s) * 0.2), 3 * smoothstep(0, 3, edge) + st.h * 0.4);
         },
         .roof => blk: {
             // Overlapping clay tiles: rows, each tile rounded at its foot
@@ -348,12 +355,19 @@ fn dirt(u: f32, v: f32) Texel {
     return tx(colour, body * 1.5 + stone_here * 2 * @sqrt(dome));
 }
 
-fn stone(u: f32, v: f32, base: Rgb, s: u32) Texel {
+/// Basalt: dark, grey-brown, with small round pits where gas was, specks,
+/// and rust-red patches.
+fn volcanic(u: f32, v: f32, s: u32) Texel {
     const body = fbm(u, v, 4, 4, s);
-    // Cracks: where a smooth noise passes through its middle.
-    const crack = smoothstep(0.018, 0, @abs(noise(u, v, 3, s +% 9) - 0.5)) * smoothstep(0.4, 0.6, noise(u, v, 4, s +% 10));
+    const rust = smoothstep(0.55, 0.75, fbm(u, v, 3, 2, s +% 3));
+    const base = mix(mix(rgb(0x3e3a37), rgb(0x5e5852), body), rgb(0x6e4636), rust * 0.6);
+    // Pits in some places only, of different sizes.
+    const pit = cellsAt(u, v, 11, s +% 7);
+    const some = hash(@intCast(pit.id), 6, s) < 0.35;
+    const r = 0.06 + 0.14 * hash(@intCast(pit.id), 5, s);
+    const in_pit = if (some) smoothstep(r, r * 0.5, pit.d1) else 0;
     const speck = hash(@intFromFloat(u * 64), @intFromFloat(v * 64), s) - 0.5;
-    return tx(scale(base, 0.78 + body * 0.38 + speck * 0.06 - crack * 0.3), body * 3 + speck * 0.3 - crack * 2.5);
+    return tx(scale(base, (0.85 + speck * 0.12) * (1 - in_pit * 0.45)), body * 2.5 + speck * 0.4 - in_pit * 1.5);
 }
 
 fn planks(u: f32, v: f32, x: f32, y: f32, base: Rgb, s: u32) Texel {
@@ -676,7 +690,7 @@ test "every tile is in its strip, opaque except where things are see-through, an
 
 test "icons show the cube's three faces, or the plant" {
     var px: [icon_size * icon_size]Pixel = undefined;
-    icon(.bricks, &px);
+    icon(.sandstone_bricks, &px);
     try std.testing.expect(px[10 * icon_size + 24] >> 24 == 0xff);
     try std.testing.expect(px[28 * icon_size + 10] >> 24 == 0xff);
     try std.testing.expect(px[28 * icon_size + 38] >> 24 == 0xff);

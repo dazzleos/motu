@@ -243,7 +243,7 @@ const testing = std.testing;
 fn flatWorld() !*World {
     const w = try World.create(testing.allocator);
     for (0..world_mod.size_z) |z| for (0..world_mod.size_x) |x| {
-        w.blocks[World.index(@intCast(x), 30, @intCast(z))] = .stone;
+        w.blocks[World.index(@intCast(x), 30, @intCast(z))] = .volcanic_rock;
     };
     try w.computeLight();
     return w;
@@ -270,8 +270,8 @@ test "falling, landing, walking, jumping, and walls" {
     try testing.expect(top > 32.1 and top < 32.8);
     try testing.expect(p.on_ground);
     // A wall two high stops the player.
-    _ = w.set(20, 31, 10, .stone);
-    _ = w.set(20, 32, 10, .stone);
+    _ = w.set(20, 31, 10, .volcanic_rock);
+    _ = w.set(20, 32, 10, .volcanic_rock);
     p = .{ .pos = .{ 20.5, 31, 14.5 } };
     for (0..120) |_| p.update(w, .{ .forward = 1 }, 1.0 / 60.0);
     try testing.expectApproxEqAbs(@as(f32, 11 + half_width), p.pos[2], 0.02);
@@ -305,7 +305,7 @@ test "picking: the block met, the place before it and the face" {
     // Out of reach.
     try testing.expect(pick(w, .{ 10.5, 45, 10.5 }, .{ 0, -1, 0 }, 10) == null);
     // Sideways into a block.
-    _ = w.set(15, 31, 10, .bricks);
+    _ = w.set(15, 31, 10, .sandstone_bricks);
     const s = pick(w, .{ 10.5, 31.5, 10.5 }, math.normalize(.{ 1, 0, 0 }), 10).?;
     try testing.expectEqual(world_mod.Pos{ 15, 31, 10 }, s.cell);
     try testing.expectEqual(world_mod.Pos{ 14, 31, 10 }, s.before);

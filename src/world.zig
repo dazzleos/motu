@@ -93,7 +93,7 @@ pub const World = struct {
     /// The block at a place: below the world, rock; above, air; beside it,
     /// the sea.
     pub fn get(w: *const World, x: i32, y: i32, z: i32) Block {
-        if (y < 0) return .stone;
+        if (y < 0) return .volcanic_rock;
         if (y >= size_y) return .air;
         if (x < 0 or x >= size_x or z < 0 or z >= size_z) return if (y < sea_level) .water else .air;
         return w.blocks[index(x, y, z)];
@@ -324,14 +324,14 @@ pub const World = struct {
                 else if (h <= sea_level + 1)
                     .{ .{ .sand, .sand }, 3 }
                 else if (h >= snow_line)
-                    .{ .{ if (slope <= 2) .snow else .stone, .stone }, 1 }
+                    .{ .{ if (slope <= 2) .snow else .volcanic_rock, .volcanic_rock }, 1 }
                 else if (slope >= 3 and h > sea_level + 4)
-                    .{ .{ .stone, .stone }, 1 }
+                    .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
                 else
                     .{ .{ .grass, .dirt }, 4 };
                 var y: i32 = 0;
                 while (y <= h) : (y += 1) {
-                    const b: Block = if (y == h) surface[0] else if (y > h - depth) surface[1] else if (y > h - depth - 5 and surface[0] == .sand and h >= sea_level - 1) .sandstone else .stone;
+                    const b: Block = if (y == h) surface[0] else if (y > h - depth) surface[1] else if (y > h - depth - 5 and surface[0] == .sand and h >= sea_level - 1) .sandstone else .volcanic_rock;
                     w.blocks[index(x, y, z)] = b;
                 }
                 while (y < sea_level) : (y += 1) w.blocks[index(x, y, z)] = .water;
@@ -623,7 +623,7 @@ test "the island: land in the middle, sea at the edges, a beach, trees and plant
     for (w.blocks) |b| counts.getPtr(b).* += 1;
     try testing.expect(land > 3000 and land < 12000);
     try testing.expect(highest > sea_level + 16);
-    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .fern, .snow, .stone }) |b| try testing.expect(counts.get(b) > 0);
+    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .fern, .snow, .volcanic_rock }) |b| try testing.expect(counts.get(b) > 0);
     var flowers: usize = 0;
     for (Block.flowers) |b| flowers += counts.get(b);
     try testing.expect(flowers > 0);
@@ -646,13 +646,13 @@ test "light: full in the open, none under rock, spreading from lamps" {
     defer w.destroy();
     // A flat floor of stone at y = 10.
     for (0..size_z) |z| for (0..size_x) |x| {
-        w.blocks[World.index(@intCast(x), 10, @intCast(z))] = .stone;
+        w.blocks[World.index(@intCast(x), 10, @intCast(z))] = .volcanic_rock;
     };
     try w.computeLight();
     try testing.expectEqual(@as(u4, 15), skyOf(w.lightAt(5, 11, 5)));
     try testing.expectEqual(@as(u4, 0), skyOf(w.lightAt(5, 9, 5)));
     // A roof over a corner of open air: light spreads in under it.
-    _ = w.set(50, 12, 50, .stone);
+    _ = w.set(50, 12, 50, .volcanic_rock);
     try testing.expectEqual(@as(u4, 14), skyOf(w.lightAt(50, 11, 50)));
     // A lamp in the dark under the floor.
     _ = w.set(30, 5, 30, .lamp);
@@ -679,11 +679,11 @@ test "an edit marks the chunks it changes the look of" {
     try w.generate(7);
     w.dirty = .empty;
     // High in the open air: only the light right around it changes.
-    try testing.expect(w.set(40, 60, 40, .stone));
+    try testing.expect(w.set(40, 60, 40, .volcanic_rock));
     try testing.expect(w.dirty.isSet(2 * chunks_x + 2));
     try testing.expect(!w.dirty.isSet(7 * chunks_x + 7));
-    try testing.expect(!w.set(40, 60, 40, .stone));
-    try testing.expect(!w.set(-1, 60, 40, .stone));
+    try testing.expect(!w.set(40, 60, 40, .volcanic_rock));
+    try testing.expect(!w.set(-1, 60, 40, .volcanic_rock));
 }
 
 test "saving and loading give back the same world" {

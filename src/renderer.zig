@@ -1091,7 +1091,7 @@ test "the whole island in view fits one frame, the near chunks first" {
 
     // No memory for its region's new buffer: it is shown as it was, and
     // made again when there is.
-    _ = w.set(64, 50, 64, .stone);
+    _ = w.set(64, 50, 64, .volcanic_rock);
     const i = for (0..world_mod.chunk_count) |c| {
         if (w.dirty.isSet(c)) break c;
     } else unreachable;
@@ -1170,12 +1170,14 @@ test "faces turned away are not drawn, and none that can be seen are left out" {
                 all += list.len / 4;
                 for (0..list.len / 4) |q| {
                     const v = list[q * 4];
-                    // Palms' trunks look every way, and are drawn with the
-                    // faces looking up: from anywhere but under the
-                    // chunk's lowest face, where the ground hides them.
-                    const tile: blocks.Tile = @enumFromInt(mesher.Info.unpack(v.info).tile);
-                    if (tile == .palm_bark or tile == .coconut) continue;
+                    // Solids that are not cubes (palms' trunks, paving's
+                    // stones) look every way, and are drawn with the faces
+                    // looking up: from anywhere but under the chunk's
+                    // lowest face, where the ground hides them. A cube's
+                    // face is on a whole block's edge.
                     const n = mesher.Info.unpack(v.info).face.normal();
+                    const axis: usize = if (n[0] != 0) 0 else if (n[1] != 0) 1 else 2;
+                    if (v.pos[axis] != @floor(v.pos[axis])) continue;
                     const to = eye - v.pos;
                     const front = @as(f32, @floatFromInt(n[0])) * to[0] + @as(f32, @floatFromInt(n[1])) * to[1] + @as(f32, @floatFromInt(n[2])) * to[2] > 0;
                     if (!front) continue;

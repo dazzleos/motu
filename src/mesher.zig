@@ -390,20 +390,28 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
                 }
             }
         }
-        // Palms' trunks look every way: with the faces looking up, which
-        // are drawn from nearly anywhere.
-        if (face == .up) try palmTrunks(gpa, w, origin, top_y, mesh);
+        // Palms' trunks look every way, and paving's stones sit on the
+        // grass: with the faces looking up, which are drawn from nearly
+        // anywhere.
+        if (face == .up) try shapedSolids(gpa, w, origin, top_y, mesh);
     }
 }
 
-fn palmTrunks(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, mesh: *Mesh) !void {
+/// Solid things that are not cubes: palms' trunks, paving's stones.
+fn shapedSolids(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, mesh: *Mesh) !void {
     var y: i32 = 0;
     while (y < top_y) : (y += 1) {
         var lz: i32 = 0;
         while (lz < world_mod.chunk_size) : (lz += 1) {
             const row = w.blocks[World.index(origin[0], y, origin[2] + lz)..][0..world_mod.chunk_size];
-            for (row, 0..) |blk, lx| if (blk == .palm)
-                try plants.trunk(gpa, w, .{ origin[0] + @as(i32, @intCast(lx)), y, origin[2] + lz }, mesh);
+            for (row, 0..) |blk, lx| {
+                const p = P{ origin[0] + @as(i32, @intCast(lx)), y, origin[2] + lz };
+                switch (blk) {
+                    .palm => try plants.trunk(gpa, w, p, mesh),
+                    .paving => if (!w.get(p[0], p[1] + 1, p[2]).isOpaque()) try plants.paving(gpa, w, p, mesh),
+                    else => {},
+                }
+            }
         }
     }
 }
@@ -527,7 +535,7 @@ fn expectWound(list: []const Vertex) !void {
 test "a lone block: six faces, wound to face out, lit and unshaded" {
     const w = try emptyWorld();
     defer w.destroy();
-    _ = w.set(5, 30, 5, .bricks);
+    _ = w.set(5, 30, 5, .sandstone_bricks);
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
@@ -542,7 +550,7 @@ test "a lone block: six faces, wound to face out, lit and unshaded" {
         const i = Info.unpack(bricks[q].info);
         faces |= @as(u8, 1) << @intFromEnum(i.face);
         try testing.expectEqual(@as(u2, 0), i.ao);
-        try testing.expectEqual(@intFromEnum(Block.bricks.tile(i.face)), i.tile);
+        try testing.expectEqual(@intFromEnum(Block.sandstone_bricks.tile(i.face)), i.tile);
     }
     try testing.expectEqual(@as(u8, 63), faces);
     // Lit by the sky all round (under it, by what spreads in from the
@@ -555,7 +563,7 @@ test "faces between blocks are hidden, and level faces alike are merged" {
     const w = try emptyWorld();
     defer w.destroy();
     // A row of four blocks in the air.
-    for (0..4) |x| _ = w.set(@intCast(4 + x), 30, 4, .stone);
+    for (0..4) |x| _ = w.set(@intCast(4 + x), 30, 4, .volcanic_rock);
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
@@ -565,8 +573,8 @@ test "faces between blocks are hidden, and level faces alike are merged" {
     try expectWound(stone);
     // The long faces' s runs the 4 blocks (the texture unit repeats the
     // tile); t stays within stone's place in the strip, top to bottom.
-    const lo = stripT(.stone, 0);
-    const hi = stripT(.stone, 1);
+    const lo = stripT(.volcanic_rock, 0);
+    const hi = stripT(.volcanic_rock, 1);
     for (stone) |v| {
         const i = Info.unpack(v.info);
         if (i.face == .up) {
@@ -576,7 +584,7 @@ test "faces between blocks are hidden, and level faces alike are merged" {
         try testing.expect(v.uv[1] == lo or v.uv[1] == hi);
         if (i.face == .south) try testing.expectEqual(if (v.pos[1] == 31) lo else hi, v.uv[1]);
     }
-    try testing.expect(lo > @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.stone))) / 16 and hi < @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.stone) + 1)) / 16);
+    try testing.expect(lo > @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.volcanic_rock))) / 16 and hi < @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.volcanic_rock) + 1)) / 16);
 }
 
 test "corners in nooks are shaded" {
@@ -585,9 +593,9 @@ test "corners in nooks are shaded" {
     // A floor (above the sea, which is darker), with a block standing on
     // it.
     for (0..16) |z| for (0..16) |x| {
-        _ = w.set(@intCast(x), 30, @intCast(z), .stone);
+        _ = w.set(@intCast(x), 30, @intCast(z), .volcanic_rock);
     };
-    _ = w.set(8, 31, 8, .stone);
+    _ = w.set(8, 31, 8, .volcanic_rock);
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);

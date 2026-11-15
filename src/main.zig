@@ -518,6 +518,7 @@ test {
     _ = @import("textures.zig");
     _ = @import("world.zig");
     _ = @import("mesher.zig");
+    _ = @import("plants.zig");
     _ = @import("math.zig");
     _ = @import("player.zig");
     _ = @import("creatures.zig");

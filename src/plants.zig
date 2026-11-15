@@ -10,6 +10,7 @@
 //! - A fern: shorter fronds, arching from the ground.
 //! - Grass: a fan of small fronds; flowers, the same with flowers among
 //!   them.
+//! - Paving: flat round stones on grass, which join up into paths.
 //!
 //! Fronds and blades are drawn both ways round (back faces are culled),
 //! their tops and tips swaying in the wind.
@@ -184,6 +185,24 @@ fn crownTurn(seed: u32) f32 {
     return hash(seed, 1, 0) * 2 * std.math.pi;
 }
 
+/// The top of a stone: an octagon, in three quads, its texture as the
+/// ground's (by its place).
+fn capAt(o: Out, ring: [8]V, face: Face, at: V, r: f32) !void {
+    _ = r;
+    const quads = [3][4]usize{ .{ 0, 1, 2, 3 }, .{ 0, 3, 4, 7 }, .{ 4, 5, 6, 7 } };
+    for (quads) |q| {
+        var c: [4]V = undefined;
+        var uv: [4][2]f32 = undefined;
+        for (0..4) |n| {
+            const kk = if (face == .up) q[3 - n] else q[n];
+            c[n] = ring[kk];
+            // Across the tile by x; down it by z, kept within the tile.
+            uv[n] = .{ ring[kk][0], 0.5 + (ring[kk][2] - at[2]) * 0.9 };
+        }
+        try o.quad(.sandstone_top, face, c, uv, @splat(.none));
+    }
+}
+
 /// The end of a trunk: an octagon, in three quads.
 fn cap(o: Out, ring: [8]V, face: Face) !void {
     const quads = [3][4]usize{ .{ 0, 1, 2, 3 }, .{ 0, 3, 4, 7 }, .{ 4, 5, 6, 7 } };
@@ -255,6 +274,63 @@ fn coconut(o: Out, at: V, r: f32) !void {
     }
 }
 
+// --- Paving -----------------------------------------------------------------------------
+
+/// Paving's stones, on the grass of block `p`: flat and round, two by two
+/// a block, set a little above the grass. They are spaced alike across
+/// the world, so the next paving's carry on from them; beside a block
+/// that is not paving they keep in from the edge, with grass round them.
+/// Solid (they are put with the solid faces that look up).
+pub fn paving(gpa: std.mem.Allocator, w: *const World, p: [3]i32, mesh: *mesher.Mesh) !void {
+    const l = w.lightAt(p[0], p[1] + 1, p[2]);
+    const o: Out = .{ .gpa = gpa, .mesh = mesh, .sky = world_mod.skyOf(l), .lamp = world_mod.lampOf(l), .solid = true };
+    const y: f32 = @as(f32, @floatFromInt(p[1])) + 1;
+    // Which sides are paving too (-x, +x, -z, +z).
+    const joined = [4]bool{
+        w.get(p[0] - 1, p[1], p[2]) == .paving,
+        w.get(p[0] + 1, p[1], p[2]) == .paving,
+        w.get(p[0], p[1], p[2] - 1) == .paving,
+        w.get(p[0], p[1], p[2] + 1) == .paving,
+    };
+    for (0..2) |j| for (0..2) |i| {
+        // The stone's place in the world, for its own size and jitter.
+        const gx = p[0] * 2 + @as(i32, @intCast(i));
+        const gz = p[2] * 2 + @as(i32, @intCast(j));
+        var cx = @as(f32, @floatFromInt(gx)) * 0.5 + 0.25 + (hash(51, gx, gz) - 0.5) * 0.1;
+        var cz = @as(f32, @floatFromInt(gz)) * 0.5 + 0.25 + (hash(52, gx, gz) - 0.5) * 0.1;
+        var r = 0.19 + hash(53, gx, gz) * 0.05;
+        // Away from an edge with no paving beyond it.
+        const pull = 0.07;
+        if (i == 0 and !joined[0]) cx += pull;
+        if (i == 1 and !joined[1]) cx -= pull;
+        if (j == 0 and !joined[2]) cz += pull;
+        if (j == 1 and !joined[3]) cz -= pull;
+        if ((i == 0 and !joined[0]) or (i == 1 and !joined[1]) or (j == 0 and !joined[2]) or (j == 1 and !joined[3])) r -= 0.025;
+        try flatStone(o, .{ cx, y, cz }, r, 0.035, hash(54, gx, gz) * std.math.pi);
+    };
+}
+
+/// A flat round stone (eight sides) on the ground at `at`, `r` across
+/// from its middle and `h` high, turned by `turn`.
+fn flatStone(o: Out, at: V, r: f32, h: f32, turn: f32) !void {
+    var ring0: [8]V = undefined;
+    var ring1: [8]V = undefined;
+    for (0..8) |k| {
+        const a = turn + (@as(f32, @floatFromInt(k)) + 0.5) * std.math.pi / 4;
+        // A little uneven, as stones are.
+        const rr = r * (0.92 + 0.08 * @cos(a * 3 + turn));
+        ring0[k] = add(at, .{ @cos(a) * rr, 0, @sin(a) * rr });
+        ring1[k] = add(at, .{ @cos(a) * rr * 0.93, h, @sin(a) * rr * 0.93 });
+    }
+    for (0..8) |k| {
+        const n = (k + 1) % 8;
+        const a = turn + (@as(f32, @floatFromInt(k)) + 1) * std.math.pi / 4;
+        const s0 = @as(f32, @floatFromInt(k)) / 8;
+        try o.quad(.sandstone_top, faceAt(a), .{ ring0[n], ring0[k], ring1[k], ring1[n] }, .{ .{ s0 + 0.125, 0.9 }, .{ s0, 0.9 }, .{ s0, 0.8 }, .{ s0 + 0.125, 0.8 } }, @splat(.none));
+    }
+    try capAt(o, ring1, .up, at, r);
+}
+
 // --- Plants on the ground ---------------------------------------------------------------
 
 pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mesh: *mesher.Mesh) !void {
@@ -295,4 +371,41 @@ pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
         const t_tip: f32 = 1 - t_foot;
         try o.twoSided(tile, .up, .up, c, .{ .{ lo, t_foot }, .{ hi, t_foot }, .{ hi, t_tip }, .{ lo, t_tip } }, .{ .none, .none, .plant, .plant });
     }
+}
+
+test "paving's stones keep in from grass, and carry on into the next paving" {
+    const testing = std.testing;
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    _ = w.set(4, 20, 4, .paving);
+    _ = w.set(9, 20, 4, .paving);
+    _ = w.set(10, 20, 4, .paving);
+    var m: mesher.Mesh = .{};
+    defer m.deinit(testing.allocator);
+    // The stones' middles, along x: each stone is 8 sides and 3 quads on
+    // top, all of it on the grass.
+    const centres = struct {
+        fn of(gpa: std.mem.Allocator, world: *const World, p: [3]i32, mesh: *mesher.Mesh) ![4]f32 {
+            mesh.clearRetainingCapacity();
+            try paving(gpa, world, p, mesh);
+            const v = mesh.items(.solid0);
+            try testing.expectEqual(@as(usize, 4 * 11 * 4), v.len);
+            var out: [4]f32 = undefined;
+            for (0..4) |k| {
+                var sum: f32 = 0;
+                for (v[k * 44 ..][0..32]) |x| sum += x.pos[0];
+                out[k] = sum / 32;
+                for (v[k * 44 ..][0..44]) |x| try testing.expect(x.pos[1] >= 21 and x.pos[1] < 21.05);
+            }
+            return out;
+        }
+    }.of;
+    // Alone: well in from both sides.
+    const lone = try centres(testing.allocator, w, .{ 4, 20, 4 }, &m);
+    for (lone) |x| try testing.expect(x > 4.25 and x < 4.75);
+    // Joined: the stones beside the joint are as far apart as any.
+    const a = try centres(testing.allocator, w, .{ 9, 20, 4 }, &m);
+    const b = try centres(testing.allocator, w, .{ 10, 20, 4 }, &m);
+    try testing.expect(b[0] - a[1] > 0.38 and b[0] - a[1] < 0.62);
+    try testing.expect(a[0] > 9.25);
 }

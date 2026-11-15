@@ -744,10 +744,10 @@ test "beacons, changes and players, there and back" {
     try testing.expect(parseBeacon("DZBN") == null);
     try testing.expect(parseBeacon("XXXX\x01\x00\x00\x00\x00\x00\x00a") == null);
 
-    const e: game_mod.Edit = .{ .cell = .{ 10, 31, 127 }, .block = .bricks };
+    const e: game_mod.Edit = .{ .cell = .{ 10, 31, 127 }, .block = .sandstone_bricks };
     try testing.expectEqual(e, decodeEdit(&encodeEdit(e)).?);
     // Outside the world, or not a block: not taken.
-    try testing.expect(decodeEdit(&encodeEdit(.{ .cell = .{ 128, 0, 0 }, .block = .stone })) == null);
+    try testing.expect(decodeEdit(&encodeEdit(.{ .cell = .{ 128, 0, 0 }, .block = .volcanic_rock })) == null);
     var bad = encodeEdit(e);
     bad[6] = 255;
     try testing.expect(decodeEdit(&bad) == null);
@@ -859,11 +859,11 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
     try testing.expect(math.length(pair.gb.player.pos - pair.ga.player.pos) < 2);
 
     // Changes on either side reach the other.
-    _ = pair.ga.edit(.{ 30, 31, 30 }, .bricks);
+    _ = pair.ga.edit(.{ 30, 31, 30 }, .sandstone_bricks);
     _ = pair.gb.edit(.{ 40, 31, 40 }, .lamp);
     _ = try pair.until(struct {
         fn f(p: *Pair) bool {
-            return p.gb.world.get(30, 31, 30) == .bricks and p.ga.world.get(40, 31, 40) == .lamp;
+            return p.gb.world.get(30, 31, 30) == .sandstone_bricks and p.ga.world.get(40, 31, 40) == .lamp;
         }
     }.f);
 
