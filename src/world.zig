@@ -333,6 +333,10 @@ pub const World = struct {
                     .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
                 else if (slope >= 3 and h > sea_level + 4)
                     .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
+                // Bare rock higher up: on slopes, and in patches, more of
+                // them the higher it is.
+                else if ((slope >= 2 and h > sea_level + 8) or (h > sea_level + 4 and fbm(seed +% 13, fx / 10, fz / 10, 3) + @as(f32, @floatFromInt(h - sea_level - 4)) / 26 * 0.6 > 0.7))
+                    .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
                 else
                     .{ .{ .grass, .dirt }, 4 };
                 var y: i32 = 0;
@@ -352,6 +356,7 @@ pub const World = struct {
                 }
             }
         }
+        w.carveCaves(heights);
         w.growTrees(heights);
         w.growPlants();
         w.findSpawn(heights);
@@ -380,6 +385,100 @@ pub const World = struct {
                 if (hash(seed +% 24, gx, gz) >= chance) continue;
                 const trunk: i32 = 4 + @as(i32, @intFromFloat(hash(seed +% 25, gx, gz) * 4));
                 w.tree(x, h + 1, z, trunk, seed +% @as(u32, @bitCast(gx * 977 + gz)));
+            }
+        }
+    }
+
+    /// Caves, for shelter: each from a rocky cliff face (rock above rock
+    /// lower down beside it) a little way into the hill, level, roomy,
+    /// winding a little, to a bigger room. Those by the sea, their floors
+    /// under it, are flooded.
+    fn carveCaves(w: *World, heights: []const i32) void {
+        const seed = w.seed;
+        const grid = 18;
+        var gz: i32 = 0;
+        while (gz < size_z / grid) : (gz += 1) {
+            var gx: i32 = 0;
+            while (gx < size_x / grid) : (gx += 1) {
+                if (hash(seed +% 51, gx, gz) > 0.8) continue;
+                // The best cliff face in this cell of the grid: rock above
+                // a drop, with the most ground over the way in.
+                var best: ?[3]i32 = null;
+                var best_score: i32 = 6;
+                var away: [2]i32 = .{ 0, 0 };
+                var z = gz * grid;
+                while (z < gz * grid + grid) : (z += 1) {
+                    var x = gx * grid;
+                    while (x < gx * grid + grid) : (x += 1) {
+                        const h = heights[@intCast(z * size_x + x)];
+                        if (h < sea_level + 4 or h > size_y - 10 or w.blocks[index(x, h, z)] != .volcanic_rock) continue;
+                        for ([_][2]i32{ .{ 1, 0 }, .{ -1, 0 }, .{ 0, 1 }, .{ 0, -1 } }) |d| {
+                            const nx = x + d[0];
+                            const nz = z + d[1];
+                            if (!inBounds(nx, 0, nz)) continue;
+                            const drop = h - heights[@intCast(nz * size_x + nx)];
+                            if (drop < 2) continue;
+                            // In at the foot of the face; how high the
+                            // ground is over the way in.
+                            const foot = h - drop + 2;
+                            const ix = std.math.clamp(x - d[0] * 6, 0, size_x - 1);
+                            const iz = std.math.clamp(z - d[1] * 6, 0, size_z - 1);
+                            const score = @min(drop, 6) + heights[@intCast(iz * size_x + ix)] - foot;
+                            if (score > best_score) {
+                                best_score = score;
+                                best = .{ x, foot, z };
+                                away = d;
+                            }
+                        }
+                    }
+                }
+                const at = best orelse continue;
+                w.cave(at, .{ @floatFromInt(-away[0]), @floatFromInt(-away[1]) }, seed +% @as(u32, @bitCast(gx * 131 + gz)));
+            }
+        }
+    }
+
+    /// A cave from `start` (its floor, at the foot of a cliff), heading
+    /// `dir` (across) at first. By the sea, it goes a little under it.
+    fn cave(w: *World, start: [3]i32, dir: [2]f32, seed: u32) void {
+        const by_sea = start[1] <= sea_level + 1;
+        const floor: f32 = @as(f32, @floatFromInt(start[1])) - @as(f32, if (by_sea) 1.5 else 0);
+        var p = [3]f32{ @as(f32, @floatFromInt(start[0])) + 0.5, floor + 1.6, @as(f32, @floatFromInt(start[2])) + 0.5 };
+        var yaw = std.math.atan2(dir[1], dir[0]);
+        const length: usize = 6 + @as(usize, @intFromFloat(hash(seed, 1, 0) * 9));
+        for (0..length) |i| {
+            const ii: i32 = @intCast(i);
+            yaw += (hash(seed, ii, 2) - 0.5) * 0.6;
+            p[0] += @cos(yaw);
+            p[2] += @sin(yaw);
+            const r = 2.0 + 0.6 * @sin(@as(f32, @floatFromInt(i)) * 0.6 + hash(seed, 0, 4) * 6);
+            const last = i + 1 == length;
+            // The room at the back is higher, its floor no lower.
+            const room = if (last) @as(f32, 3.2) else r;
+            w.hollow(.{ p[0], floor + room * 0.62, p[2] }, room);
+        }
+    }
+
+    /// Hollows out the rock (and earth) within `r` of `c`: below the
+    /// sea's level, it is flooded.
+    fn hollow(w: *World, c: [3]f32, r: f32) void {
+        const lo = [3]i32{ @intFromFloat(@floor(c[0] - r)), @intFromFloat(@floor(c[1] - r)), @intFromFloat(@floor(c[2] - r)) };
+        const hi = [3]i32{ @intFromFloat(@floor(c[0] + r)), @intFromFloat(@floor(c[1] + r)), @intFromFloat(@floor(c[2] + r)) };
+        var y = @max(lo[1], 2);
+        while (y <= hi[1]) : (y += 1) {
+            var z = lo[2];
+            while (z <= hi[2]) : (z += 1) {
+                var x = lo[0];
+                while (x <= hi[0]) : (x += 1) {
+                    if (!inBounds(x, y, z)) continue;
+                    const dx = @as(f32, @floatFromInt(x)) + 0.5 - c[0];
+                    // Flatter floors than roofs.
+                    const dy = (@as(f32, @floatFromInt(y)) + 0.5 - c[1]) * (if (@as(f32, @floatFromInt(y)) + 0.5 < c[1]) @as(f32, 1.6) else 1);
+                    const dz = @as(f32, @floatFromInt(z)) + 0.5 - c[2];
+                    if (dx * dx + dy * dy + dz * dz > r * r) continue;
+                    const i = index(x, y, z);
+                    w.blocks[i] = if (y < sea_level) .water else .air;
+                }
             }
         }
     }
@@ -821,4 +920,30 @@ test "removed kinds of block are read as the ones most like them" {
     try testing.expectEqual(Block.sticks, w.get(10, 30, 5));
     try testing.expectEqual(Block.volcanic_wall, w.get(11, 30, 5));
     try testing.expectEqual(Block.sandstone, w.get(12, 30, 5));
+}
+
+test "the island has caves: shelters in the rock, none deep" {
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    try w.generate(default_seed);
+    // Air and water under solid ground.
+    var hollow: u32 = 0;
+    var rock: u32 = 0;
+    for (0..size_z) |zu| for (0..size_x) |xu| {
+        const x: i32 = @intCast(xu);
+        const z: i32 = @intCast(zu);
+        const t = w.top(x, z);
+        if (w.get(x, t, z) == .volcanic_rock and t > sea_level + 6) rock += 1;
+        // Under solid ground: a cave, never far below the sea.
+        if (!w.get(x, t, z).isOpaque()) continue;
+        var y: i32 = 2;
+        while (y < t) : (y += 1) {
+            const b = w.get(x, y, z);
+            if (b == .air) hollow += 1;
+            if (b == .air or b == .water) try testing.expect(y >= sea_level - 4);
+        }
+    };
+    try testing.expect(hollow > 300);
+    // Bare rock up high, not all grass.
+    try testing.expect(rock > 300);
 }
