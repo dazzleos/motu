@@ -21,7 +21,10 @@
 //!                                           get in it
 //!     middle click                          take that kind of block
 //!     1 to 9, or the wheel                  choose a block from the hotbar
-//!     E                                     all the blocks
+//!     E                                     all the blocks: the arrows
+//!                                           left and right choose one,
+//!                                           Tab (Shift+Tab) the next
+//!                                           section, Enter or Esc close
 //!     F1                                    hide the hotbar (and the cross)
 //!     Esc                                   the menu (the game goes on)
 //!     Y, N                                  let someone join, or not
@@ -247,6 +250,15 @@ pub const Game = struct {
             if (code == .escape) g.closeMenu();
             return;
         }
+        // The palette: the arrows choose a block, Tab another section,
+        // Enter (or Esc, or E) closes it.
+        if (g.palette_open) switch (code) {
+            .left => return g.paletteStep(-1),
+            .right => return g.paletteStep(1),
+            .tab => return g.paletteSection(if (g.held.contains(.left_shift) or g.held.contains(.right_shift)) -1 else 1),
+            .enter, .escape, .e => return g.closePalette(),
+            else => {},
+        };
         switch (code) {
             .digit_1, .digit_2, .digit_3, .digit_4, .digit_5, .digit_6, .digit_7, .digit_8, .digit_9 => g.choose(@intCast(@intFromEnum(code) - @intFromEnum(kete.KeyboardKey.digit_1))),
             .left_shift, .right_shift => g.leaveBoat(),
@@ -297,7 +309,7 @@ pub const Game = struct {
         g.takeMouse();
     }
 
-    fn closePalette(g: *Game) void {
+    pub fn closePalette(g: *Game) void {
         g.palette_open = false;
         g.takeMouse();
     }
@@ -429,15 +441,40 @@ pub const Game = struct {
         g.choose(@intCast(@mod(@as(i32, g.slot) + step, n)));
     }
 
-    /// From the palette: puts `b` in the hotbar's slot chosen.
     pub fn showPaletteSection(g: *Game, i: usize) void {
         if (i < blocks.sections.len) g.palette_section = i;
     }
 
+    /// The next section of the palette (or the one before).
+    pub fn paletteSection(g: *Game, dir: i32) void {
+        const n: i32 = blocks.sections.len;
+        g.palette_section = @intCast(@mod(@as(i32, @intCast(g.palette_section)) + dir, n));
+    }
+
+    /// From the palette: puts `b` in the hotbar's slot chosen (the palette
+    /// stays open, its name shown in it).
     pub fn pickFromPalette(g: *Game, b: Block) void {
         g.hotbar[g.slot] = b;
-        g.closePalette();
-        g.say(b.name());
+    }
+
+    /// The next block in the palette's section shown (or the one before),
+    /// into the hotbar's slot chosen.
+    pub fn paletteStep(g: *Game, dir: i32) void {
+        const shown = blocks.sections[g.palette_section].blocks;
+        const n: i32 = @intCast(shown.len);
+        const at: ?usize = for (shown, 0..) |b, i| {
+            if (b == g.selected()) break i;
+        } else null;
+        const next: i32 = if (at) |i| @mod(@as(i32, @intCast(i)) + dir, n) else if (dir > 0) 0 else n - 1;
+        g.pickFromPalette(shown[@intCast(next)]);
+    }
+
+    /// A block dragged from the palette onto a slot of the hotbar: put
+    /// there, and that slot chosen.
+    pub fn dropOnSlot(g: *Game, slot: u8, b: Block) void {
+        if (slot >= g.hotbar.len or !b.isValid() or b == .air) return;
+        g.hotbar[slot] = b;
+        g.slot = slot;
     }
 
     pub fn pointerAt(g: *Game, pos: ?[2]f32) void {
@@ -630,7 +667,7 @@ pub const Game = struct {
             if (g.world.flowing()) g.world.flow();
         }
         var turn: f32 = 0;
-        if (!g.menu_open) {
+        if (!g.menu_open and !g.palette_open) {
             if (g.held.contains(.left)) turn -= 1;
             if (g.held.contains(.right)) turn += 1;
         }
@@ -880,10 +917,46 @@ test "keys: walking, choosing, flying, the palette" {
     g.key(.space, false);
     try testing.expect(!g.player.flying);
     g.key(.e, true);
+    g.key(.e, false);
     try testing.expect(g.palette_open);
+    // Clicking a block chooses it, and the palette stays open.
     g.pickFromPalette(.thatch);
-    try testing.expect(!g.palette_open);
+    try testing.expect(g.palette_open);
     try testing.expectEqual(Block.thatch, g.selected());
+    // The arrows: the next block in the section shown, and back.
+    g.showPaletteSection(blocks.sectionOf(.thatch));
+    const sec = blocks.sections[g.palette_section].blocks;
+    const at = std.mem.indexOfScalar(Block, sec, .thatch).?;
+    g.key(.right, true);
+    g.key(.right, false);
+    try testing.expectEqual(sec[(at + 1) % sec.len], g.selected());
+    g.key(.left, true);
+    g.key(.left, false);
+    try testing.expectEqual(Block.thatch, g.selected());
+    // Held, they do not turn the view.
+    const yaw = g.player.yaw;
+    g.key(.left, true);
+    g.tick(0.2);
+    g.key(.left, false);
+    try testing.expectEqual(yaw, g.player.yaw);
+    // Tab: the next section; Shift+Tab, back.
+    const section = g.palette_section;
+    g.key(.tab, true);
+    g.key(.tab, false);
+    try testing.expectEqual((section + 1) % blocks.sections.len, g.palette_section);
+    g.key(.left_shift, true);
+    g.key(.tab, true);
+    g.key(.tab, false);
+    g.key(.left_shift, false);
+    try testing.expectEqual(section, g.palette_section);
+    // Dragged onto another slot: put there, and it chosen.
+    g.dropOnSlot(6, .bamboo);
+    try testing.expectEqual(@as(u8, 6), g.slot);
+    try testing.expectEqual(Block.bamboo, g.selected());
+    // Enter closes it.
+    g.key(.enter, true);
+    g.key(.enter, false);
+    try testing.expect(!g.palette_open);
     // A day goes by.
     const t = g.time_of_day;
     g.tick(day_length / 4);

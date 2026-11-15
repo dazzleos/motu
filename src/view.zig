@@ -118,13 +118,14 @@ pub const Blocks = struct {
             const chosen = i == g.slot;
             const pick = cx.arena.create(Choose) catch return cx.make(kete.SizedBox.empty);
             pick.* = .{ .game = g, .slot = @intCast(i) };
-            w.* = cx.make(kete.Pressable{ .on_press = .of(pick, Choose.press), .child = cx.make(kete.RoundedBox{
+            // Blocks are dragged onto it from the palette.
+            w.* = cx.make(kete.DropTarget{ .on_drop = .of(pick, Choose.drop), .radius = 8, .child = cx.make(kete.Pressable{ .on_press = .of(pick, Choose.press), .child = cx.make(kete.RoundedBox{
                 .color = gfx.Color.argb(if (chosen) 0xcc303030 else 0x99000000),
                 .border_width = if (chosen) 3 else 1,
                 .border_color = if (chosen) t.primary else gfx.Color.argb(0x66ffffff),
                 .radius = .all(8),
                 .child = cx.make(kete.SizedBox{ .width = 60, .height = 60, .child = cx.make(kete.Align{ .child = if (self.icons.of(b)) |img| cx.make(kete.Image{ .source = .{ .image = img } }) else cx.make(kete.SizedBox.empty) }) }),
-            }) });
+            }) }) });
         }
         return cx.make(kete.Row{ .fill = false, .spacing = 6, .children = &slots });
     }
@@ -147,22 +148,29 @@ pub const Blocks = struct {
         for (section.blocks) |b| {
             const pick = a.create(FromPalette) catch break;
             pick.* = .{ .game = g, .block = b };
-            cells.append(a, cx.make(kete.Pressable{ .on_press = .of(pick, FromPalette.press), .child = cx.make(kete.RoundedBox{
+            // Clicked, it goes in the hotbar's slot chosen; dragged, in
+            // the slot it is dropped on.
+            cells.append(a, cx.make(kete.Draggable{ .data = @intFromEnum(b), .label = b.name(), .on_press = .of(pick, FromPalette.press), .child = cx.make(kete.RoundedBox{
                 .color = gfx.Color.argb(if (b == g.selected()) 0x44ffffff else 0x00000000),
                 .radius = .all(8),
                 .child = cx.make(kete.Align{ .child = cx.make(kete.Image{ .source = .{ .image = self.icons.of(b).? } }) }),
             }) })) catch {};
         }
-        return cx.make(kete.RoundedBox{ .color = gfx.Color.argb(0xe0202024), .radius = .all(16), .child = cx.make(kete.Padding{ .padding = .all(20), .child = cx.make(kete.Column{
+        const title = cx.make(kete.Row{ .fill = false, .spacing = 8, .children = a.dupe(kete.Widget, &.{
+            cx.make(kete.IconButton{ .icon = .close, .size = 36, .on_press = .of(g, Game.closePalette) }),
+            cx.make(kete.Text{ .text = "Blocks", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
+        }) catch &.{} });
+        return cx.make(kete.RoundedBox{ .color = gfx.Color.argb(0xe0202024), .radius = .all(16), .child = cx.make(kete.Padding{ .padding = .{ .left = 12, .top = 12, .right = 20, .bottom = 20 }, .child = cx.make(kete.Column{
             .fill = false,
             .spacing = 12,
-            .children = &.{
-                cx.make(kete.Text{ .text = "Blocks", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
+            .children = a.dupe(kete.Widget, &.{
+                title,
                 cx.make(kete.SizedBox{ .width = palette_width, .child = cx.make(kete.TabBar{ .tabs = &tabs, .selected = g.palette_section, .on_select = .of(g, Game.showPaletteSection) }) }),
                 // Room for the biggest section's two rows.
                 cx.make(kete.SizedBox{ .width = palette_width, .height = 52 * 2 + 4, .child = cx.make(kete.Grid.fixed(cx, cells.items, .{ .w = 52, .h = 52 }, 4)) }),
-                cx.make(kete.Text{ .text = "Pick one for the hotbar's chosen slot  ·  E or Esc to close", .style = .{ .size = 15, .color = gfx.Color.argb(0xffc8c8c8) }, .wrap = false }),
-            },
+                // The block chosen.
+                cx.make(kete.Text{ .text = g.selected().name(), .style = .{ .size = 17, .color = t.on_surface }, .wrap = false }),
+            }) catch &.{},
         }) }) });
     }
 
@@ -427,6 +435,11 @@ const Choose = struct {
 
     fn press(c: *Choose) void {
         c.game.choose(c.slot);
+    }
+
+    fn drop(c: *Choose, data: usize) void {
+        if (data > std.math.maxInt(u8)) return;
+        c.game.dropOnSlot(c.slot, @enumFromInt(@as(u8, @intCast(data))));
     }
 };
 
