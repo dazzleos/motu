@@ -201,38 +201,21 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const sparkle: f32 = if (hash(@intFromFloat(x), @intFromFloat(y), s) > 0.985) 0.08 else 0;
             break :blk tx(scale(mix(rgb(0xdbe6f2), rgb(0xf8fbff), drift), 1 + sparkle), drift * 2.5);
         },
-        .log_side => blk: {
-            // Bark: eight furrows running up, wandering and widening and
-            // narrowing, with rounded ridges between.
-            var nearest: f32 = 99;
-            var width: f32 = 1;
-            for (0..8) |k| {
-                const kk: i32 = @intCast(k);
-                const wander = (noise(@as(f32, @floatFromInt(k)) / 8, v, 4, s +% 1) - 0.5) * 5;
-                const centre = @as(f32, @floatFromInt(k)) * 8 + 4 + (hash(kk, 0, s) - 0.5) * 3 + wander;
-                // The nearest way round (the tile repeats across).
-                const d = @abs(@mod(x - centre + 32, 64) - 32);
-                if (d < nearest) {
-                    nearest = d;
-                    width = 0.3 + 1.3 * noise(@as(f32, @floatFromInt(k)) / 8, v, 8, s +% 2);
-                }
-            }
-            const furrow = smoothstep(width + 0.8, width - 0.4, nearest);
-            const base = mix(rgb(0x7a5c3a), rgb(0x2b1e10), furrow);
-            const ridge = smoothstep(width - 0.4, width + 2.5, nearest);
-            break :blk tx(scale(base, 0.9 + noise(u, v, 32, s +% 3) * 0.18), 3 * @sqrt(ridge) + noise(u, v, 32, s +% 4) * 0.4);
+        .palm_bark => blk: {
+            // A palm's trunk: grey-brown, ringed where old fronds fell,
+            // two rings a block, with fibres running up between.
+            const ring_v = @mod(v * 2 + noise(u, v, 4, s) * 0.08, 1);
+            const ring = smoothstep(0.16, 0, @abs(ring_v - 0.12));
+            const fibre = noise(u * 0.5, v, 32, s +% 1);
+            const body = mix(rgb(0x8a7a64), rgb(0xa8977a), noise(u, v, 8, s +% 2));
+            const c = scale(mix(body, rgb(0x4f4232), ring * 0.75), 0.9 + fibre * 0.18);
+            break :blk tx(c, 2.5 * smoothstep(0.35, 0.05, @abs(ring_v - 0.3)) + fibre * 0.6 - ring * 1.5);
         },
-        .log_top => blk: {
-            const dx = u - 0.5;
-            const dy = v - 0.5;
-            const r = @sqrt(dx * dx + dy * dy) + (noise(u, v, 8, s) - 0.5) * 0.03;
-            if (r > 0.44) {
-                const bark = noise(u, v, 16, s);
-                break :blk tx(scale(rgb(0x4f3b23), 0.85 + bark * 0.3), 1.5 + bark);
-            }
-            const ring = 0.5 + 0.5 * @cos(r * 70);
-            const crack = smoothstep(0.012, 0, @abs(@mod(std.math.atan2(dy, dx) * 2.5 + 0.3, 2 * std.math.pi) - 1)) * smoothstep(0.1, 0.3, r);
-            break :blk tx(scale(mix(rgb(0xa47d4c), rgb(0xc89e68), ring), (0.92 + 0.08 * (1 - r)) * (1 - crack * 0.4)), ring * 0.5 - crack * 2);
+        .frond => frond(u, v, rgb(0x3f8a2a), rgb(0xa6dc62), 1.0, 17, s),
+        .coconut => blk: {
+            const husk = fbm(u, v, 8, 3, s);
+            const c = mix(rgb(0x7a6a2a), rgb(0xa8a040), husk);
+            break :blk tx(scale(c, 0.85 + hash(@intFromFloat(x), @intFromFloat(y), s) * 0.15), husk * 2);
         },
         .leaves => blk: {
             // Leaves in clumps, each domed, darker deeper in.
@@ -244,29 +227,14 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const dome = @max(0, 1 - c.d1 / 0.7);
             break :blk tx(scale(base, (1.05 - c.d1 * 0.35) * (1 - gap * 0.55)), 2.5 * @sqrt(dome) - gap * 1.5 + depth);
         },
-        .tall_grass => blk: {
-            // Blades curving up from the bottom.
-            var best: f32 = 0;
-            var tone: f32 = 0;
-            for (0..9) |i| {
-                const bx = 0.08 + 0.84 * hash(@intCast(i), 0, s);
-                const top = 0.15 + 0.45 * hash(@intCast(i), 1, s);
-                const lean = (hash(@intCast(i), 2, s) - 0.5) * 0.25;
-                if (v < top) continue;
-                const along = (1 - v) / (1 - top);
-                const cx = bx + lean * along * along;
-                const width = 0.035 * (1 - along * 0.8);
-                const d = @abs(u - cx);
-                if (d < width and along > best) {
-                    best = @max(best, 1 - d / width * 0.3);
-                    tone = along;
-                }
-            }
-            if (best == 0) break :blk nothing;
-            break :blk tx(scale(mix(rgb(0x2f6a22), rgb(0x8fd05a), tone), 0.85 + best * 0.2), 0);
-        },
-        .red_flower => flower(u, v, rgb(0xd42a24), rgb(0x2a120a), s),
-        .yellow_flower => flower(u, v, rgb(0xf6d02e), rgb(0xd08018), s),
+        .tall_grass => frond(u, v, rgb(0x3f8a2a), rgb(0xa8e06a), 1.0, 11, s),
+        .red_flower => flowers(u, v, rgb(0xe0352c), rgb(0xffd23a), s),
+        .yellow_flower => flowers(u, v, rgb(0xf8d42c), rgb(0xd07a10), s),
+        .pink_flower => flowers(u, v, rgb(0xf27ab4), rgb(0xffe38a), s),
+        .purple_flower => flowers(u, v, rgb(0x9a5ad8), rgb(0xffe070), s),
+        .blue_flower => flowers(u, v, rgb(0x4a8af0), rgb(0xfff2a0), s),
+        .white_flower => flowers(u, v, rgb(0xf6f6ee), rgb(0xf2c020), s),
+        .orange_flower => flowers(u, v, rgb(0xf6862a), rgb(0x8a3a10), s),
         .cobblestone => blk: {
             const c = cellsAt(u, v, 4, s);
             const gap = smoothstep(0.12, 0.02, c.d2 - c.d1);
@@ -427,21 +395,65 @@ fn fabric(u: f32, v: f32, x: f32, y: f32, base: Rgb, s: u32) Texel {
     return tx(scale(base, 0.9 + weave * 0.06 + fuzz * 0.1), weave * 0.7 + fuzz * 0.4);
 }
 
-fn flower(u: f32, v: f32, petal: Rgb, centre: Rgb, s: u32) Texel {
-    const dx = u - 0.5;
-    const dy = v - 0.3;
-    const r = @sqrt(dx * dx + dy * dy);
-    const a = std.math.atan2(dy, dx);
-    // Five petals: a wavy edge.
-    const edge = 0.15 + 0.05 * @cos(a * 5);
-    if (r < 0.05) return tx(scale(centre, 1.1 - r * 4), 0);
-    if (r < edge) return tx(scale(petal, 0.8 + 0.35 * (1 - r / edge) + noise(u, v, 16, s) * 0.1), 0);
-    // The stem, and two leaves.
-    if (@abs(u - 0.5 - (v - 0.45) * 0.08) < 0.02 and v > 0.4) return tx(scale(rgb(0x3d7a2a), 0.9 + v * 0.2), 0);
-    const leaf1 = (u - 0.62) * (u - 0.62) / 0.012 + (v - 0.72) * (v - 0.72) / 0.002;
-    const leaf2 = (u - 0.38) * (u - 0.38) / 0.012 + (v - 0.8) * (v - 0.8) / 0.002;
-    if (leaf1 < 1 or leaf2 < 1) return tx(rgb(0x4c8c34), 0);
-    return nothing;
+/// A frond, base at the top of the tile and tip at the bottom: a rib
+/// down the middle with leaflets either side, swept towards the tip,
+/// widest a third of the way along. `reach` is how wide, `n` how many
+/// leaflets a side.
+fn frond(u: f32, v: f32, dark: Rgb, light: Rgb, reach: f32, n: f32, s: u32) Texel {
+    const across = u - 0.5;
+    const a = @abs(across);
+    // The rib, narrowing to the tip.
+    const rib_w = 0.035 * (1 - v * 0.7);
+    if (a < rib_w and v < 0.98) return tx(scale(mix(rgb(0x6a6a2a), rgb(0x8a9a3a), v), 0.95), 0);
+    // Which leaflet: they leave the rib and sweep back, so along a
+    // leaflet v grows with distance from the rib.
+    const sweep = 0.55;
+    const along_rib = v - a * sweep;
+    if (along_rib < 0.02 or along_rib > 0.96) return nothing;
+    // How long the leaflets are where they leave the rib.
+    const env = 0.48 * reach * std.math.pow(f32, @sin(std.math.pi * std.math.pow(f32, along_rib, 0.7)), 0.8);
+    if (a > env) return nothing;
+    const side: i32 = if (across < 0) 0 else 1;
+    const phase = along_rib * n;
+    const k: i32 = @intFromFloat(@floor(phase));
+    const f = phase - @floor(phase);
+    // Each leaflet narrows to its tip; a little gap between them.
+    const t = a / @max(env, 0.001);
+    const width = 0.82 * (1 - t * 0.6);
+    if (f > width) return nothing;
+    const tone = hash(k, side, s);
+    const c = mix(dark, light, 0.25 + t * 0.55 + tone * 0.25);
+    // A crease down each leaflet's middle.
+    const crease = smoothstep(0.12, 0, @abs(f - width * 0.5) / @max(width, 0.01));
+    return tx(scale(c, 0.85 + crease * 0.2), 0);
+}
+
+/// Small wildflowers among little fronds: blossoms of five petals on
+/// thin stalks at different heights.
+fn flowers(u: f32, v: f32, petal: Rgb, centre: Rgb, s: u32) Texel {
+    const blooms = [_][3]f32{ .{ 0.28, 0.2, 0.11 }, .{ 0.68, 0.12, 0.12 }, .{ 0.5, 0.42, 0.1 }, .{ 0.18, 0.55, 0.08 }, .{ 0.82, 0.48, 0.09 } };
+    for (blooms, 0..) |bl, i| {
+        const dx = u - bl[0];
+        const dy = v - bl[1];
+        const r = @sqrt(dx * dx + dy * dy);
+        const ang = std.math.atan2(dy, dx) + @as(f32, @floatFromInt(i));
+        const edge = bl[2] * (0.75 + 0.25 * @cos(ang * 5));
+        if (r < bl[2] * 0.3) return tx(scale(centre, 1.05 - r * 2), 0);
+        if (r < edge) {
+            // Petals lighter at their tips, a line down each.
+            const vein = smoothstep(0.25, 0, @abs(@mod(ang * 5 / (2 * std.math.pi), 1) - 0.5));
+            return tx(scale(mix(petal, rgb(0xffffff), (r / edge) * 0.25), 0.82 + 0.2 * (r / edge) - vein * 0.08), 0);
+        }
+    }
+    // Stalks up to them.
+    for (blooms, 0..) |bl, i| {
+        const sway = (hash(@intCast(i), 3, s) - 0.5) * 0.12;
+        const cx = bl[0] + sway * (v - bl[1]);
+        if (v > bl[1] and @abs(u - cx) < 0.018) return tx(scale(rgb(0x3f7a2a), 0.9 + v * 0.15), 0);
+    }
+    // Little fronds below, from the bottom.
+    const g = frond(u, (1 - v) / 0.65, rgb(0x2f6a22), rgb(0x86c652), 0.9, 7, s);
+    return if (v > 0.35) g else nothing;
 }
 
 fn bookshelf(u: f32, v: f32, x: f32, y: f32, s: u32) Texel {
@@ -539,6 +551,29 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
     @memset(out, 0);
     const n: f32 = icon_size;
     var px: [3][tile_size * tile_size]Pixel = undefined;
+    switch (b) {
+        .palm => {
+            // A trunk, and fronds out from its top.
+            tilePixels(.palm_bark, &px[0]);
+            for (12..icon_size) |y| for (20..28) |x| {
+                out[y * icon_size + x] = px[0][(y * tile_size / icon_size) * tile_size + (x - 20) * 8];
+            };
+            tilePixels(.frond, &px[1]);
+            fan(out, &px[1], .{ 24, 12 }, &.{ 2.8, 3.6, -1.57, -0.45, 0.35 }, 22, 7);
+            return;
+        },
+        .fern => {
+            tilePixels(.frond, &px[0]);
+            fan(out, &px[0], .{ 24, 44 }, &.{ -0.3, -0.9, -1.57, -2.25, -2.85 }, 26, 7);
+            return;
+        },
+        .tall_grass => {
+            tilePixels(.tall_grass, &px[0]);
+            fan(out, &px[0], .{ 24, 44 }, &.{ -0.6, -1.1, -1.57, -2.05, -2.55 }, 30, 6);
+            return;
+        },
+        else => {},
+    }
     if (b.shape() == .plant) {
         tilePixels(b.tile(.north), &px[0]);
         for (0..icon_size) |y| for (0..icon_size) |x| {
@@ -588,6 +623,26 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
     };
 }
 
+/// Fronds drawn from `tile` (its base at its top) out from `from` at each
+/// of `angles` (radians, y down), `len` pixels long and `half` each side.
+fn fan(out: *[icon_size * icon_size]Pixel, tile: *const [tile_size * tile_size]Pixel, from: [2]f32, angles: []const f32, len: f32, half: f32) void {
+    for (0..icon_size) |y| for (0..icon_size) |x| {
+        const dx = @as(f32, @floatFromInt(x)) + 0.5 - from[0];
+        const dy = @as(f32, @floatFromInt(y)) + 0.5 - from[1];
+        for (angles) |a| {
+            const along = dx * @cos(a) + dy * @sin(a);
+            const across = -dx * @sin(a) + dy * @cos(a);
+            if (along < 0 or along >= len or @abs(across) >= half) continue;
+            const tu: usize = @intFromFloat((across / half * 0.5 + 0.5) * (tile_size - 1));
+            const tv: usize = @intFromFloat(along / len * (tile_size - 1));
+            const t = tile[tv * tile_size + tu];
+            if (t >> 24 < 0x80) continue;
+            out[y * icon_size + x] = t | 0xff000000;
+            break;
+        }
+    };
+}
+
 test "every tile is in its strip, opaque except where things are see-through, and joins its own edges" {
     const px = try std.testing.allocator.create([strip_width * strip_height]Pixel);
     defer std.testing.allocator.destroy(px);
@@ -596,7 +651,10 @@ test "every tile is in its strip, opaque except where things are see-through, an
         for (std.enums.values(Tile)) |t| {
             if (t.strip() != strip) continue;
             const oy = @as(u32, t.slot()) * tile_size;
-            const see_through = t == .glass or t == .water or t == .tall_grass or t == .red_flower or t == .yellow_flower;
+            const see_through = switch (t) {
+                .glass, .water, .tall_grass, .frond, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
+                else => false,
+            };
             var clear: u32 = 0;
             for (0..tile_size) |y| for (0..tile_size) |x| {
                 if (px[(oy + y) * strip_width + x] >> 24 != 0xff) clear += 1;
@@ -623,6 +681,6 @@ test "icons show the cube's three faces, or the plant" {
     try std.testing.expect(px[28 * icon_size + 10] >> 24 == 0xff);
     try std.testing.expect(px[28 * icon_size + 38] >> 24 == 0xff);
     try std.testing.expectEqual(@as(Pixel, 0), px[0]);
-    icon(.red_flower, &px);
+    icon(.pink_flower, &px);
     try std.testing.expectEqual(@as(Pixel, 0), px[0]);
 }

@@ -178,6 +178,8 @@ pub const Environment = struct {
 /// again in each 64 by 64 tile of the screen it covers).
 pub const region_chunks = 1;
 pub const region_size = world_mod.chunk_size * region_chunks;
+/// How far a palm's fronds (and its trunk's lean) reach past its block.
+const palm_reach = 3.5;
 pub const regions_x = world_mod.chunks_x / region_chunks;
 pub const regions_z = world_mod.chunks_z / region_chunks;
 pub const region_count = regions_x * regions_z;
@@ -331,7 +333,7 @@ pub fn Renderer(comptime Device: type) type {
             const prog = shader.Program.decode;
             var terrain = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
             errdefer terrain.deinit(dev);
-            var terrain_blend = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain_blend.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
+            var terrain_blend = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain_blend.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true, .depth_write = false });
             errdefer terrain_blend.deinit(dev);
             var water = try shader.Pipeline.init(gpa, dev, prog(@embedFile("water.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
             errdefer water.deinit(dev);
@@ -572,7 +574,9 @@ pub fn Renderer(comptime Device: type) type {
                 const corner = regionCorner(i);
                 const d = regionDistance(i, cam.eye);
                 if (d > depth + start + 12) continue;
-                if (!frustum.sees(.{ corner[0], c.min_y, corner[2] }, .{ corner[0] + region_size, c.max_y, corner[2] + region_size })) continue;
+                // Palms' fronds reach past their blocks, out of the region.
+                const m = palm_reach;
+                if (!frustum.sees(.{ corner[0] - m, c.min_y, corner[2] - m }, .{ corner[0] + region_size + m, c.max_y, corner[2] + region_size + m })) continue;
                 order[n] = .{ .i = @intCast(i), .d = d };
                 n += 1;
             }
@@ -1166,6 +1170,11 @@ test "faces turned away are not drawn, and none that can be seen are left out" {
                 all += list.len / 4;
                 for (0..list.len / 4) |q| {
                     const v = list[q * 4];
+                    // Palms' trunks look every way, and are drawn with the
+                    // faces looking up: from anywhere but under the
+                    // chunk's lowest face, where the ground hides them.
+                    const tile: blocks.Tile = @enumFromInt(mesher.Info.unpack(v.info).tile);
+                    if (tile == .palm_bark or tile == .coconut) continue;
                     const n = mesher.Info.unpack(v.info).face.normal();
                     const to = eye - v.pos;
                     const front = @as(f32, @floatFromInt(n[0])) * to[0] + @as(f32, @floatFromInt(n[1])) * to[1] + @as(f32, @floatFromInt(n[2])) * to[2] > 0;

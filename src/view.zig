@@ -140,12 +140,22 @@ pub const Blocks = struct {
         return cx.make(kete.Row{ .fill = false, .spacing = 6, .children = &slots });
     }
 
+    /// The palette's sections' tabs.
+    const tabs = blk: {
+        var out: [blocks.sections.len]kete.Tab = undefined;
+        for (blocks.sections, 0..) |sec, i| out[i] = .{ .label = sec.name };
+        break :blk out;
+    };
+    /// Ten blocks across.
+    const palette_width = 56 * 10 - 4;
+
     fn palette(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
         const t = cx.theme();
         const a = cx.arena;
         var cells: std.ArrayList(kete.Widget) = .empty;
-        for (blocks.palette) |b| {
+        const section = blocks.sections[g.palette_section];
+        for (section.blocks) |b| {
             const pick = a.create(FromPalette) catch break;
             pick.* = .{ .game = g, .block = b };
             cells.append(a, cx.make(kete.Pressable{ .on_press = .of(pick, FromPalette.press), .child = cx.make(kete.RoundedBox{
@@ -159,7 +169,9 @@ pub const Blocks = struct {
             .spacing = 12,
             .children = &.{
                 cx.make(kete.Text{ .text = "Blocks", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
-                cx.make(kete.Grid.fixed(cx, cells.items, .{ .w = 52, .h = 52 }, 4)),
+                cx.make(kete.SizedBox{ .width = palette_width, .child = cx.make(kete.TabBar{ .tabs = &tabs, .selected = g.palette_section, .on_select = .of(g, Game.showPaletteSection) }) }),
+                // Room for the biggest section's two rows.
+                cx.make(kete.SizedBox{ .width = palette_width, .height = 52 * 2 + 4, .child = cx.make(kete.Grid.fixed(cx, cells.items, .{ .w = 52, .h = 52 }, 4)) }),
                 cx.make(kete.Text{ .text = "Pick one for the hotbar's chosen slot  ·  E or Esc to close", .style = .{ .size = 15, .color = gfx.Color.argb(0xffc8c8c8) }, .wrap = false }),
             },
         }) }) });

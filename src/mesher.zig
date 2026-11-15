@@ -30,6 +30,7 @@
 const std = @import("std");
 const blocks = @import("blocks.zig");
 const world_mod = @import("world.zig");
+const plants = @import("plants.zig");
 
 const Block = blocks.Block;
 const Face = blocks.Face;
@@ -389,10 +390,25 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
                 }
             }
         }
+        // Palms' trunks look every way: with the faces looking up, which
+        // are drawn from nearly anywhere.
+        if (face == .up) try palmTrunks(gpa, w, origin, top_y, mesh);
     }
 }
 
-/// Water, glass and plants.
+fn palmTrunks(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, mesh: *Mesh) !void {
+    var y: i32 = 0;
+    while (y < top_y) : (y += 1) {
+        var lz: i32 = 0;
+        while (lz < world_mod.chunk_size) : (lz += 1) {
+            const row = w.blocks[World.index(origin[0], y, origin[2] + lz)..][0..world_mod.chunk_size];
+            for (row, 0..) |blk, lx| if (blk == .palm)
+                try plants.trunk(gpa, w, .{ origin[0] + @as(i32, @intCast(lx)), y, origin[2] + lz }, mesh);
+        }
+    }
+}
+
+/// Water, glass, palms and plants.
 fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, mesh: *Mesh) !void {
     var y: i32 = 0;
     while (y < top_y) : (y += 1) {
@@ -412,7 +428,8 @@ fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
                         const corners = rectCorners(face, @floatFromInt(p[@intFromEnum(face) / 2] + @as(i32, if (@intFromEnum(face) % 2 == 0) 1 else 0)), @floatFromInt(p[(@intFromEnum(face) / 2 + 1) % 3]), @floatFromInt(p[(@intFromEnum(face) / 2 + 2) % 3]), 1, 1);
                         try emitQuad(mesh.list(.clear(blk.tile(face).strip())), gpa, face, corners, cornerLooks(face, look), @splat(.none));
                     },
-                    .plant => try plantQuads(gpa, w, p, blk, mesh),
+                    .plant => try plants.plant(gpa, w, p, blk, mesh),
+                    .pole => try plants.crown(gpa, w, p, mesh),
                     else => {},
                 }
             }
@@ -471,37 +488,6 @@ fn waterQuad(gpa: std.mem.Allocator, mesh: *Mesh, face: Face, corners: [4][3]f32
         .uv = .{ 0, 0 },
         .info = (Info{ .tile = depth, .face = face, .sky = world_mod.skyOf(light), .lamp = world_mod.lampOf(light), .anim = anim }).pack(),
     });
-}
-
-/// Two planes crossing on the block's diagonals, each both ways round
-/// (so they can be seen from either side with back faces culled); their
-/// tops sway.
-fn plantQuads(gpa: std.mem.Allocator, w: *const World, p: P, blk: Block, mesh: *Mesh) !void {
-    const x: f32 = @floatFromInt(p[0]);
-    const y: f32 = @floatFromInt(p[1]);
-    const z: f32 = @floatFromInt(p[2]);
-    const l = w.lightAt(p[0], p[1], p[2]);
-    const t = blk.tile(.north);
-    const tile: u6 = @intFromEnum(t);
-    const lo: f32 = 0.002;
-    const hi: f32 = 0.998;
-    const list = mesh.list(.clear(t.strip()));
-    const planes = [2][2][2]f32{ .{ .{ x, z }, .{ x + 1, z + 1 } }, .{ .{ x + 1, z }, .{ x, z + 1 } } };
-    for (planes) |pl| {
-        const a = pl[0];
-        const b = pl[1];
-        // Bottom left, bottom right, top right, top left; then the back.
-        const front = [4][3]f32{ .{ a[0], y, a[1] }, .{ b[0], y, b[1] }, .{ b[0], y + 1, b[1] }, .{ a[0], y + 1, a[1] } };
-        const uvs = [4][2]f32{ .{ lo, stripT(t, 1) }, .{ hi, stripT(t, 1) }, .{ hi, stripT(t, 0) }, .{ lo, stripT(t, 0) } };
-        const anims = [4]Anim{ .none, .none, .plant, .plant };
-        for ([2][4]usize{ .{ 0, 1, 2, 3 }, .{ 1, 0, 3, 2 } }) |order| {
-            for (order) |k| try list.append(gpa, .{
-                .pos = front[k],
-                .uv = uvs[k],
-                .info = (Info{ .tile = tile, .face = .up, .sky = world_mod.skyOf(l), .lamp = world_mod.lampOf(l), .anim = anims[k] }).pack(),
-            });
-        }
-    }
 }
 
 // --- Tests ------------------------------------------------------------------------------
@@ -651,7 +637,7 @@ test "water: a surface quad a block, lower than the block's top, with its depth"
     }
 }
 
-test "plants: two crossed planes, both ways round; glass: faces against air" {
+test "plants: fans of fronds, both ways round; glass: faces against air" {
     const w = try emptyWorld();
     defer w.destroy();
     _ = w.set(3, 20, 3, .red_flower);
@@ -661,16 +647,47 @@ test "plants: two crossed planes, both ways round; glass: faces against air" {
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
     try testing.expectEqual(@as(usize, 0), m.solidCount());
-    // 4 plant quads (the island's strip); 10 glass faces (the building
-    // strip; none between the two panes).
-    try testing.expectEqual(@as(usize, 4 * 4), m.items(.clear0).len);
+    // Seven fronds, both ways round (the island's strip); 10 glass faces
+    // (the building strip; none between the two panes).
+    try testing.expectEqual(@as(usize, 14 * 4), m.items(.clear0).len);
     try testing.expectEqual(@as(usize, 10 * 4), m.items(.clear1).len);
-    var tops: u32 = 0;
-    for (m.items(.clear0)) |v| if (Info.unpack(v.info).anim == .plant) {
-        try testing.expectEqual(@as(f32, 21), v.pos[1]);
-        tops += 1;
-    };
-    try testing.expectEqual(@as(u32, 8), tops);
+    // Their tips sway; their feet are on the ground, in the block.
+    var tips: u32 = 0;
+    for (m.items(.clear0)) |v| {
+        if (Info.unpack(v.info).anim == .plant) {
+            try testing.expect(v.pos[1] > 20.4 and v.pos[1] < 21.1);
+            tips += 1;
+        } else try testing.expectEqual(@as(f32, 20), v.pos[1]);
+        try testing.expect(v.pos[0] > 2.4 and v.pos[0] < 4.6 and v.pos[2] > 2.4 and v.pos[2] < 4.6);
+    }
+    try testing.expectEqual(@as(u32, 28), tips);
+}
+
+test "palms: a solid trunk facing out, and a crown of fronds reaching past its block" {
+    const w = try emptyWorld();
+    defer w.destroy();
+    for (0..5) |y| _ = w.set(8, @intCast(20 + y), 8, .palm);
+    var m: Mesh = .{};
+    defer m.deinit(testing.allocator);
+    try build(testing.allocator, w, 0, 0, &m);
+    // Eight sides a block, the ends, and coconuts: solid, with the faces
+    // looking up (drawn from anywhere above the chunk's bottom).
+    const solid = m.items(.solid0);
+    try testing.expect(solid.len >= (5 * 8 + 6 + 3 * 6) * 4);
+    try expectWound(solid);
+    const up = for (face_order, 0..) |f, k| {
+        if (f == .up) break k;
+    } else unreachable;
+    try testing.expectEqual(@as(u32, @intCast(solid.len / 4)), m.face_quads[0][up]);
+    // The trunk stays within its column.
+    for (solid) |v| try testing.expect(v.pos[0] > 7.5 and v.pos[0] < 9.5 and v.pos[2] > 7.5 and v.pos[2] < 9.5);
+    // The crown: see-through, round the top, reaching out past the block.
+    var far: f32 = 0;
+    for (m.items(.clear0)) |v| {
+        try testing.expect(v.pos[1] > 22 and v.pos[1] < 27);
+        far = @max(far, @abs(v.pos[0] - 8.5), @abs(v.pos[2] - 8.5));
+    }
+    try testing.expect(far > 2 and far < 3.5);
 }
 
 test "packing a vertex's information round trips, exactly as a float" {

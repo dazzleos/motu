@@ -138,7 +138,7 @@ fn renderDraw(gpa: std.mem.Allocator, d: *const Recorded, dev: *const renderer.F
     const fs_uniforms = streamOf(&prog.fs, d.values, .{ draw.texture, draw.texture1, draw.texture2 }, &fs_buf);
     var fs_decoded_buf: [vc4.compiler.max_code]sim.DecodedInst = undefined;
     const fs_decoded = sim.decodeProgram(prog.fs.code(), &fs_decoded_buf);
-    var frags: Fragments = .{ .prog = prog, .fs_decoded = fs_decoded, .uniforms = fs_uniforms, .img = img };
+    var frags: Fragments = .{ .prog = prog, .fs_decoded = fs_decoded, .uniforms = fs_uniforms, .img = img, .depth_write = p.options.depth_write };
     for (&frags.textures, [_]?vc4.render.Texture{ draw.texture, draw.texture1, draw.texture2 }) |*m, t| {
         m.* = if (t) |tex| dev.memory(tex.handle) else &.{};
     }
@@ -192,6 +192,8 @@ const Fragments = struct {
     uniforms: []const u32,
     textures: [3][]const u8 = @splat(&.{}),
     img: Image,
+    /// Whether depth-tested fragments are kept in the depth buffer.
+    depth_write: bool = true,
     index: [lanes]usize = undefined,
     vary: [shader.program.max_varyings]sim.Vec = undefined,
     n: usize = 0,
@@ -303,7 +305,7 @@ fn raster(tri: [3]*const Shaded, prog: *const shader.Program, cull: shader.pipel
             const pixel: usize = @as(usize, @intCast(y)) * img.width + @as(usize, @intCast(x));
             if (prog.options.depth_test) {
                 if (!(z < img.depth[pixel])) continue;
-                img.depth[pixel] = z;
+                if (frags.depth_write) img.depth[pixel] = z;
             }
             // Perspective-correct: weighted by 1/w.
             const pw = [3]f32{ b[0] * rw[0], b[1] * rw[1], b[2] * rw[2] };

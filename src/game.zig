@@ -129,6 +129,9 @@ pub const Game = struct {
     /// double tap.
     space_at: ?f32 = null,
     palette_open: bool = false,
+    /// The palette's section shown (see blocks.sections): it opens at the
+    /// chosen block's.
+    palette_section: usize = 0,
     /// The menu: the game's options, over the game, which goes on behind
     /// it (the player standing still). The game starts in it, so the mouse
     /// is not taken before it is wanted.
@@ -217,6 +220,7 @@ pub const Game = struct {
             },
             .e => if (g.palette_open) g.closePalette() else {
                 g.palette_open = true;
+                g.palette_section = blocks.sectionOf(g.selected());
                 // Its blocks are chosen with the pointer.
                 if (g.captured) g.capture_wanted = false;
             },
@@ -339,6 +343,10 @@ pub const Game = struct {
     }
 
     /// From the palette: puts `b` in the hotbar's slot chosen.
+    pub fn showPaletteSection(g: *Game, i: usize) void {
+        if (i < blocks.sections.len) g.palette_section = i;
+    }
+
     pub fn pickFromPalette(g: *Game, b: Block) void {
         g.hotbar[g.slot] = b;
         g.closePalette();
@@ -645,7 +653,7 @@ test "keys: walking, choosing, flying, the palette" {
     try testing.expect(g.player.pos[2] < z - 2);
     g.key(.digit_4, true);
     try testing.expectEqual(@as(u8, 3), g.slot);
-    try testing.expectEqualStrings("Log", g.messageShown().?);
+    try testing.expectEqualStrings("Palm", g.messageShown().?);
     g.scroll(1);
     try testing.expectEqual(@as(u8, 4), g.slot);
     g.slot = 8;

@@ -351,48 +351,35 @@ pub const World = struct {
         while (gz < size_z / grid) : (gz += 1) {
             var gx: i32 = 0;
             while (gx < size_x / grid) : (gx += 1) {
-                // One place in each cell of the grid may have a tree, so
-                // trees are never too close.
+                // One place in each cell of the grid may have a palm, so
+                // palms are never too close.
                 const x = gx * grid + @as(i32, @intFromFloat(hash(seed +% 21, gx, gz) * (grid - 2))) + 1;
                 const z = gz * grid + @as(i32, @intFromFloat(hash(seed +% 22, gx, gz) * (grid - 2))) + 1;
                 const h = heights[@intCast(z * size_x + x)];
-                if (w.get(x, h, z) != .grass) continue;
-                const forest = fbm(seed +% 23, @as(f32, @floatFromInt(x)) / 20, @as(f32, @floatFromInt(z)) / 20, 3);
-                const chance: f32 = if (forest > 0.55) 0.8 else if (forest > 0.42) 0.35 else 0.08;
-                if (hash(seed +% 24, gx, gz) > chance) continue;
-                const trunk: i32 = 4 + @as(i32, @intFromFloat(hash(seed +% 25, gx, gz) * 3));
+                const ground = w.get(x, h, z);
+                // On grass, in groves; on the beaches, here and there.
+                const chance: f32 = if (ground == .grass) blk: {
+                    const grove = fbm(seed +% 23, @as(f32, @floatFromInt(x)) / 20, @as(f32, @floatFromInt(z)) / 20, 3);
+                    break :blk if (grove > 0.55) 0.7 else if (grove > 0.42) 0.3 else 0.06;
+                } else if (ground == .sand and h >= sea_level) 0.4 else 0;
+                if (hash(seed +% 24, gx, gz) >= chance) continue;
+                const trunk: i32 = 4 + @as(i32, @intFromFloat(hash(seed +% 25, gx, gz) * 4));
                 w.tree(x, h + 1, z, trunk, seed +% @as(u32, @bitCast(gx * 977 + gz)));
             }
         }
     }
 
-    /// A tree: a trunk of `trunk` logs from (x, y, z), leaves around its
-    /// top.
+    /// A palm: a trunk `trunk` blocks high from (x, y, z) (the fronds
+    /// and coconuts at its top are drawn, not blocks).
     pub fn tree(w: *World, x: i32, y: i32, z: i32, trunk: i32, seed: u32) void {
+        _ = seed;
         if (y + trunk + 1 >= size_y) return;
-        w.blocks[index(x, y - 1, z)] = .dirt;
-        const top_y = y + trunk;
-        var dy: i32 = -3;
-        while (dy <= 1) : (dy += 1) {
-            const r: i32 = if (dy >= 0) 1 else 2;
-            var dz: i32 = -r;
-            while (dz <= r) : (dz += 1) {
-                var dx: i32 = -r;
-                while (dx <= r) : (dx += 1) {
-                    const corner = @abs(dx) == r and @abs(dz) == r;
-                    // Corners: some, at random; none at the very top.
-                    if (corner and (dy == 1 or hash(seed, dx * 7 + dy, dz) < 0.5)) continue;
-                    const lx = x + dx;
-                    const ly = top_y + dy;
-                    const lz = z + dz;
-                    if (inBounds(lx, ly, lz) and w.blocks[index(lx, ly, lz)] == .air) w.blocks[index(lx, ly, lz)] = .leaves;
-                }
-            }
-        }
         var i: i32 = 0;
-        while (i < trunk) : (i += 1) w.blocks[index(x, y + i, z)] = .log;
+        while (i < trunk) : (i += 1) w.blocks[index(x, y + i, z)] = .palm;
     }
 
+    /// Grass and ferns about the island, and meadows: grass with patches
+    /// of flowers, each patch its own colour.
     fn growPlants(w: *World) void {
         const seed = w.seed;
         var z: i32 = 0;
@@ -401,11 +388,20 @@ pub const World = struct {
             while (x < size_x) : (x += 1) {
                 const h = w.top(x, z);
                 if (h < 0 or h + 1 >= size_y or w.blocks[index(x, h, z)] != .grass) continue;
-                const meadow = fbm(seed +% 31, @as(f32, @floatFromInt(x)) / 12, @as(f32, @floatFromInt(z)) / 12, 2);
+                const fx: f32 = @floatFromInt(x);
+                const fz: f32 = @floatFromInt(z);
+                const meadow = fbm(seed +% 31, fx / 12, fz / 12, 2);
                 const r = hash(seed +% 32, x, z);
-                const b: Block = if (r < 0.012 + meadow * 0.02)
-                    (if (meadow > 0.5) .red_flower else .yellow_flower)
-                else if (r < meadow * 0.3)
+                const b: Block = if (meadow > 0.56) blk: {
+                    // Patches a few blocks across, each of one colour.
+                    const patch = fbm(seed +% 33, fx / 4, fz / 4, 1);
+                    const colour: usize = @intFromFloat(@floor(hash(seed +% 34, @intFromFloat(@floor(fx / 5 + patch * 3)), @intFromFloat(@floor(fz / 5 + patch * 2))) * Block.flowers.len));
+                    if (r < 0.45) break :blk Block.flowers[colour];
+                    if (r < 0.8) break :blk .tall_grass;
+                    continue;
+                } else if (r < 0.012)
+                    .fern
+                else if (r < meadow * 0.35)
                     .tall_grass
                 else
                     continue;
@@ -456,7 +452,10 @@ pub const World = struct {
     // --- Saving ------------------------------------------------------------------------
 
     pub const magic = "DZBW";
-    pub const version = 1;
+    /// 2: palms. Worlds from before (1) are read too: their trees' logs
+    /// are palms' trunks now (the same number), and the leaves round
+    /// their tops are taken away (see `fromTrees`).
+    pub const version = 2;
 
     /// The world's blocks, run-length encoded (light is worked out again
     /// on loading).
@@ -479,9 +478,41 @@ pub const World = struct {
         }
     }
 
+    /// For a world from before palms: its trees' trunks are palms now,
+    /// and the leaves that were their tops are taken away, as palms' own
+    /// fronds are drawn. The leaves taken are those around the top of a
+    /// trunk with leaves on it, as far out as a tree's reached: leaves
+    /// built elsewhere stay.
+    fn fromTrees(w: *World) void {
+        var y: i32 = 0;
+        while (y < size_y - 1) : (y += 1) {
+            var z: i32 = 0;
+            while (z < size_z) : (z += 1) {
+                var x: i32 = 0;
+                while (x < size_x) : (x += 1) {
+                    if (w.blocks[index(x, y, z)] != .palm or w.blocks[index(x, y + 1, z)] != .leaves) continue;
+                    var dy: i32 = -2;
+                    while (dy <= 2) : (dy += 1) {
+                        var dz: i32 = -2;
+                        while (dz <= 2) : (dz += 1) {
+                            var dx: i32 = -2;
+                            while (dx <= 2) : (dx += 1) {
+                                const lx = x + dx;
+                                const ly = y + dy;
+                                const lz = z + dz;
+                                if (inBounds(lx, ly, lz) and w.blocks[index(lx, ly, lz)] == .leaves) w.blocks[index(lx, ly, lz)] = .air;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Reads what `encode` wrote; returns how many bytes it took.
     pub fn decode(w: *World, data: []const u8) !usize {
-        if (data.len < 15 or !std.mem.eql(u8, data[0..4], magic) or data[4] != version) return error.NotAWorld;
+        if (data.len < 15 or !std.mem.eql(u8, data[0..4], magic) or data[4] < 1 or data[4] > version) return error.NotAWorld;
+        const from = data[4];
         if (std.mem.readInt(u16, data[5..7], .little) != size_x or std.mem.readInt(u16, data[7..9], .little) != size_y or std.mem.readInt(u16, data[9..11], .little) != size_z) return error.WrongSize;
         w.seed = std.mem.readInt(u32, data[11..15], .little);
         var at: usize = 15;
@@ -495,6 +526,7 @@ pub const World = struct {
             i += n;
             at += 2;
         }
+        if (from < 2) w.fromTrees();
         try w.computeLight();
         w.dirty = .full;
         return at;
@@ -591,8 +623,10 @@ test "the island: land in the middle, sea at the edges, a beach, trees and plant
     for (w.blocks) |b| counts.getPtr(b).* += 1;
     try testing.expect(land > 3000 and land < 12000);
     try testing.expect(highest > sea_level + 16);
-    for ([_]Block{ .grass, .sand, .log, .leaves, .tall_grass, .snow, .stone }) |b| try testing.expect(counts.get(b) > 0);
-    try testing.expect(counts.get(.red_flower) + counts.get(.yellow_flower) > 0);
+    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .fern, .snow, .stone }) |b| try testing.expect(counts.get(b) > 0);
+    var flowers: usize = 0;
+    for (Block.flowers) |b| flowers += counts.get(b);
+    try testing.expect(flowers > 0);
     // The spawn point is free, on land.
     const s = w.spawn;
     const sx: i32 = @intFromFloat(s[0]);
@@ -670,4 +704,46 @@ test "saving and loading give back the same world" {
     try testing.expectEqual(@as(u32, 99), back.seed);
     try testing.expectError(error.NotAWorld, back.decode("nope"));
     try testing.expectError(error.Truncated, back.decode(out.items[0..100]));
+}
+
+test "a world from before palms: trees' trunks are palms, without their leaves; leaves built stay" {
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    // An old tree, as trees were made: a trunk of logs (the number palms
+    // have now) with leaves round its top.
+    const top: i32 = 30;
+    var y: i32 = 25;
+    while (y < top) : (y += 1) w.blocks[World.index(20, y, 20)] = .palm;
+    var dy: i32 = -3;
+    while (dy <= 1) : (dy += 1) {
+        var dz: i32 = -2;
+        while (dz <= 2) : (dz += 1) {
+            var dx: i32 = -2;
+            while (dx <= 2) : (dx += 1) {
+                const i = World.index(20 + dx, top + dy, 20 + dz);
+                if (w.blocks[i] == .air) w.blocks[i] = .leaves;
+            }
+        }
+    }
+    // A hedge.
+    for (0..5) |x| w.blocks[World.index(@intCast(60 + x), 25, 60)] = .leaves;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try w.encode(&out, testing.allocator);
+    out.items[4] = 1;
+    const back = try World.create(testing.allocator);
+    defer back.destroy();
+    _ = try back.decode(out.items);
+    var leaves: usize = 0;
+    var palms: usize = 0;
+    for (back.blocks) |b| {
+        if (b == .leaves) leaves += 1;
+        if (b == .palm) palms += 1;
+    }
+    try testing.expectEqual(@as(usize, 5), leaves);
+    try testing.expectEqual(@as(usize, 5), palms);
+    // Read as it is now, nothing is taken.
+    out.items[4] = World.version;
+    _ = try back.decode(out.items);
+    try testing.expect(std.mem.eql(Block, w.blocks, back.blocks));
 }

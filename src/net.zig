@@ -37,7 +37,8 @@ pub const max_players = player_mod.colours;
 pub const max_nearby = 8;
 
 const beacon_magic = "DZBN";
-const protocol_version: u8 = 1;
+/// 2: palms and new plants (a world sent is the new kind).
+const protocol_version: u8 = 2;
 const beacon_every = std.time.ns_per_s;
 /// A game not heard for this long has gone.
 const nearby_for = 4 * std.time.ns_per_s;

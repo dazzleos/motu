@@ -1,6 +1,10 @@
 //! The kinds of block: how each is drawn (a solid cube, a see-through
-//! cube, water, or a plant: two crossed planes), which of the atlas's
-//! tiles each face shows, the light it gives, and its name.
+//! cube, water, a palm's trunk, or a plant), which of the atlas's tiles
+//! each face shows, the light it gives, and its name.
+//!
+//! Each kind's number is what worlds are saved with, so they are only
+//! ever added to: the trunk and the plants took the numbers of the log,
+//! tall grass and flowers they replaced.
 
 const std = @import("std");
 
@@ -16,7 +20,8 @@ pub const Block = enum(u8) {
     clay,
     snow,
     water,
-    log,
+    /// A palm's trunk: a round pole, with fronds and coconuts at its top.
+    palm,
     planks,
     leaves,
     dark_planks,
@@ -42,6 +47,12 @@ pub const Block = enum(u8) {
     tall_grass,
     red_flower,
     yellow_flower,
+    fern,
+    pink_flower,
+    purple_flower,
+    blue_flower,
+    white_flower,
+    orange_flower,
     _,
 
     pub const Shape = enum {
@@ -51,7 +62,11 @@ pub const Block = enum(u8) {
         /// A cube drawn see-through (glass).
         clear,
         water,
-        /// Two crossed planes (drawn see-through).
+        /// A round pole up the middle of the block (a palm's trunk), with
+        /// a crown of fronds on top: solid, but hiding nothing.
+        pole,
+        /// Fronds and blades from the ground, drawn see-through, not in
+        /// the way.
         plant,
     };
 
@@ -60,7 +75,8 @@ pub const Block = enum(u8) {
             .air => .none,
             .water => .water,
             .glass => .clear,
-            .tall_grass, .red_flower, .yellow_flower => .plant,
+            .palm => .pole,
+            .tall_grass, .fern, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
             _ => .none,
             else => .cube,
         };
@@ -75,7 +91,7 @@ pub const Block = enum(u8) {
     /// The player cannot walk through it.
     pub fn isSolid(b: Block) bool {
         return switch (b.shape()) {
-            .cube, .clear => true,
+            .cube, .clear, .pole => true,
             else => false,
         };
     }
@@ -122,7 +138,7 @@ pub const Block = enum(u8) {
             .gravel => .gravel,
             .clay => .clay,
             .snow => .snow,
-            .log => if (top or bottom) .log_top else .log_side,
+            .palm => .palm_bark,
             .planks => .planks,
             .leaves => .leaves,
             .dark_planks => .dark_planks,
@@ -146,8 +162,14 @@ pub const Block = enum(u8) {
             .pink => .pink,
             .cyan => .cyan,
             .tall_grass => .tall_grass,
+            .fern => .frond,
             .red_flower => .red_flower,
             .yellow_flower => .yellow_flower,
+            .pink_flower => .pink_flower,
+            .purple_flower => .purple_flower,
+            .blue_flower => .blue_flower,
+            .white_flower => .white_flower,
+            .orange_flower => .orange_flower,
             .water => .water,
             .air, _ => .stone,
         };
@@ -166,7 +188,7 @@ pub const Block = enum(u8) {
             .clay => "Clay",
             .snow => "Snow",
             .water => "Water",
-            .log => "Log",
+            .palm => "Palm",
             .planks => "Planks",
             .leaves => "Leaves",
             .dark_planks => "Dark planks",
@@ -190,29 +212,70 @@ pub const Block = enum(u8) {
             .pink => "Pink",
             .cyan => "Cyan",
             .tall_grass => "Tall grass",
-            .red_flower => "Poppy",
-            .yellow_flower => "Dandelion",
+            .fern => "Fern",
+            .red_flower => "Red flowers",
+            .yellow_flower => "Yellow flowers",
+            .pink_flower => "Pink flowers",
+            .purple_flower => "Purple flowers",
+            .blue_flower => "Blue flowers",
+            .white_flower => "White flowers",
+            .orange_flower => "Orange flowers",
             _ => "?",
         };
     }
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.yellow_flower);
+        return @intFromEnum(b) <= @intFromEnum(Block.orange_flower);
     }
+
+    /// Flowers: grass with flowers among it.
+    pub fn isFlower(b: Block) bool {
+        return switch (b) {
+            .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
+            else => false,
+        };
+    }
+
+    pub const flowers = [_]Block{ .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower };
 };
 
-/// The blocks that can be placed, in the order the palette shows them.
-pub const palette = [_]Block{
-    .grass,        .dirt,       .stone,      .cobblestone,   .sand,        .sandstone, .gravel,    .clay,
-    .snow,         .water,      .log,        .planks,        .dark_planks, .leaves,    .glass,     .bricks,
-    .stone_bricks, .roof,       .plaster,    .iron,          .gold,        .lamp,      .bookshelf, .white,
-    .black,        .red,        .orange,     .yellow,        .green,       .blue,      .purple,    .pink,
-    .cyan,         .tall_grass, .red_flower, .yellow_flower,
+/// The palette's sections (its tabs), and their blocks in the order it
+/// shows them.
+pub const Section = struct {
+    name: []const u8,
+    blocks: []const Block,
+};
+
+pub const sections = [_]Section{
+    .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .stone, .sand, .sandstone, .gravel, .clay, .snow, .water } },
+    .{ .name = "Building", .blocks = &.{ .cobblestone, .planks, .dark_planks, .stone_bricks, .bricks, .plaster, .roof, .glass, .iron, .gold, .lamp, .bookshelf } },
+    .{ .name = "Plants", .blocks = &.{ .palm, .leaves, .fern, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
+    // Colours to build with, not any material's.
+    .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
+};
+
+/// The section a block is in (the first, if none).
+pub fn sectionOf(b: Block) usize {
+    for (sections, 0..) |sec, i| for (sec.blocks) |o| if (o == b) return i;
+    return 0;
+}
+
+/// The blocks that can be placed: every section's, in turn.
+pub const palette = blk: {
+    var n = 0;
+    for (sections) |sec| n += sec.blocks.len;
+    var out: [n]Block = undefined;
+    var i = 0;
+    for (sections) |sec| for (sec.blocks) |b| {
+        out[i] = b;
+        i += 1;
+    };
+    break :blk out;
 };
 
 /// The hotbar's blocks to start with.
-pub const starting_hotbar = [9]Block{ .grass, .stone, .planks, .log, .glass, .bricks, .roof, .lamp, .red_flower };
+pub const starting_hotbar = [9]Block{ .grass, .stone, .planks, .palm, .glass, .bricks, .roof, .lamp, .pink_flower };
 
 /// A cube's faces, by the direction they face: +x, -x, +y (up), -y, +z, -z.
 pub const Face = enum(u3) {
@@ -254,9 +317,9 @@ pub const Tile = enum(u6) {
     gravel,
     clay,
     snow,
-    log_side,
-    log_top,
-    leaves,
+    palm_bark,
+    frond,
+    coconut,
     tall_grass,
     red_flower,
     yellow_flower,
@@ -275,6 +338,7 @@ pub const Tile = enum(u6) {
     bookshelf,
     /// For water's icon (the water itself is drawn by its own shader).
     water,
+    leaves,
     // Colours.
     white = 32,
     black,
@@ -286,6 +350,12 @@ pub const Tile = enum(u6) {
     purple,
     pink,
     cyan,
+    // More flowers.
+    pink_flower,
+    purple_flower,
+    blue_flower,
+    white_flower,
+    orange_flower,
 
     pub const per_strip = 16;
     pub const strips = 3;
@@ -301,6 +371,16 @@ pub const Tile = enum(u6) {
 };
 
 test "every block that can be placed has a name and its own look" {
+    // Every block is in one section.
+    for (std.enums.values(Block)) |b| {
+        if (b == .air or !b.isValid()) continue;
+        var n: usize = 0;
+        for (palette) |p| {
+            if (p == b) n += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), n);
+    }
+    try std.testing.expectEqual(@as(usize, 2), sectionOf(.palm));
     for (palette) |b| {
         try std.testing.expect(b.isValid() and b != .air);
         try std.testing.expect(!std.mem.eql(u8, b.name(), "?"));
@@ -308,11 +388,13 @@ test "every block that can be placed has a name and its own look" {
     }
     for (std.enums.values(Tile)) |t| try std.testing.expect(t.strip() < Tile.strips);
     // What the island is made of is all in the first strip.
-    for ([_]Block{ .grass, .dirt, .stone, .sand, .sandstone, .gravel, .clay, .snow, .log, .leaves, .tall_grass, .red_flower, .yellow_flower }) |b|
+    for ([_]Block{ .grass, .dirt, .stone, .sand, .sandstone, .gravel, .clay, .snow, .palm, .tall_grass, .fern }) |b|
         for (Face.all) |f| try std.testing.expectEqual(@as(u2, 0), b.tile(f).strip());
     try std.testing.expectEqual(Tile.grass_top, Block.grass.tile(.up));
     try std.testing.expectEqual(Tile.grass_side, Block.grass.tile(.north));
     try std.testing.expect(Block.leaves.isOpaque() and Block.leaves.passesLight());
+    try std.testing.expect(Block.palm.isSolid() and !Block.palm.isOpaque());
+    for (Block.flowers) |b| try std.testing.expect(b.isFlower() and b.shape() == .plant);
     try std.testing.expect(!Block.glass.isOpaque() and Block.glass.isSolid());
     try std.testing.expect(!Block.water.isSolid());
     const unknown: Block = @enumFromInt(200);
