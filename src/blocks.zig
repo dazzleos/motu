@@ -43,8 +43,7 @@ pub const Block = enum(u8) {
     iron,
     /// Removed: read as yellow paint.
     gold,
-    /// A small lantern of sticks, glowing, standing on the block below
-    /// (or a stick, raised up).
+    /// A bamboo torch, its flame burning: on a stick, raised.
     lamp,
     /// Removed: read as a table (stacked, they make shelves).
     bookshelf,
@@ -61,7 +60,8 @@ pub const Block = enum(u8) {
     tall_grass,
     red_flower,
     yellow_flower,
-    fern,
+    /// Big arrow-shaped leaves on tall stalks.
+    elephant_ear,
     pink_flower,
     purple_flower,
     blue_flower,
@@ -84,7 +84,7 @@ pub const Block = enum(u8) {
     bed,
     /// A treasure chest.
     chest,
-    /// A single stick, upright: a lamp on one is raised.
+    /// A single stick of bamboo, upright: a lamp on one is raised.
     post,
     _,
 
@@ -113,7 +113,7 @@ pub const Block = enum(u8) {
             .water => .water,
             .glass => .clear,
             .palm => .pole,
-            .tall_grass, .fern, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
+            .tall_grass, .elephant_ear, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
             _ => .none,
             else => .cube,
         };
@@ -172,7 +172,8 @@ pub const Block = enum(u8) {
             .coral => .coral,
             .sticks => if (top or bottom) .sticks_top else .sticks_side,
             .lamp => .lamp,
-            .table, .post => if (top or bottom) .sticks_top else .sticks_side,
+            .table => if (top or bottom) .sticks_top else .sticks_side,
+            .post => .bamboo,
             .bed => .bed_cover,
             .chest => if (top or bottom) .chest_top else .chest_side,
             .white => .white,
@@ -186,7 +187,7 @@ pub const Block = enum(u8) {
             .pink => .pink,
             .cyan => .cyan,
             .tall_grass => .tall_grass,
-            .fern => .frond,
+            .elephant_ear => .elephant_ear,
             .red_flower => .red_flower,
             .yellow_flower => .yellow_flower,
             .pink_flower => .pink_flower,
@@ -228,7 +229,7 @@ pub const Block = enum(u8) {
             .pink => "Pink",
             .cyan => "Cyan",
             .tall_grass => "Tall grass",
-            .fern => "Fern",
+            .elephant_ear => "Elephant ear",
             .red_flower => "Red flowers",
             .yellow_flower => "Yellow flowers",
             .pink_flower => "Pink flowers",
@@ -288,7 +289,7 @@ pub const sections = [_]Section{
     .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .glass } },
     // Made of sticks.
     .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp } },
-    .{ .name = "Plants", .blocks = &.{ .palm, .fern, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
+    .{ .name = "Plants", .blocks = &.{ .palm, .elephant_ear, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
 };
@@ -360,12 +361,14 @@ pub const Tile = enum(u6) {
     tall_grass,
     red_flower,
     yellow_flower,
+    elephant_ear,
     // Building.
     volcanic_wall = 16,
     glass,
     thatch,
     /// A bed's pillow.
     plaster,
+    /// A torch's flame.
     lamp,
     /// For water's icon (the water itself is drawn by its own shader).
     water,
@@ -373,6 +376,7 @@ pub const Tile = enum(u6) {
     bed_cover,
     chest_side,
     chest_top,
+    bamboo,
     // Colours.
     white = 32,
     black,
@@ -422,7 +426,7 @@ test "every block that can be placed has a name and its own look" {
     }
     for (std.enums.values(Tile)) |t| try std.testing.expect(t.strip() < Tile.strips);
     // What the island is made of is all in the first strip.
-    for ([_]Block{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .palm, .tall_grass, .fern }) |b|
+    for ([_]Block{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .palm, .tall_grass, .elephant_ear }) |b|
         for (Face.all) |f| try std.testing.expectEqual(@as(u2, 0), b.tile(f).strip());
     try std.testing.expectEqual(Tile.grass_top, Block.grass.tile(.up));
     try std.testing.expectEqual(Tile.grass_side, Block.grass.tile(.north));

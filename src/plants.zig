@@ -7,9 +7,9 @@
 //!   block has a crown: fronds arching out and drooping, folded a little
 //!   along their ribs, and coconuts under them. The fronds reach well
 //!   past the block, into nothing's way: they are only drawn.
-//! - A fern: shorter fronds, arching from the ground.
-//! - Grass: a fan of small fronds; flowers, the same with flowers among
-//!   them.
+//! - Elephant ears: big arrow-shaped leaves held out on tall stalks.
+//! - Tall grass: blades on two planes crossing; flowers, a fan of blades
+//!   with flowers among them.
 //! - Paving: flat round stones on grass, which join up into paths.
 //!
 //! Fronds and blades are drawn both ways round (back faces are culled),
@@ -62,7 +62,7 @@ pub const Out = struct {
     }
 
     /// Both ways round: the front lit as `front`, the back as `back`.
-    fn twoSided(o: Out, tile: Tile, front: Face, back: Face, c: [4]V, uv: [4][2]f32, anims: [4]Anim) !void {
+    pub fn twoSided(o: Out, tile: Tile, front: Face, back: Face, c: [4]V, uv: [4][2]f32, anims: [4]Anim) !void {
         try o.quad(tile, front, c, uv, anims);
         const r = [4]usize{ 1, 0, 3, 2 };
         try o.quad(tile, back, .{ c[r[0]], c[r[1]], c[r[2]], c[r[3]] }, .{ uv[r[0]], uv[r[1]], uv[r[2]], uv[r[3]] }, .{ anims[r[0]], anims[r[1]], anims[r[2]], anims[r[3]] });
@@ -339,37 +339,36 @@ pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
     const seed: u32 = @bitCast(p[0] *% 73856093 ^ p[2] *% 19349663 ^ p[1] *% 83492791);
     const turn = hash(seed, 0, 0) * 2 * std.math.pi;
     const base: V = .{ @as(f32, @floatFromInt(p[0])) + 0.5, @floatFromInt(p[1]), @as(f32, @floatFromInt(p[2])) + 0.5 };
-    if (blk == .fern) {
-        const n = 6;
-        for (0..n) |k| {
-            const ki: i32 = @intCast(k);
-            const a = turn + @as(f32, @floatFromInt(k)) * 2 * std.math.pi / n + (hash(seed, ki, 1) - 0.5) * 0.4;
-            const rise = 1.0 + (hash(seed, ki, 2) - 0.5) * 0.3;
-            try frond(o, add(base, .{ 0, 0.03, 0 }), a, rise, 1.2 + hash(seed, ki, 3) * 0.2, 0.75, 0.3, 3);
+    if (blk == .elephant_ear) return elephantEar(o, base, seed, turn);
+    if (blk == .tall_grass) {
+        // Two planes crossing on the block's diagonals.
+        const x = base[0] - 0.5;
+        const y = base[1];
+        const z = base[2] - 0.5;
+        const planes = [2][2][2]f32{ .{ .{ x, z }, .{ x + 1, z + 1 } }, .{ .{ x + 1, z }, .{ x, z + 1 } } };
+        for (planes) |pl| {
+            const c = [4]V{ .{ pl[0][0], y, pl[0][1] }, .{ pl[1][0], y, pl[1][1] }, .{ pl[1][0], y + 1, pl[1][1] }, .{ pl[0][0], y + 1, pl[0][1] } };
+            try o.twoSided(.tall_grass, .up, .up, c, .{ .{ lo, 1 }, .{ hi, 1 }, .{ hi, 0 }, .{ lo, 0 } }, .{ .none, .none, .plant, .plant });
         }
         return;
     }
-    // A fan of small fronds; flowers' every other one.
-    const flower = blk.isFlower();
+    // Flowers: a fan of blades, every other one with flowers.
     const n = 7;
     for (0..n) |k| {
         const ki: i32 = @intCast(k);
         const a = turn + @as(f32, @floatFromInt(k)) * 2 * std.math.pi / n + (hash(seed, ki, 1) - 0.5) * 0.5;
         const dir: V = .{ @cos(a), 0, @sin(a) };
         const side: V = .{ -dir[2], 0, dir[0] };
-        const blooms = flower and k % 2 == 0;
+        const blooms = k % 2 == 0;
         const tile: Tile = if (blooms) blk.tile(.north) else .tall_grass;
-        const height = (if (blooms) @as(f32, 0.78) else 0.45) + hash(seed, ki, 2) * 0.2;
-        const out: f32 = (if (blooms) @as(f32, 0.22) else 0.24) + hash(seed, ki, 3) * 0.12;
-        const half: f32 = if (blooms) 0.3 else 0.15;
+        const height = (if (blooms) @as(f32, 0.78) else 0.6) + hash(seed, ki, 2) * 0.2;
+        const out: f32 = (if (blooms) @as(f32, 0.22) else 0.2) + hash(seed, ki, 3) * 0.12;
+        const half: f32 = if (blooms) 0.3 else 0.28;
         const foot = add(base, add(mul(dir, 0.06), .{ (hash(seed, ki, 4) - 0.5) * 0.2, 0, (hash(seed, ki, 5) - 0.5) * 0.2 }));
         const tip = add(foot, add(mul(dir, out), mul(up, height)));
         const c = [4]V{ add(foot, mul(side, -half)), add(foot, mul(side, half)), add(tip, mul(side, half)), add(tip, mul(side, -half)) };
-        // Grass's frond grows from the tile's top; flowers' from its
-        // bottom.
-        const t_foot: f32 = if (blooms) 1 else 0;
-        const t_tip: f32 = 1 - t_foot;
-        try o.twoSided(tile, .up, .up, c, .{ .{ lo, t_foot }, .{ hi, t_foot }, .{ hi, t_tip }, .{ lo, t_tip } }, .{ .none, .none, .plant, .plant });
+        // Both grow from the tile's bottom.
+        try o.twoSided(tile, .up, .up, c, .{ .{ lo, 1 }, .{ hi, 1 }, .{ hi, 0 }, .{ lo, 0 } }, .{ .none, .none, .plant, .plant });
     }
 }
 
@@ -408,4 +407,48 @@ test "paving's stones keep in from grass, and carry on into the next paving" {
     const b = try centres(testing.allocator, w, .{ 10, 20, 4 }, &m);
     try testing.expect(b[0] - a[1] > 0.38 and b[0] - a[1] < 0.62);
     try testing.expect(a[0] > 9.25);
+}
+
+/// Elephant ears: three to five leaves, each held out on a stalk from the
+/// middle of the block, big and arrow-shaped, their points drooping.
+fn elephantEar(o: Out, base: V, seed: u32, turn: f32) !void {
+    const n = 3 + @as(u32, @intFromFloat(hash(seed, 7, 7) * 3));
+    for (0..n) |k| {
+        const ki: i32 = @intCast(k);
+        const a = turn + @as(f32, @floatFromInt(k)) * 2 * std.math.pi / @as(f32, @floatFromInt(n)) + (hash(seed, ki, 1) - 0.5) * 0.5;
+        const dir: V = .{ @cos(a), 0, @sin(a) };
+        const side: V = .{ -dir[2], 0, dir[0] };
+        const tall = 0.95 + hash(seed, ki, 2) * 0.55;
+        const foot = add(base, .{ 0, 0.02, 0 });
+        const top = add(base, add(mul(dir, 0.2 + hash(seed, ki, 3) * 0.1), mul(up, tall)));
+        // The stalk: two narrow strips crossing, from the leaf's rib.
+        const w = 0.035;
+        const across = [2]V{ side, .{ dir[0], 0, dir[2] } };
+        for (across) |acr| {
+            const c = [4]V{ add(foot, mul(acr, -w)), add(foot, mul(acr, w)), add(top, mul(acr, w)), add(top, mul(acr, -w)) };
+            try o.twoSided(.elephant_ear, .up, .up, c, .{ .{ 0.485, 0.7 }, .{ 0.515, 0.7 }, .{ 0.515, 0.3 }, .{ 0.485, 0.3 } }, .{ .none, .none, .sway, .sway });
+        }
+        // The leaf, in two pieces: out and a little down, then down more
+        // to its point. Its lobes reach back past the stalk.
+        const len = 1.05 + hash(seed, ki, 4) * 0.3;
+        const half = len * 0.46;
+        const d1 = add(mul(dir, @cos(0.2)), mul(up, -@sin(0.2)));
+        const d2 = add(mul(dir, @cos(0.85)), mul(up, -@sin(0.85)));
+        const start = add(top, mul(d1, -0.14 * len));
+        const mid = add(start, mul(d1, 0.5 * len));
+        const tip = add(mid, mul(d2, 0.5 * len));
+        const cup = mul(up, half * 0.18);
+        const pts = [3]V{ start, mid, tip };
+        const ts = [3]f32{ 0, 0.5, 1 };
+        const anims = [3]Anim{ .sway, .plant, .plant };
+        for (0..2) |j| {
+            const l0 = add(add(pts[j], mul(side, -half)), cup);
+            const r0 = add(add(pts[j], mul(side, half)), cup);
+            const l1 = add(add(pts[j + 1], mul(side, -half)), cup);
+            const r1 = add(add(pts[j + 1], mul(side, half)), cup);
+            // Up the middle, the rib; out to each edge.
+            try o.twoSided(.elephant_ear, .up, .down, .{ pts[j], r0, r1, pts[j + 1] }, .{ .{ 0.5, ts[j] }, .{ hi, ts[j] }, .{ hi, ts[j + 1] }, .{ 0.5, ts[j + 1] } }, .{ anims[j], anims[j], anims[j + 1], anims[j + 1] });
+            try o.twoSided(.elephant_ear, .up, .down, .{ pts[j], pts[j + 1], l1, l0 }, .{ .{ 0.5, ts[j] }, .{ 0.5, ts[j + 1] }, .{ lo, ts[j + 1] }, .{ lo, ts[j] } }, .{ anims[j], anims[j + 1], anims[j + 1], anims[j] });
+        }
+    }
 }

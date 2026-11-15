@@ -265,7 +265,25 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const c = mix(rgb(0x7a6a2a), rgb(0xa8a040), husk);
             break :blk tx(scale(c, 0.85 + hash(@intFromFloat(x), @intFromFloat(y), s) * 0.15), husk * 2);
         },
-        .tall_grass => frond(u, v, rgb(0x3f8a2a), rgb(0xa8e06a), 1.0, 11, s),
+        .tall_grass => blades(u, v, s),
+        .elephant_ear => blk: {
+            // A big leaf like an arrowhead, its base (two round lobes, a
+            // notch between them where the stalk meets it) at the top of
+            // the tile and its point at the bottom: a pale rib down the
+            // middle, veins out from it towards the edges, glossy.
+            const a = @abs(u - 0.5);
+            // The rib, the whole way down (a stalk is drawn from it).
+            if (a < 0.022) break :blk tx(scale(rgb(0x8cbc5a), 0.9 + v * 0.1), 1);
+            const half = 0.47 * std.math.pow(f32, @max(0, @sin(std.math.pi * (0.25 + 0.75 * v))), 0.7);
+            if (a > half) break :blk nothing;
+            if (v < 0.2 and a < 0.22 * (1 - v / 0.2)) break :blk nothing;
+            const vein_phase = (v - a * 0.9) * 7;
+            const vein = smoothstep(0.08, 0, @abs(vein_phase - @round(vein_phase)));
+            const edge = smoothstep(half - 0.04, half, a);
+            const shine = smoothstep(0.3, 0, @abs(a - 0.16)) * 0.15;
+            const c = mix(rgb(0x3c8430), rgb(0x68b44a), fbm(u, v, 4, 2, s));
+            break :blk tx(scale(mix(c, rgb(0x86b85a), vein * 0.45), (0.95 + shine) * (1 - edge * 0.35)), vein * 0.6 - edge);
+        },
         .red_flower => flowers(u, v, rgb(0xe0352c), rgb(0xffd23a), s),
         .yellow_flower => flowers(u, v, rgb(0xf8d42c), rgb(0xd07a10), s),
         .pink_flower => flowers(u, v, rgb(0xf27ab4), rgb(0xffe38a), s),
@@ -314,19 +332,24 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk tx(scale(rgb(0xece6d6), 0.94 + body * 0.08 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.03), body * 1.2);
         },
         .lamp => blk: {
-            // A lantern's side: a frame of sticks round a pane of woven
-            // leaf, glowing from the flame inside, brightest low in the
-            // middle, with a cross of thin sticks over it.
-            if (x < 6 or x >= 58 or y < 5 or y >= 59) {
-                const across = if (x < 6 or x >= 58) (@mod(x, 6) - 3) / 3 else (@mod(y, 5) - 2.5) / 2.5;
-                break :blk tx(scale(rgb(0x7a5a34), 0.6 + 0.4 * @sqrt(@max(0, 1 - across * across))), 3);
-            }
-            if (@abs(x - 32) < 1.5 or @abs(y - 30) < 1.5) break :blk tx(rgb(0x5a4026), 2);
-            const dx = (x - 32) / 26;
-            const dy = (y - 38) / 30;
-            const glow = 1 - @min(dx * dx + dy * dy, 1);
-            const weave = 0.92 + 0.08 * @sin(x * 1.6) * @sin(y * 1.6);
-            break :blk tx(scale(mix(rgb(0xf0a040), rgb(0xfff4d0), glow), weave), 0);
+            // A flame, from its point at the top: white-yellow at its
+            // heart, orange, red at its edge.
+            const h = std.math.pow(f32, v, 0.75);
+            const half = 0.36 * @sin(std.math.pi * h) * (0.75 + 0.25 * v) + (noise(u, v, 6, s) - 0.5) * 0.04;
+            const a = @abs(u - 0.5);
+            if (a > half or v > 0.97) break :blk nothing;
+            const heat = (1 - a / @max(half, 0.01)) * smoothstep(0.1, 0.8, v);
+            const c = mix(mix(rgb(0xd83a10), rgb(0xff9a20), smoothstep(0, 0.5, heat)), rgb(0xfff2b0), smoothstep(0.5, 1, heat));
+            break :blk .{ .c = c, .a = std.math.clamp((half - a) * 30, 0, 1) };
+        },
+        .bamboo => blk: {
+            // A stem of bamboo, lit across, a node part way up.
+            const across = (u - 0.5) * 2;
+            const round = @sqrt(@max(0, 1 - across * across * 0.8));
+            const node = smoothstep(0.035, 0, @abs(v - 0.55));
+            const streak = 0.94 + 0.06 * noise(u * 4, v * 0.5, 16, s);
+            const c = mix(rgb(0x9a9a3a), rgb(0xd0c470), fbm(u, v, 4, 2, s) * 0.5 + round * 0.4);
+            break :blk tx(scale(mix(c, rgb(0x6a6a2a), node), (0.6 + 0.4 * round) * streak), node * 2 + round);
         },
         .bed_cover => blk: {
             // Bark cloth: pale, with dark brown patterns in bands:
@@ -376,9 +399,9 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
 
 fn grass(u: f32, v: f32) Texel {
     const patch = fbm(u, v, 4, 3, 3);
-    const blades = noise(u * 1.0, v * 0.5, 32, 4);
+    const streaks = noise(u * 1.0, v * 0.5, 32, 4);
     const speck = hash(@intFromFloat(u * 64), @intFromFloat(v * 64), 5);
-    return tx(scale(mix(rgb(0x4f8f30), rgb(0x86c050), patch * 0.8 + blades * 0.4), 0.88 + speck * 0.18), blades * 1.6 + patch + speck * 0.4);
+    return tx(scale(mix(rgb(0x4f8f30), rgb(0x86c050), patch * 0.8 + streaks * 0.4), 0.88 + speck * 0.18), streaks * 1.6 + patch + speck * 0.4);
 }
 
 fn dirt(u: f32, v: f32) Texel {
@@ -489,9 +512,30 @@ fn flowers(u: f32, v: f32, petal: Rgb, centre: Rgb, s: u32) Texel {
         const cx = bl[0] + sway * (v - bl[1]);
         if (v > bl[1] and @abs(u - cx) < 0.018) return tx(scale(rgb(0x3f7a2a), 0.9 + v * 0.15), 0);
     }
-    // Little fronds below, from the bottom.
-    const g = frond(u, (1 - v) / 0.65, rgb(0x2f6a22), rgb(0x86c652), 0.9, 7, s);
-    return if (v > 0.35) g else nothing;
+    // Grass below, as tall grass is.
+    return if (v > 0.3) blades(u, v, s) else nothing;
+}
+
+/// Blades of grass curving up from the bottom of the tile.
+fn blades(u: f32, v: f32, s: u32) Texel {
+    var best: f32 = 0;
+    var tone: f32 = 0;
+    for (0..9) |i| {
+        const bx = 0.08 + 0.84 * hash(@intCast(i), 0, s);
+        const top = 0.15 + 0.45 * hash(@intCast(i), 1, s);
+        const lean = (hash(@intCast(i), 2, s) - 0.5) * 0.25;
+        if (v < top) continue;
+        const along = (1 - v) / (1 - top);
+        const cx = bx + lean * along * along;
+        const width = 0.035 * (1 - along * 0.8);
+        const d = @abs(u - cx);
+        if (d < width and along > best) {
+            best = @max(best, 1 - d / width * 0.3);
+            tone = along;
+        }
+    }
+    if (best == 0) return nothing;
+    return tx(scale(mix(rgb(0x2f6a22), rgb(0x8fd05a), tone), 0.85 + best * 0.2), 0);
 }
 
 fn normals(t: Tile, out: *[tile_size * tile_size][3]f32, cols: *[tile_size * tile_size]Texel) void {
@@ -568,18 +612,13 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             fan(out, &px[1], .{ 24, 12 }, &.{ 2.8, 3.6, -1.57, -0.45, 0.35 }, 22, 7);
             return;
         },
-        .fern => {
-            tilePixels(.frond, &px[0]);
-            fan(out, &px[0], .{ 24, 44 }, &.{ -0.3, -0.9, -1.57, -2.25, -2.85 }, 26, 7);
+        .elephant_ear => {
+            tilePixels(.elephant_ear, &px[0]);
+            fan(out, &px[0], .{ 24, 46 }, &.{ -0.55, -1.2, -1.95, -2.6 }, 26, 10);
             return;
         },
         .table, .bed, .chest, .post, .lamp => {
             furnitureIcon(b, out);
-            return;
-        },
-        .tall_grass => {
-            tilePixels(.tall_grass, &px[0]);
-            fan(out, &px[0], .{ 24, 44 }, &.{ -0.6, -1.1, -1.57, -2.05, -2.55 }, 30, 6);
             return;
         },
         else => {},
@@ -656,10 +695,10 @@ fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             .{ .lo = .{ 0.14, 0.44, 0.08 }, .hi = .{ 0.86, 0.54, 0.34 }, .top = .plaster, .side = .plaster },
         },
         .chest => &.{.{ .lo = .{ 0.08, 0, 0.14 }, .hi = .{ 0.92, 0.7, 0.86 }, .top = .chest_top, .side = .chest_side }},
-        .post => &.{leg(0.42, 0.42, 0.16, 1)},
+        .post => &.{.{ .lo = .{ 0.42, 0, 0.42 }, .hi = .{ 0.58, 1, 0.58 }, .top = .bamboo, .side = .bamboo }},
         .lamp => &.{
-            .{ .lo = .{ 0.24, 0, 0.24 }, .hi = .{ 0.76, 0.66, 0.76 }, .top = .lamp, .side = .lamp },
-            .{ .lo = .{ 0.18, 0.66, 0.18 }, .hi = .{ 0.82, 0.8, 0.82 }, .top = .thatch, .side = .thatch },
+            .{ .lo = .{ 0.43, 0, 0.43 }, .hi = .{ 0.57, 0.6, 0.57 }, .top = .bamboo, .side = .bamboo },
+            .{ .lo = .{ 0.39, 0.6, 0.39 }, .hi = .{ 0.61, 0.76, 0.61 }, .top = .bamboo, .side = .bamboo },
         },
         else => &.{},
     };
@@ -708,6 +747,15 @@ fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             }
         };
     }
+    // A torch's flame, over its top.
+    if (b == .lamp) {
+        tilePixels(.lamp, &top_px);
+        for (0..18) |y| for (0..14) |x| {
+            const t = top_px[(y * tile_size / 18) * tile_size + x * tile_size / 14];
+            if (t >> 24 < 0x80) continue;
+            out[(y + 2) * icon_size + x + 17] = t | 0xff000000;
+        };
+    }
 }
 
 /// Fronds drawn from `tile` (its base at its top) out from `from` at each
@@ -739,7 +787,7 @@ test "every tile is in its strip, opaque except where things are see-through, an
             if (t.strip() != strip) continue;
             const oy = @as(u32, t.slot()) * tile_size;
             const see_through = switch (t) {
-                .glass, .water, .tall_grass, .frond, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
+                .glass, .water, .tall_grass, .frond, .elephant_ear, .lamp, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
                 else => false,
             };
             var clear: u32 = 0;

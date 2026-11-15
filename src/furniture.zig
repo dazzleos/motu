@@ -8,9 +8,9 @@
 //!   pillow. Beds side by side or end to end are one bigger bed (the
 //!   pillows at the end with no bed beyond, to the north).
 //! - A treasure chest.
-//! - A stick: one pole, upright, the height of the block.
-//! - A lamp: a little lantern standing at the bottom of its block (on a
-//!   stick, raised).
+//! - A stick: one pole of bamboo, upright, the height of the block.
+//! - A lamp: a bamboo torch, its flame burning at its top (on a stick,
+//!   raised). The flame is see-through, and flickers as plants sway.
 
 const std = @import("std");
 const blocks = @import("blocks.zig");
@@ -101,6 +101,7 @@ pub fn build(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
     const y: f32 = @floatFromInt(p[1]);
     const z: f32 = @floatFromInt(p[2]);
     const sticks: Tiles = .{ .top = .sticks_top, .side = .sticks_side, .bottom = .sticks_top };
+    const bamboo: Tiles = .{ .top = .sticks_top, .side = .bamboo, .bottom = .sticks_top, .fit = true };
     // Which sides have the same beside them (-x, +x, -z, +z).
     const same = [4]bool{
         w.get(p[0] - 1, p[1], p[2]) == blk,
@@ -141,12 +142,26 @@ pub fn build(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
             var skip: std.EnumSet(Face) = .{};
             if (w.get(p[0], p[1] + 1, p[2]) == .post or w.get(p[0], p[1] + 1, p[2]) == .lamp) skip.insert(.up);
             if (w.get(p[0], p[1] - 1, p[2]) == .post or w.get(p[0], p[1] - 1, p[2]).isOpaque()) skip.insert(.down);
-            try box(o, .{ x + 0.44, y, z + 0.44 }, .{ x + 0.56, y + 1, z + 0.56 }, sticks, skip);
+            try box(o, .{ x + 0.44, y, z + 0.44 }, .{ x + 0.56, y + 1, z + 0.56 }, bamboo, skip);
         },
         .lamp => {
-            // The lantern, and its little thatched roof.
-            try box(o, .{ x + 0.32, y, z + 0.32 }, .{ x + 0.68, y + 0.46, z + 0.68 }, .{ .top = .lamp, .side = .lamp, .bottom = .sticks_top, .fit = true }, std.EnumSet(Face).initOne(.up));
-            try box(o, .{ x + 0.27, y + 0.46, z + 0.27 }, .{ x + 0.73, y + 0.56, z + 0.73 }, .{ .top = .thatch, .side = .thatch, .bottom = .thatch, .fit = true }, none);
+            // The torch: its pole, a wider cup of bamboo at its top, and
+            // the flame.
+            var skip: std.EnumSet(Face) = .initOne(.up);
+            if (w.get(p[0], p[1] - 1, p[2]) == .post or w.get(p[0], p[1] - 1, p[2]).isOpaque()) skip.insert(.down);
+            try box(o, .{ x + 0.44, y, z + 0.44 }, .{ x + 0.56, y + 0.6, z + 0.56 }, bamboo, skip);
+            try box(o, .{ x + 0.4, y + 0.6, z + 0.4 }, .{ x + 0.6, y + 0.76, z + 0.6 }, .{ .top = .sticks_top, .side = .bamboo, .bottom = .bamboo, .fit = true }, none);
+            var f = o;
+            f.solid = false;
+            const fl = [2][2][2]f32{ .{ .{ -1, 0 }, .{ 1, 0 } }, .{ .{ 0, -1 }, .{ 0, 1 } } };
+            for (fl) |d| {
+                const r = 0.16;
+                const c = [4]V{
+                    .{ x + 0.5 + d[0][0] * r, y + 0.74, z + 0.5 + d[0][1] * r }, .{ x + 0.5 + d[1][0] * r, y + 0.74, z + 0.5 + d[1][1] * r },
+                    .{ x + 0.5 + d[1][0] * r, y + 1.12, z + 0.5 + d[1][1] * r }, .{ x + 0.5 + d[0][0] * r, y + 1.12, z + 0.5 + d[0][1] * r },
+                };
+                try f.twoSided(.lamp, .up, .up, c, .{ .{ 0.002, 1 }, .{ 0.998, 1 }, .{ 0.998, 0 }, .{ 0.002, 0 } }, .{ .none, .none, .plant, .plant });
+            }
         },
         else => {},
     }

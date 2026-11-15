@@ -325,7 +325,9 @@ pub const World = struct {
                     .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
                 else if (h < sea_level - 1)
                     .{ .{ .sand, .sand }, 2 }
-                else if (h <= sea_level + 1)
+                else if (h == sea_level - 1)
+                    // The beach, all at the water's surface: anything
+                    // higher is earth or rock.
                     .{ .{ .sand, .sand }, 3 }
                 else if (h >= bare_line)
                     .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
@@ -339,6 +341,15 @@ pub const World = struct {
                     w.blocks[index(x, y, z)] = b;
                 }
                 while (y < sea_level) : (y += 1) w.blocks[index(x, y, z)] = .water;
+                // Coral reefs in patches on the shallow sea bed, a block
+                // or two high, always under the water.
+                if (h < sea_level - 2) {
+                    const reef = fbm(seed +% 41, fx / 8, fz / 8, 3);
+                    if (reef > 0.58) w.blocks[index(x, h, z)] = .coral;
+                    var ry = h + 1;
+                    const tall: i32 = if (reef > 0.72) 2 else if (reef > 0.64) 1 else 0;
+                    while (ry <= h + tall and ry <= sea_level - 2) : (ry += 1) w.blocks[index(x, ry, z)] = .coral;
+                }
             }
         }
         w.growTrees(heights);
@@ -365,7 +376,7 @@ pub const World = struct {
                 const chance: f32 = if (ground == .grass) blk: {
                     const grove = fbm(seed +% 23, @as(f32, @floatFromInt(x)) / 20, @as(f32, @floatFromInt(z)) / 20, 3);
                     break :blk if (grove > 0.55) 0.7 else if (grove > 0.42) 0.3 else 0.06;
-                } else if (ground == .sand and h >= sea_level) 0.4 else 0;
+                } else if (ground == .sand and h >= sea_level - 1) 0.4 else 0;
                 if (hash(seed +% 24, gx, gz) >= chance) continue;
                 const trunk: i32 = 4 + @as(i32, @intFromFloat(hash(seed +% 25, gx, gz) * 4));
                 w.tree(x, h + 1, z, trunk, seed +% @as(u32, @bitCast(gx * 977 + gz)));
@@ -382,7 +393,7 @@ pub const World = struct {
         while (i < trunk) : (i += 1) w.blocks[index(x, y + i, z)] = .palm;
     }
 
-    /// Grass and ferns about the island, and meadows: grass with patches
+    /// Grass and elephant ears about the island, and meadows: grass with patches
     /// of flowers, each patch its own colour.
     fn growPlants(w: *World) void {
         const seed = w.seed;
@@ -404,7 +415,7 @@ pub const World = struct {
                     if (r < 0.8) break :blk .tall_grass;
                     continue;
                 } else if (r < 0.012)
-                    .fern
+                    .elephant_ear
                 else if (r < meadow * 0.35)
                     .tall_grass
                 else
@@ -431,7 +442,7 @@ pub const World = struct {
                 const x: i32 = @intFromFloat(centre[0] + @cos(a) * r);
                 const z: i32 = @intFromFloat(centre[1] + @sin(a) * r);
                 const h = heights[@intCast(z * size_x + x)];
-                if (h < sea_level) break;
+                if (h < sea_level - 1) break;
                 if (w.get(x, h, z) == .sand and w.get(x, h + 1, z) == .air) {
                     sand += 1;
                     edge = .{ x, z };
@@ -657,7 +668,7 @@ test "the island: land in the middle, sea at the edges, a beach, trees and plant
     for (w.blocks) |b| counts.getPtr(b).* += 1;
     try testing.expect(land > 3000 and land < 12000);
     try testing.expect(highest > sea_level + 16);
-    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .fern, .volcanic_rock }) |b| try testing.expect(counts.get(b) > 0);
+    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .elephant_ear, .volcanic_rock, .coral }) |b| try testing.expect(counts.get(b) > 0);
     var flowers: usize = 0;
     for (Block.flowers) |b| flowers += counts.get(b);
     try testing.expect(flowers > 0);
