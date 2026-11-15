@@ -1,6 +1,6 @@
 //! The world: 128 by 128 blocks across and 64 high, in a sea that goes on
 //! past its edges (drawn, but not made of blocks). It starts as an island,
-//! made from a seed: beaches, hills, a mountain with snow, trees, grass
+//! made from a seed: beaches, hills, a volcano, palms, grass
 //! and flowers, and the sea bed around.
 //!
 //! Each block has light too, as Minecraft does it, from 0 to 15: sunlight
@@ -316,15 +316,14 @@ pub const World = struct {
                 for ([_][2]i32{ .{ 1, 0 }, .{ -1, 0 }, .{ 0, 1 }, .{ 0, -1 } }) |d| slope = @max(slope, @as(i32, @intCast(@abs(hAt(heights, x + d[0], z + d[1]) - h))));
                 const fx: f32 = @floatFromInt(x);
                 const fz: f32 = @floatFromInt(z);
-                const patch = fbm(seed +% 7, fx / 9, fz / 9, 2);
-                const snow_line: i32 = 47 + @as(i32, @intFromFloat(fbm(seed +% 11, fx / 7, fz / 7, 2) * 4));
+                const bare_line: i32 = 47 + @as(i32, @intFromFloat(fbm(seed +% 11, fx / 7, fz / 7, 2) * 4));
                 // The top few blocks, and what is under them.
                 const surface: [2]Block, const depth: i32 = if (h < sea_level - 1)
-                    .{ .{ if (patch > 0.62) .gravel else if (patch < 0.3) .clay else .sand, .sand }, 2 }
+                    .{ .{ .sand, .sand }, 2 }
                 else if (h <= sea_level + 1)
                     .{ .{ .sand, .sand }, 3 }
-                else if (h >= snow_line)
-                    .{ .{ if (slope <= 2) .snow else .volcanic_rock, .volcanic_rock }, 1 }
+                else if (h >= bare_line)
+                    .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
                 else if (slope >= 3 and h > sea_level + 4)
                     .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
                 else
@@ -623,7 +622,7 @@ test "the island: land in the middle, sea at the edges, a beach, trees and plant
     for (w.blocks) |b| counts.getPtr(b).* += 1;
     try testing.expect(land > 3000 and land < 12000);
     try testing.expect(highest > sea_level + 16);
-    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .fern, .snow, .volcanic_rock }) |b| try testing.expect(counts.get(b) > 0);
+    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .fern, .volcanic_rock }) |b| try testing.expect(counts.get(b) > 0);
     var flowers: usize = 0;
     for (Block.flowers) |b| flowers += counts.get(b);
     try testing.expect(flowers > 0);
@@ -753,10 +752,22 @@ test "removed kinds of block are read as the ones most like them" {
     defer w.destroy();
     w.blocks[World.index(5, 30, 5)] = .iron;
     w.blocks[World.index(6, 30, 5)] = .gold;
+    w.blocks[World.index(7, 30, 5)] = .snow;
+    w.blocks[World.index(8, 30, 5)] = .clay;
+    w.blocks[World.index(9, 30, 5)] = .gravel;
+    w.blocks[World.index(10, 30, 5)] = .planks;
+    w.blocks[World.index(11, 30, 5)] = .volcanic_bricks;
+    w.blocks[World.index(12, 30, 5)] = .coral_stone;
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
     try w.encode(&out, testing.allocator);
     _ = try w.decode(out.items);
-    try testing.expectEqual(Block.volcanic_bricks, w.get(5, 30, 5));
+    try testing.expectEqual(Block.volcanic_wall, w.get(5, 30, 5));
     try testing.expectEqual(Block.yellow, w.get(6, 30, 5));
+    try testing.expectEqual(Block.volcanic_rock, w.get(7, 30, 5));
+    try testing.expectEqual(Block.sand, w.get(8, 30, 5));
+    try testing.expectEqual(Block.sand, w.get(9, 30, 5));
+    try testing.expectEqual(Block.sticks, w.get(10, 30, 5));
+    try testing.expectEqual(Block.volcanic_wall, w.get(11, 30, 5));
+    try testing.expectEqual(Block.sandstone, w.get(12, 30, 5));
 }

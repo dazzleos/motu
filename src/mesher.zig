@@ -535,7 +535,7 @@ fn expectWound(list: []const Vertex) !void {
 test "a lone block: six faces, wound to face out, lit and unshaded" {
     const w = try emptyWorld();
     defer w.destroy();
-    _ = w.set(5, 30, 5, .sandstone_bricks);
+    _ = w.set(5, 30, 5, .volcanic_wall);
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
@@ -550,7 +550,7 @@ test "a lone block: six faces, wound to face out, lit and unshaded" {
         const i = Info.unpack(bricks[q].info);
         faces |= @as(u8, 1) << @intFromEnum(i.face);
         try testing.expectEqual(@as(u2, 0), i.ao);
-        try testing.expectEqual(@intFromEnum(Block.sandstone_bricks.tile(i.face)), i.tile);
+        try testing.expectEqual(@intFromEnum(Block.volcanic_wall.tile(i.face)), i.tile);
     }
     try testing.expectEqual(@as(u8, 63), faces);
     // Lit by the sky all round (under it, by what spreads in from the

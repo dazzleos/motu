@@ -744,7 +744,7 @@ test "beacons, changes and players, there and back" {
     try testing.expect(parseBeacon("DZBN") == null);
     try testing.expect(parseBeacon("XXXX\x01\x00\x00\x00\x00\x00\x00a") == null);
 
-    const e: game_mod.Edit = .{ .cell = .{ 10, 31, 127 }, .block = .sandstone_bricks };
+    const e: game_mod.Edit = .{ .cell = .{ 10, 31, 127 }, .block = .volcanic_wall };
     try testing.expectEqual(e, decodeEdit(&encodeEdit(e)).?);
     // Outside the world, or not a block: not taken.
     try testing.expect(decodeEdit(&encodeEdit(.{ .cell = .{ 128, 0, 0 }, .block = .volcanic_rock })) == null);
@@ -822,7 +822,7 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
     try pair.init();
     defer pair.deinit();
     // Something built on the host before: the guest gets it with the world.
-    _ = pair.ga.edit(.{ 20, 31, 20 }, .coral_stone);
+    _ = pair.ga.edit(.{ 20, 31, 20 }, .thatch);
 
     // Heard: the host is nearby (and the guest is to it).
     _ = try pair.until(struct {
@@ -852,18 +852,18 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
         }
     }.f);
     try testing.expect(joined != null and joined.? == .joined);
-    try testing.expectEqual(blocks.Block.coral_stone, pair.gb.world.get(20, 31, 20));
+    try testing.expectEqual(blocks.Block.thatch, pair.gb.world.get(20, 31, 20));
     try testing.expectEqual(@as(u8, 1), pair.ga.net.status.hosting);
     try testing.expect(pair.ga.net.request == null);
     // The guest stands beside the host.
     try testing.expect(math.length(pair.gb.player.pos - pair.ga.player.pos) < 2);
 
     // Changes on either side reach the other.
-    _ = pair.ga.edit(.{ 30, 31, 30 }, .sandstone_bricks);
+    _ = pair.ga.edit(.{ 30, 31, 30 }, .volcanic_wall);
     _ = pair.gb.edit(.{ 40, 31, 40 }, .lamp);
     _ = try pair.until(struct {
         fn f(p: *Pair) bool {
-            return p.gb.world.get(30, 31, 30) == .sandstone_bricks and p.ga.world.get(40, 31, 40) == .lamp;
+            return p.gb.world.get(30, 31, 30) == .volcanic_wall and p.ga.world.get(40, 31, 40) == .lamp;
         }
     }.f);
 

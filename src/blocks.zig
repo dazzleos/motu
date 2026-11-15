@@ -16,21 +16,28 @@ pub const Block = enum(u8) {
     volcanic_wall,
     sand,
     sandstone,
+    /// Removed: read as sand (see `current`).
     gravel,
+    /// Removed: read as sand.
     clay,
+    /// Removed: read as volcanic rock.
     snow,
     water,
     /// A palm's trunk: a round pole, with fronds and coconuts at its top.
     palm,
+    /// Removed: read as stick wall.
     planks,
     leaves,
+    /// Removed: read as stick wall.
     dark_planks,
     glass,
+    /// Removed: read as sandstone.
     sandstone_bricks,
+    /// Removed: read as volcanic wall.
     volcanic_bricks,
     thatch,
     plaster,
-    /// Removed: read as volcanic bricks (see `current`).
+    /// Removed: read as volcanic wall.
     iron,
     /// Removed: read as yellow paint.
     gold,
@@ -58,7 +65,12 @@ pub const Block = enum(u8) {
     /// Grass with flat round stones set in it, for paths: the stones join
     /// up with the next paving's.
     paving,
+    /// Removed: read as sandstone.
     coral_stone,
+    /// Straight poles side by side, lashed together, for walls.
+    sticks,
+    /// Living coral, for reefs.
+    coral,
     _,
 
     pub const Shape = enum {
@@ -78,7 +90,7 @@ pub const Block = enum(u8) {
 
     pub fn shape(b: Block) Shape {
         return switch (b) {
-            .air, .iron, .gold => .none,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone => .none,
             .water => .water,
             .glass => .clear,
             .palm => .pole,
@@ -141,18 +153,12 @@ pub const Block = enum(u8) {
             .volcanic_wall => .volcanic_wall,
             .sand => .sand,
             .sandstone => if (top or bottom) .sandstone_top else .sandstone_side,
-            .gravel => .gravel,
-            .clay => .clay,
-            .snow => .snow,
             .palm => .palm_bark,
-            .planks => .planks,
             .leaves => .leaves,
-            .dark_planks => .dark_planks,
             .glass => .glass,
-            .sandstone_bricks => .sandstone_bricks,
-            .volcanic_bricks => .volcanic_bricks,
             .thatch => .thatch,
-            .coral_stone => .coral_stone,
+            .coral => .coral,
+            .sticks => if (top or bottom) .sticks_top else .sticks_side,
             .plaster => .plaster,
             .lamp => .lamp,
             .bookshelf => if (top or bottom) .planks else .bookshelf,
@@ -176,7 +182,7 @@ pub const Block = enum(u8) {
             .white_flower => .white_flower,
             .orange_flower => .orange_flower,
             .water => .water,
-            .air, .iron, .gold, _ => .volcanic_rock,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, _ => .volcanic_rock,
         };
     }
 
@@ -189,17 +195,10 @@ pub const Block = enum(u8) {
             .volcanic_wall => "Volcanic wall",
             .sand => "Sand",
             .sandstone => "Sandstone",
-            .gravel => "Gravel",
-            .clay => "Clay",
-            .snow => "Snow",
             .water => "Water",
             .palm => "Palm",
-            .planks => "Planks",
             .leaves => "Leaves",
-            .dark_planks => "Dark planks",
             .glass => "Glass",
-            .sandstone_bricks => "Sandstone bricks",
-            .volcanic_bricks => "Volcanic bricks",
             .thatch => "Thatch",
             .plaster => "Plaster",
             .lamp => "Lamp",
@@ -224,22 +223,27 @@ pub const Block = enum(u8) {
             .white_flower => "White flowers",
             .orange_flower => "Orange flowers",
             .paving => "Paving stones",
-            .coral_stone => "Coral stone",
-            .iron, .gold, _ => "?",
+            .sticks => "Stick wall",
+            .coral => "Coral",
+            .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, _ => "?",
         };
     }
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.coral_stone) and b.current() == b;
+        return @intFromEnum(b) <= @intFromEnum(Block.coral) and b.current() == b;
     }
 
     /// What a block is now: a kind that was removed is read as the one
     /// most like it.
     pub fn current(b: Block) Block {
         return switch (b) {
-            .iron => .volcanic_bricks,
+            .iron, .volcanic_bricks => .volcanic_wall,
+            .sandstone_bricks, .coral_stone => .sandstone,
+            .planks, .dark_planks => .sticks,
             .gold => .yellow,
+            .gravel, .clay => .sand,
+            .snow => .volcanic_rock,
             else => b,
         };
     }
@@ -263,8 +267,8 @@ pub const Section = struct {
 };
 
 pub const sections = [_]Section{
-    .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .gravel, .clay, .snow, .water } },
-    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .volcanic_bricks, .sandstone_bricks, .coral_stone, .paving, .planks, .dark_planks, .plaster, .thatch, .glass, .lamp, .bookshelf } },
+    .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .water, .coral } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .plaster, .thatch, .glass, .lamp, .bookshelf } },
     .{ .name = "Plants", .blocks = &.{ .palm, .leaves, .fern, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
@@ -290,7 +294,7 @@ pub const palette = blk: {
 };
 
 /// The hotbar's blocks to start with.
-pub const starting_hotbar = [9]Block{ .grass, .volcanic_rock, .planks, .palm, .glass, .sandstone_bricks, .thatch, .lamp, .pink_flower };
+pub const starting_hotbar = [9]Block{ .grass, .volcanic_rock, .sticks, .palm, .glass, .volcanic_wall, .thatch, .lamp, .pink_flower };
 
 /// A cube's faces, by the direction they face: +x, -x, +y (up), -y, +z, -z.
 pub const Face = enum(u3) {
@@ -329,9 +333,8 @@ pub const Tile = enum(u6) {
     sand,
     sandstone_top,
     sandstone_side,
-    gravel,
-    clay,
-    snow,
+    sticks_top,
+    coral,
     palm_bark,
     frond,
     coconut,
@@ -341,10 +344,7 @@ pub const Tile = enum(u6) {
     // Building.
     volcanic_wall = 16,
     planks,
-    dark_planks,
     glass,
-    sandstone_bricks,
-    volcanic_bricks,
     thatch,
     plaster,
     lamp,
@@ -352,7 +352,7 @@ pub const Tile = enum(u6) {
     /// For water's icon (the water itself is drawn by its own shader).
     water,
     leaves,
-    coral_stone,
+    sticks_side,
     // Colours.
     white = 32,
     black,
@@ -402,7 +402,7 @@ test "every block that can be placed has a name and its own look" {
     }
     for (std.enums.values(Tile)) |t| try std.testing.expect(t.strip() < Tile.strips);
     // What the island is made of is all in the first strip.
-    for ([_]Block{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .gravel, .clay, .snow, .palm, .tall_grass, .fern }) |b|
+    for ([_]Block{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .palm, .tall_grass, .fern }) |b|
         for (Face.all) |f| try std.testing.expectEqual(@as(u2, 0), b.tile(f).strip());
     try std.testing.expectEqual(Tile.grass_top, Block.grass.tile(.up));
     try std.testing.expectEqual(Tile.grass_side, Block.grass.tile(.north));

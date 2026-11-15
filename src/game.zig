@@ -687,9 +687,9 @@ test "keys: walking, choosing, flying, the palette" {
     try testing.expect(!g.player.flying);
     g.key(.e, true);
     try testing.expect(g.palette_open);
-    g.pickFromPalette(.coral_stone);
+    g.pickFromPalette(.thatch);
     try testing.expect(!g.palette_open);
-    try testing.expectEqual(Block.coral_stone, g.selected());
+    try testing.expectEqual(Block.thatch, g.selected());
     // A day goes by.
     const t = g.time_of_day;
     g.tick(day_length / 4);
@@ -761,14 +761,14 @@ test "the host saves, the guests' changes too; a game joined is not saved here" 
     defer g.world.destroy();
     defer g.deinit();
     g.net.status = .{ .hosting = 1 };
-    g.editFromNetwork(.{ .cell = .{ 10, 31, 10 }, .block = .sandstone_bricks });
+    g.editFromNetwork(.{ .cell = .{ 10, 31, 10 }, .block = .volcanic_wall });
     try testing.expect(g.wantsSave());
     g.unsaved = false;
     _ = g.edit(.{ 11, 31, 10 }, .lamp);
     try testing.expect(g.wantsSave());
     // Joined: changes, but not this computer's world to save.
     g.net.status = .{ .joined = "host-pi" };
-    _ = g.edit(.{ 12, 31, 10 }, .coral_stone);
+    _ = g.edit(.{ 12, 31, 10 }, .thatch);
     try testing.expect(g.unsaved and !g.wantsSave());
 }
 

@@ -189,21 +189,65 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const c = mix(rgb(0xc9ae78), rgb(0xe3cd98), layer);
             break :blk tx(scale(c, 0.95 - band * 0.12 + (wear - 0.5) * 0.1 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.04), layer * 1.5 - band + wear);
         },
-        .gravel => blk: {
-            const c = cellsAt(u, v, 10, s);
-            const tone = hash(@intCast(c.id), 0, s);
-            const gap = smoothstep(0.08, 0, c.d2 - c.d1);
-            const dome = @max(0, 1 - c.d1 / 0.6);
-            break :blk tx(scale(mix(rgb(0x6f6a62), rgb(0xb0a99e), tone), 1 - gap * 0.45), 2.5 * @sqrt(dome) - gap);
+        .sticks_side => blk: {
+            // Straight poles standing side by side, eight a block, round
+            // (lit across), each its own tone, with dark gaps between, and
+            // two bands of rope lashing them together.
+            const pole = @floor(x / 8);
+            const across = (@mod(x, 8) - 4) / 4;
+            const round = @sqrt(@max(0, 1 - across * across));
+            const id: i32 = @intFromFloat(pole);
+            const tone = hash(id, 0, s);
+            const knot = smoothstep(0.03, 0, @abs(v - hash(id, 1, s))) * 0.25;
+            const grain = noise(u * 0.5, v * 4, 16, s +% @as(u32, @intCast(id)));
+            const wood = scale(mix(rgb(0x7a5a34), rgb(0xa88452), tone), (0.55 + 0.45 * round) * (0.92 + grain * 0.12) * (1 - knot));
+            const band = @abs(y - 14) < 2.5 or @abs(y - 50) < 2.5;
+            if (band) {
+                const twist = 0.85 + 0.15 * @sin((x + y) * 1.6);
+                break :blk tx(scale(rgb(0xb89a62), twist * (0.75 + 0.25 * round)), 4 + round);
+            }
+            if (round < 0.35) break :blk tx(scale(rgb(0x2a1e12), 0.8 + round), -1);
+            break :blk tx(wood, 3 * round + grain * 0.3);
         },
-        .clay => blk: {
-            const body = fbm(u, v, 4, 3, s);
-            break :blk tx(scale(mix(rgb(0x949aa8), rgb(0xadb2be), body), 0.97 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.04), body);
+        .coral => blk: {
+            // Colonies of living coral side by side, each its own colour
+            // and kind: brain coral (wandering ridges), polyps (dots in
+            // a mesh) or branching (the ends of its branches), domed,
+            // with shadow between them.
+            const c = cellsAt(u, v, 3, s);
+            const id: u32 = c.id;
+            const gap = smoothstep(0.1, 0.02, c.d2 - c.d1);
+            if (gap > 0.95) break :blk tx(rgb(0x2a2030), -2);
+            const colours = [_]u24{ 0xe86a8a, 0xf08a4a, 0x9a6ad0, 0xe8c44a, 0x5ac0b0, 0xd8506a, 0xf4a0c0 };
+            const base = rgb(colours[@intFromFloat(hash(@intCast(id), 1, s) * colours.len)]);
+            const dome = @max(0, 1 - c.d1 / 0.7);
+            const kind = hash(@intCast(id), 2, s);
+            var detail: f32 = 0;
+            if (kind < 0.34) {
+                // Ridges wandering over it.
+                detail = smoothstep(0.25, 0, @abs(@mod(noise(u, v, 6, s +% id) * 9, 1) - 0.5) - 0.2);
+            } else if (kind < 0.67) {
+                // Polyps.
+                const p = cellsAt(u, v, 14, s +% id);
+                detail = smoothstep(0.32, 0.18, p.d1);
+            } else {
+                // Branch ends: round tips, lighter, with dark between.
+                const p = cellsAt(u, v, 8, s +% id +% 9);
+                detail = -smoothstep(0.3, 0.45, p.d1) + smoothstep(0.2, 0, p.d1) * 0.6;
+            }
+            const col = scale(mix(base, rgb(0xffffff), @max(detail, 0) * 0.25), (0.7 + 0.35 * dome) * (1 - gap * 0.6) * (1 + @min(detail, 0) * 0.45));
+            break :blk tx(col, 3 * @sqrt(dome) + detail * 1.5 - gap * 2);
         },
-        .snow => blk: {
-            const drift = fbm(u, v, 4, 3, s);
-            const sparkle: f32 = if (hash(@intFromFloat(x), @intFromFloat(y), s) > 0.985) 0.08 else 0;
-            break :blk tx(scale(mix(rgb(0xdbe6f2), rgb(0xf8fbff), drift), 1 + sparkle), drift * 2.5);
+        .sticks_top => blk: {
+            // The poles' ends: rings of wood, in rows.
+            const cx = @mod(x, 8) - 4;
+            const cy = @mod(y, 8) - 4;
+            const r = @sqrt(cx * cx + cy * cy) / 4;
+            if (r > 0.92) break :blk tx(rgb(0x2a1e12), -1);
+            if (r > 0.75) break :blk tx(scale(rgb(0x5a4026), 0.9), 1.5);
+            const id: i32 = @intFromFloat(@floor(x / 8) + @floor(y / 8) * 8);
+            const ring = 0.5 + 0.5 * @cos(r * 14);
+            break :blk tx(scale(mix(rgb(0xa47d4c), rgb(0xc89e68), ring), 0.88 + hash(id, 2, s) * 0.18), 2 - r);
         },
         .palm_bark => blk: {
             // A palm's trunk: grey-brown, ringed where old fronds fell,
@@ -251,7 +295,6 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk tx(scale(st.c, tone * (1.05 - 0.25 * c.d1) * (1 - gap * 0.7)), 5 * @sqrt(dome) * (1 - gap) + st.h * 0.3);
         },
         .planks => planks(u, v, x, y, rgb(0xa9814c), s),
-        .dark_planks => planks(u, v, x, y, rgb(0x5e412a), s),
         .glass => blk: {
             const edge = @min(@min(x, y), @min(n - x, n - y));
             if (edge < 3) break :blk .{ .c = rgb(0xd8e8ee), .a = 0.95, .h = 1.5 };
@@ -259,35 +302,6 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const d = @mod(x + y, 64);
             const streak = smoothstep(3, 0, @abs(d - 18)) * 0.6 + smoothstep(1.5, 0, @abs(d - 26)) * 0.4;
             break :blk .{ .c = mix(rgb(0xbfdfeb), rgb(0xffffff), streak), .a = 0.1 + streak * 0.45 };
-        },
-        .sandstone_bricks => blk: {
-            // Big cut blocks of sandstone, two rows a tile, laid across
-            // the joints below; their layers show.
-            const row = @floor(y / 32);
-            const off: f32 = if (@mod(row, 2) == 0) 0 else 24;
-            const bx = @mod(x + off, 48);
-            const by = @mod(y, 32);
-            const grit = noise(u, v, 32, s +% 1) - 0.5;
-            if (bx < 1.5 or by < 1.5) break :blk tx(scale(rgb(0xb8a67e), 0.8 + grit * 0.2), -1);
-            const id: i32 = @intFromFloat(@floor((x + off) / 48) + row * 3);
-            const tone = 0.9 + hash(@mod(id, 64), 3, s) * 0.14;
-            const layer = fbm(0.1, v * 1.5 + noise(u, v, 4, s) * 0.04, 8, 2, s +% @as(u32, @intCast(@mod(id, 64))));
-            const body = mix(rgb(0xd4b47a), rgb(0xecd5a0), layer);
-            const edge = @min(@min(bx - 1.5, 47 - bx), @min(by - 1.5, 31 - by));
-            const grain = (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.06;
-            break :blk tx(scale(body, tone + grit * 0.06 + grain), 3 * smoothstep(0, 2.5, edge) + layer + grit * 0.5);
-        },
-        .volcanic_bricks => blk: {
-            // Cut blocks of basalt, fitted tight.
-            const row = @floor(y / 32);
-            const off: f32 = if (@mod(row, 2) == 0) 0 else 16;
-            const bx = @mod(x + off, 32);
-            const by = @mod(y, 32);
-            if (bx < 1.5 or by < 1.5) break :blk tx(rgb(0x1e1c1a), -1);
-            const id: i32 = @intFromFloat(@floor((x + off) / 32) + row * 2);
-            const st = volcanic(u, v, s +% @as(u32, @intCast(@mod(id, 64))));
-            const edge = @min(@min(bx - 1.5, 31 - bx), @min(by - 1.5, 31 - by));
-            break :blk tx(scale(st.c, 0.92 + hash(id, 4, s) * 0.2), 3 * smoothstep(0, 3, edge) + st.h * 0.4);
         },
         .thatch => blk: {
             // Bundles of dried palm and grass laid in rows, each row
@@ -305,27 +319,6 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const strand = 0.85 + 0.15 * @sin(sx * 4.2);
             const c = mix(rgb(0x9a7a3e), rgb(0xd8b866), tone);
             break :blk tx(scale(mix(c, rgb(0x7a6a4a), smoothstep(0.7, 1, noise(u, v, 4, s)) * 0.4), shade * strand), ry * 0.25 + tone * 0.6);
-        },
-        .coral_stone => blk: {
-            // Blocks cut from old reef: pale, full of small holes and the
-            // shapes of coral, with lime mortar between.
-            const row = @floor(y / 32);
-            const off: f32 = if (@mod(row, 2) == 0) 0 else 20;
-            const bx = @mod(x + off, 40);
-            const by = @mod(y, 32);
-            const grit = noise(u, v, 32, s +% 1) - 0.5;
-            if (bx < 2 or by < 2) break :blk tx(scale(rgb(0xd6d0c0), 0.85 + grit * 0.2), -1);
-            const body = fbm(u, v, 4, 3, s);
-            const base = mix(rgb(0xe0c89c), rgb(0xf6e4bc), body);
-            // Holes, many and small.
-            const hole = cellsAt(u, v, 16, s +% 3);
-            const holed = hash(@intCast(hole.id), 4, s) < 0.45;
-            const in_hole = if (holed) smoothstep(0.22, 0.1, hole.d1) else 0;
-            // Coral: rings of small cells in places.
-            const coral = cellsAt(u, v, 6, s +% 5);
-            const ring = smoothstep(0.36, 0.46, @abs(@mod(coral.d1 * 9, 1) - 0.5)) * smoothstep(0.55, 0.65, hash(@intCast(coral.id), 6, s)) * smoothstep(0.5, 0.3, coral.d1);
-            const edge = @min(@min(bx - 2, 39 - bx), @min(by - 2, 31 - by));
-            break :blk tx(scale(base, (0.92 + grit * 0.1) * (1 - in_hole * 0.4) * (1 - ring * 0.12)), 2.5 * smoothstep(0, 3, edge) + body - in_hole * 1.8 - ring * 0.6);
         },
         .plaster => blk: {
             const body = fbm(u, v, 4, 3, s);
@@ -699,7 +692,7 @@ test "every tile is in its strip, opaque except where things are see-through, an
 
 test "icons show the cube's three faces, or the plant" {
     var px: [icon_size * icon_size]Pixel = undefined;
-    icon(.sandstone_bricks, &px);
+    icon(.volcanic_wall, &px);
     try std.testing.expect(px[10 * icon_size + 24] >> 24 == 0xff);
     try std.testing.expect(px[28 * icon_size + 10] >> 24 == 0xff);
     try std.testing.expect(px[28 * icon_size + 38] >> 24 == 0xff);
