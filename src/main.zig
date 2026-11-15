@@ -443,9 +443,6 @@ fn run(init: std.process.Init) !void {
     input.win = win.win;
     // Fullscreen to start with (the menu's button leaves it).
     win.setFullscreen(true);
-    // The world drawn smaller (the quality chosen), the widgets over it
-    // stay sharp.
-    win.layered = true;
 
     var last = sys.nowNs();
     var last_save = last;
@@ -533,6 +530,12 @@ fn run(init: std.process.Init) !void {
         // Drawn as big as the quality chosen: the shell (or the display)
         // stretches it to the window's size.
         win.win.render_scale = game.quality;
+        // The widgets drawn sharp, on a layer over the world, while the
+        // menu or the palette is open, or in a window (its title bar).
+        // Playing on the whole screen, there is only the world (the hotbar
+        // drawn with it): the display shows it as it is, with no layer to
+        // read as well.
+        win.layered = game.menu_open or game.palette_open or !win.win.fullscreen;
         // While "what is drawn" shows, the GPU's time on each part is
         // measured: the frames are drawn one at a time, each waited for.
         if (game.stats != measuring) {
