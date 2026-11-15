@@ -17,13 +17,16 @@
 //!                                           down; walking: creep
 //!     the mouse                             look around
 //!     click                                 take a block away
-//!     right click                           place a block
+//!     right click                           place a block; on a canoe,
+//!                                           get in it
 //!     middle click                          take that kind of block
 //!     1 to 9, or the wheel                  choose a block from the hotbar
 //!     E                                     all the blocks
 //!     F1                                    hide the hotbar (and the cross)
 //!     Esc                                   the menu (the game goes on)
 //!     Y, N                                  let someone join, or not
+//!
+//! In a canoe: W and S paddle, A and D turn, Shift gets out (see boat.zig).
 //!
 //! The game starts in the menu, which has the options; leaving it takes
 //! the mouse (it turns the view), and Esc gives it back with the menu.
@@ -39,6 +42,8 @@ const blocks = @import("blocks.zig");
 const weather_mod = @import("weather.zig");
 const world_mod = @import("world.zig");
 const player_mod = @import("player.zig");
+const boat_mod = @import("boat.zig");
+const furniture = @import("furniture.zig");
 const math = @import("math.zig");
 
 const Block = blocks.Block;
@@ -127,6 +132,8 @@ pub const Game = struct {
     gpa: std.mem.Allocator,
     world: *World,
     player: Player,
+    /// The canoe the player is in, being paddled.
+    boat: ?boat_mod.Boat = null,
     hotbar: [9]Block = blocks.starting_hotbar,
     slot: u8 = 0,
     /// Through the day, from 0 (midnight) to 1; 0.5 is noon.
@@ -242,7 +249,9 @@ pub const Game = struct {
         }
         switch (code) {
             .digit_1, .digit_2, .digit_3, .digit_4, .digit_5, .digit_6, .digit_7, .digit_8, .digit_9 => g.choose(@intCast(@intFromEnum(code) - @intFromEnum(kete.KeyboardKey.digit_1))),
+            .left_shift, .right_shift => g.leaveBoat(),
             .space => {
+                if (g.boat != null) return;
                 if (g.space_at) |at| if (g.clock - at <= double_tap) {
                     g.player.flying = !g.player.flying;
                     g.player.vel[1] = 0;
@@ -332,6 +341,7 @@ pub const Game = struct {
     pub fn joinWorld(g: *Game, data: []const u8, pos: V3, yaw: f32, time: f32, day: u32) !void {
         _ = try g.world.decode(data);
         g.player = .{ .pos = pos, .yaw = yaw };
+        g.boat = null;
         g.time_of_day = @mod(time, 1);
         g.day = day;
         g.target = null;
@@ -512,6 +522,7 @@ pub const Game = struct {
     /// Puts the block chosen against the face pointed at.
     pub fn place(g: *Game) bool {
         const t = g.target orelse return false;
+        if (g.boat == null and g.world.get(t.cell[0], t.cell[1], t.cell[2]) == .canoe) return g.board(t.cell);
         const b = g.selected();
         if (b.isSolid() and player_mod.blocksPlayer(&g.player, t.before)) return false;
         // Plants need ground.
@@ -524,6 +535,36 @@ pub const Game = struct {
         // Seagrass grows only under water.
         if (b == .seagrass and there != .water) return false;
         return g.edit(t.before, b);
+    }
+
+    /// Gets into the canoe at `cell`: takes it out of the world, to
+    /// paddle.
+    pub fn board(g: *Game, cell: world_mod.Pos) bool {
+        const b = boat_mod.Boat.of(g.world, cell);
+        const r = furniture.canoeRow(g.world, cell);
+        var k: i32 = 0;
+        while (k < r.len) : (k += 1) _ = g.edit(r.cell(k), .air);
+        g.boat = b;
+        g.player.flying = false;
+        g.player.vel = .{ 0, 0, 0 };
+        g.player.pos = b.seat();
+        g.say("Shift to get out");
+        return true;
+    }
+
+    /// Gets out of the canoe: puts it back as blocks, standing on it.
+    pub fn leaveBoat(g: *Game) void {
+        const b = g.boat orelse return;
+        if (!b.canLeave(g.world)) {
+            g.say("No room to leave the canoe here");
+            return;
+        }
+        const r = b.row();
+        var k: i32 = 0;
+        while (k < r.len) : (k += 1) _ = g.edit(r.cell(k), .canoe);
+        g.boat = null;
+        g.player.vel = .{ 0, 0, 0 };
+        g.player.pos = .{ b.pos[0], @as(f32, @floatFromInt(r.start[1])) + 0.51, b.pos[2] };
     }
 
     /// Takes away the block pointed at (and a plant on top of it).
@@ -594,15 +635,20 @@ pub const Game = struct {
             if (g.held.contains(.right)) turn += 1;
         }
         if (turn != 0) g.player.look(turn * turn_speed * dt, 0);
-        g.player.update(g.world, if (g.menu_open) .{} else g.controls(), dt);
+        const c: player_mod.Controls = if (g.menu_open) .{} else g.controls();
+        if (g.boat) |*b| {
+            b.update(g.world, c, dt);
+            g.player.pos = b.seat();
+            g.player.vel = .{ 0, 0, 0 };
+        } else g.player.update(g.world, c, dt);
         g.updateTarget();
     }
 
     // --- Saving ---------------------------------------------------------------------------
 
     const magic = "DZBG";
-    /// 2: the day, at the end.
-    const version = 2;
+    /// 2: the day, at the end. 3: then the canoe the player is in.
+    const version = 3;
 
     /// The world, then the player and the hotbar.
     pub fn encode(g: *const Game, out: *std.ArrayList(u8)) !void {
@@ -621,6 +667,14 @@ pub const Game = struct {
         var d: [4]u8 = undefined;
         std.mem.writeInt(u32, &d, g.day, .little);
         try out.appendSlice(g.gpa, &d);
+        // The canoe: its length (0: none), where and which way.
+        const b = g.boat orelse return out.append(g.gpa, 0);
+        try out.append(g.gpa, b.len);
+        for ([_]f32{ b.pos[0], b.pos[1], b.pos[2], b.yaw }) |v| {
+            var bytes: [4]u8 = undefined;
+            std.mem.writeInt(u32, &bytes, @bitCast(v), .little);
+            try out.appendSlice(g.gpa, &bytes);
+        }
     }
 
     /// The weather now (see weather.zig).
@@ -649,6 +703,19 @@ pub const Game = struct {
             h.* = if (blk.isValid() and blk != .air) blk else .volcanic_rock;
         }
         g.slot = rest[39] % 9;
+        g.boat = null;
+        if (rest[4] >= 3 and rest.len >= 45 and rest[44] > 0) {
+            if (rest.len < 45 + 16 or rest[44] > furniture.most_canoe) return error.Corrupt;
+            var bf: [4]f32 = undefined;
+            for (&bf, 0..) |*v, i| {
+                v.* = @bitCast(std.mem.readInt(u32, rest[45 + i * 4 ..][0..4], .little));
+                if (!std.math.isFinite(v.*)) return error.Corrupt;
+            }
+            var b: boat_mod.Boat = .{ .pos = .{ bf[0] + @as(f32, @floatFromInt(moved[0])), bf[1], bf[2] + @as(f32, @floatFromInt(moved[1])) }, .yaw = bf[3], .len = rest[44] };
+            b.sink = if (b.onWater(g.world)) furniture.float_depth else 0;
+            g.boat = b;
+            g.player.pos = b.seat();
+        }
         g.unsaved = false;
     }
 };
@@ -947,4 +1014,40 @@ test "keys as Minecraft's: W twice sprints till let go, Shift goes down, F1 hide
     g.key(.left_shift, false);
     g.key(.f1, true);
     try testing.expect(g.hud_hidden);
+}
+
+test "a canoe: right click gets in, W paddles, it is saved with the player, Shift gets out" {
+    var g = try testGame();
+    defer g.world.destroy();
+    for ([_]i32{ 60, 61, 62 }) |x| _ = g.world.set(x, 31, 50, .canoe);
+    g.target = .{ .cell = .{ 61, 31, 50 }, .before = .{ 61, 32, 50 }, .face = .up };
+    try testing.expect(g.place());
+    const b = g.boat.?;
+    try testing.expectEqual(@as(u8, 3), b.len);
+    for ([_]i32{ 60, 61, 62 }) |x| try testing.expectEqual(Block.air, g.world.get(x, 31, 50));
+    // Along x; dragged over the grass, slowly, the player with it.
+    g.key(.w, true);
+    for (0..60) |_| g.tick(1.0 / 30.0);
+    g.key(.w, false);
+    const moved = g.boat.?.pos[0] - b.pos[0];
+    try testing.expect(moved > 0.5 and moved < boat_mod.land_speed * 2 + 0.01);
+    try testing.expectApproxEqAbs(g.boat.?.pos[0], g.player.pos[0], 0.001);
+    // Saved and read back, still in it.
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try g.encode(&out);
+    g.boat = null;
+    try g.decode(out.items);
+    try testing.expectApproxEqAbs(g.boat.?.pos[0], b.pos[0] + moved, 0.001);
+    // Out: the canoe put back, where it got to.
+    for (0..30) |_| g.tick(1.0 / 30.0);
+    g.key(.left_shift, true);
+    g.key(.left_shift, false);
+    try testing.expect(g.boat == null);
+    var canoes: usize = 0;
+    for (58..66) |x| {
+        if (g.world.get(@intCast(x), 31, 50) == .canoe) canoes += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), canoes);
+    try testing.expect(g.player.pos[1] > 31.4);
 }

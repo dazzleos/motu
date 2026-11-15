@@ -47,6 +47,9 @@ pub const Other = struct {
     pos: V3,
     yaw: f32,
     colour: u3,
+    /// The canoe they are in (its length; 0 for none), and its way.
+    boat: u8 = 0,
+    boat_yaw: f32 = 0,
 };
 
 pub const Player = struct {

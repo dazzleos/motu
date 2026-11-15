@@ -30,6 +30,8 @@ const math = @import("math.zig");
 const textures = @import("textures.zig");
 const player_mod = @import("player.zig");
 const creatures = @import("creatures.zig");
+const boat_mod = @import("boat.zig");
+const furniture = @import("furniture.zig");
 const weather_mod = @import("weather.zig");
 
 const World = world_mod.World;
@@ -312,6 +314,8 @@ pub const View = struct {
     outline: ?world_mod.Pos = null,
     /// The other players.
     avatars: []const player_mod.Other = &.{},
+    /// Canoes being paddled (this player's, and the others').
+    boats: []const boat_mod.Shown = &.{},
     /// How far one sees, of `view_distance` (the fog nearer to match):
     /// less to draw.
     reach: f32 = 1,
@@ -356,6 +360,8 @@ pub fn Renderer(comptime Device: type) type {
         creatures_bo: [2]vc4.Bo,
         creatures_frame: u1 = 0,
         creatures: creatures.Creatures = .{},
+        /// Canoes as they move, by length (made when first wanted).
+        boat_meshes: [furniture.most_canoe]?BoatMesh = @splat(null),
         world: ?*const World = null,
         chunks: [world_mod.chunk_count]ChunkMesh = @splat(.{}),
         regions: [region_count]ChunkGpu = @splat(.{}),
@@ -459,11 +465,35 @@ pub fn Renderer(comptime Device: type) type {
             return r;
         }
 
+        /// A canoe `len` long, made the first time it is wanted.
+        fn boatMesh(r: *Self, len: u8) !BoatMesh {
+            if (r.boat_meshes[len - 1]) |m| return m;
+            var m: mesher.Mesh = .{};
+            defer m.deinit(r.gpa);
+            try furniture.canoeMesh(r.gpa, len, &m);
+            var out: BoatMesh = undefined;
+            var total: u32 = 0;
+            for (0..blocks.Tile.strips) |k| {
+                out.first[k] = total;
+                out.quads[k] = @intCast(m.items(.solid(@intCast(k))).len / 4);
+                total += out.quads[k];
+            }
+            out.bo = try r.dev.createBo(@max(total, 1) * 4 * @sizeOf(Vertex));
+            const verts = std.mem.bytesAsSlice(Vertex, out.bo.map[0 .. total * 4 * @sizeOf(Vertex)]);
+            for (0..blocks.Tile.strips) |k| {
+                const src = m.items(.solid(@intCast(k)));
+                @memcpy(verts[out.first[k] * 4 ..][0..src.len], src);
+            }
+            r.boat_meshes[len - 1] = out;
+            return out;
+        }
+
         pub fn deinit(r: *Self) void {
             for (&r.chunks) |*c| r.gpa.free(c.verts);
             for (&r.regions) |*g| if (g.bo) |bo| r.dev.destroyBo(bo);
             for (r.strips) |bo| r.dev.destroyBo(bo);
             for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.creatures_bo[0], r.creatures_bo[1] }) |bo| r.dev.destroyBo(bo);
+            for (r.boat_meshes) |m| if (m) |bm| r.dev.destroyBo(bm.bo);
             r.terrain.deinit(r.dev);
             r.terrain_blend.deinit(r.dev);
             r.water.deinit(r.dev);
@@ -652,7 +682,10 @@ pub fn Renderer(comptime Device: type) type {
             // (with the eye and the sun turned into its frame, for the fog
             // and the light).
             const figure_strip = blocks.Tile.red.strip();
-            for (v.avatars) |o| {
+            for (v.avatars) |o_in| {
+                // In a canoe: standing in it (see boat.zig).
+                var o = o_in;
+                if (o.boat > 0) o.pos[1] += boat_mod.seat_drop + 0.12;
                 if (math.length(o.pos - cam.eye) > depth + start) continue;
                 if (!frustum.sees(o.pos - V3{ 1, 0, 1 }, o.pos + V3{ 1, 2, 1 })) continue;
                 const turn = math.rotationY(o.yaw);
@@ -666,7 +699,26 @@ pub fn Renderer(comptime Device: type) type {
                 const offset = @as(u32, o.colour) * avatar_quads * 4 * @sizeOf(Vertex);
                 try target.quads(&r.terrain, r.avatars.handle, offset, avatar_quads, .{ tex[figure_strip], null, null });
             }
-            if (v.avatars.len > 0) r.terrain.setUniforms(bytes);
+            // Canoes, as the figures are.
+            for (v.boats) |b| {
+                if (b.len == 0 or b.len > furniture.most_canoe) continue;
+                if (math.length(b.pos - cam.eye) > depth + start) continue;
+                const reach_b = @as(f32, @floatFromInt(b.len)) / 2 + 1;
+                if (!frustum.sees(b.pos - V3{ reach_b, 1, reach_b }, b.pos + V3{ reach_b, 1, reach_b })) continue;
+                const bm = r.boatMesh(b.len) catch continue;
+                const turn = math.rotationY(b.yaw);
+                var at = scene;
+                at.mvp = math.mul(vp, math.mul(math.translation(b.pos), math.rotationY(-b.yaw)));
+                const eye = math.transform(turn, cam.eye - b.pos);
+                at.camera = .{ eye[0], eye[1], eye[2], scene.camera[3] };
+                const sun = math.transform(turn, light);
+                at.sun = .{ sun[0], sun[1], sun[2], scene.sun[3] };
+                r.terrain.setUniforms(std.mem.asBytes(&at));
+                for (0..blocks.Tile.strips) |k| if (bm.quads[k] > 0) {
+                    try target.quads(&r.terrain, bm.bo.handle, bm.first[k] * 4 * @sizeOf(Vertex), bm.quads[k], .{ tex[k], null, null });
+                };
+            }
+            if (v.avatars.len > 0 or v.boats.len > 0) r.terrain.setUniforms(bytes);
             if (r.world) |w| {
                 r.creatures.sync(w, v.time);
                 const cbo = r.creatures_bo[r.creatures_frame];
@@ -812,6 +864,13 @@ fn Target(comptime Sink: type) type {
 /// The colours players are told apart by (their bodies'), by id.
 const avatar_colours = [player_mod.colours]blocks.Tile{ .red, .green, .yellow, .purple, .orange, .cyan, .pink, .black };
 /// Quads in a figure: legs, body and head, six faces each.
+/// A canoe's quads, a strip's after another's.
+const BoatMesh = struct {
+    bo: vc4.Bo,
+    first: [blocks.Tile.strips]u32,
+    quads: [blocks.Tile.strips]u32,
+};
+
 const avatar_quads = 18;
 
 const AvatarMeshes = [player_mod.colours][avatar_quads * 4]Vertex;

@@ -109,13 +109,15 @@ fn box(o: Out, lo: V, hi: V, tiles: Tiles, skip: std.EnumSet(Face)) !void {
 
 const none: std.EnumSet(Face) = .{};
 
+const sticks_tiles: Tiles = .{ .top = .sticks_top, .side = .sticks_side, .bottom = .sticks_top };
+
 pub fn build(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mesh: *mesher.Mesh) !void {
     const l = w.lightAt(p[0], p[1], p[2]);
     const o: Out = .{ .gpa = gpa, .mesh = mesh, .sky = world_mod.skyOf(l), .lamp = world_mod.lampOf(l), .solid = true };
     const x: f32 = @floatFromInt(p[0]);
     const y: f32 = @floatFromInt(p[1]);
     const z: f32 = @floatFromInt(p[2]);
-    const sticks: Tiles = .{ .top = .sticks_top, .side = .sticks_side, .bottom = .sticks_top };
+    const sticks = sticks_tiles;
     const bamboo: Tiles = .{ .top = .sticks_top, .side = .bamboo, .bottom = .sticks_top, .fit = true };
     // Which sides have the same beside them (-x, +x, -z, +z).
     const same = [4]bool{
@@ -332,7 +334,7 @@ pub fn build(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
             try box(o, .{ x, y, z }, .{ x + 1, y + 0.05, z + 1 }, .{ .top = .mat, .side = .mat, .bottom = .mat }, skip);
         },
         .hammock => try hammock(o, w, p, x, y, z, bamboo, sticks),
-        .canoe => try canoe(o, w, p, x, y, z, sticks),
+        .canoe => try canoe(o, w, p, x, y, z),
         else => {},
     }
 }
@@ -470,18 +472,74 @@ fn hammock(o: Out, w: *const World, p: [3]i32, x: f32, y: f32, z: f32, bamboo: T
     }
 }
 
-fn canoe(o: Out, w: *const World, p: [3]i32, x: f32, y: f32, z: f32, sticks: Tiles) !void {
+/// How far a canoe on water sits down in it.
+pub const float_depth: f32 = 0.2;
+
+/// The longest canoe.
+pub const most_canoe = 16;
+
+/// Where across its block a canoe's hull is.
+pub const canoe_centre: f32 = 0.38;
+
+/// A row of canoes, end to end: one canoe.
+pub const Row = struct {
+    /// Its first block (the least x, or z).
+    start: [3]i32,
+    along_x: bool,
+    len: i32,
+
+    pub fn cell(r: Row, k: i32) [3]i32 {
+        return if (r.along_x) .{ r.start[0] + k, r.start[1], r.start[2] } else .{ r.start[0], r.start[1], r.start[2] + k };
+    }
+};
+
+fn canoeAxis(w: *const World, p: [3]i32) bool {
     const in_x = w.get(p[0] - 1, p[1], p[2]) == .canoe or w.get(p[0] + 1, p[1], p[2]) == .canoe;
     const in_z = w.get(p[0], p[1], p[2] - 1) == .canoe or w.get(p[0], p[1], p[2] + 1) == .canoe;
-    const ax = !(in_z and !in_x);
-    const r = run(w, p, .canoe, ax, 16);
-    const len: f32 = @floatFromInt(r[0] + r[1] + 1);
-    const before: f32 = @floatFromInt(r[0]);
+    return !(in_z and !in_x);
+}
+
+/// The canoe a canoe block is part of.
+pub fn canoeRow(w: *const World, p: [3]i32) Row {
+    const ax = canoeAxis(w, p);
+    const r = run(w, p, .canoe, ax, most_canoe - 1);
+    const start: [3]i32 = if (ax) .{ p[0] - r[0], p[1], p[2] } else .{ p[0], p[1], p[2] - r[0] };
+    return .{ .start = start, .along_x = ax, .len = @min(most_canoe, r[0] + r[1] + 1) };
+}
+
+fn canoe(o: Out, w: *const World, p: [3]i32, x: f32, y: f32, z: f32) !void {
+    const ax = canoeAxis(w, p);
+    const r = run(w, p, .canoe, ax, most_canoe);
+    // On water it floats, down in it.
+    const sink: f32 = if (w.wateryAt(p[0], p[1] - 1, p[2])) float_depth else 0;
+    try canoePart(o, .{ x, y - sink, z }, ax, r[0], r[0] + r[1] + 1);
+}
+
+/// A canoe, `len` blocks long, its hull's middle at x 0 and its bottom at
+/// y 0, its bow to -z (as a figure faces): drawn as it moves (see
+/// boat.zig), lit as under the open sky.
+pub fn canoeMesh(gpa: std.mem.Allocator, len: i32, mesh: *mesher.Mesh) !void {
+    const o: Out = .{ .gpa = gpa, .mesh = mesh, .sky = 15, .lamp = 0, .solid = true };
+    const half = @as(f32, @floatFromInt(len)) / 2;
+    var k: i32 = 0;
+    while (k < len) : (k += 1) try canoePart(o, .{ -canoe_centre, 0, @as(f32, @floatFromInt(k)) - half }, false, k, len);
+}
+
+/// The block of a canoe `len_n` long, `before_n` from its start, at
+/// `origin`.
+fn canoePart(o: Out, origin: V, ax: bool, before_n: i32, len_n: i32) !void {
+    const x = origin[0];
+    const y = origin[1];
+    const z = origin[2];
+    const r = [2]i32{ before_n, len_n - 1 - before_n };
+    const len: f32 = @floatFromInt(len_n);
+    const before: f32 = @floatFromInt(before_n);
+    const sticks = sticks_tiles;
     const a: Axis = .{ .o = o, .x = x, .y = y, .z = z, .along_x = ax };
     const hull: Tiles = .{ .top = .canoe, .side = .canoe, .bottom = .canoe };
     // The hull, in slices: narrowing to points at the ends, its bottom
     // and sides rising there.
-    const centre: f32 = 0.38;
+    const centre = canoe_centre;
     const slices = 8;
     for (0..slices) |k| {
         const a0 = @as(f32, @floatFromInt(k)) / slices;

@@ -21,6 +21,7 @@ const linux = std.os.linux;
 const sys = @import("sys");
 const game_mod = @import("game.zig");
 const world_mod = @import("world.zig");
+const furniture = @import("furniture.zig");
 const blocks = @import("blocks.zig");
 const math = @import("math.zig");
 const player_mod = @import("player.zig");
@@ -39,7 +40,7 @@ pub const max_nearby = 8;
 const beacon_magic = "DZBN";
 /// 2: palms and new plants (a world sent is the new kind). 3: the day,
 /// for the weather. 4: the atoll (worlds 256 across).
-const protocol_version: u8 = 4;
+const protocol_version: u8 = 5;
 const beacon_every = std.time.ns_per_s;
 /// A game not heard for this long has gone.
 const nearby_for = 4 * std.time.ns_per_s;
@@ -63,7 +64,8 @@ const Kind = enum(u8) {
     denied,
     /// A change: x, y, z (i16 each) and the block (u8).
     edit,
-    /// A player: their id (u8), x, y, z and yaw.
+    /// A player: their id (u8), x, y, z and yaw, and the canoe they are
+    /// in: its length (u8, 0 for none) and yaw.
     player,
     /// A player (id) left.
     leave,
@@ -241,6 +243,21 @@ const Remote = struct {
     shown_yaw: f32 = 0,
     target: V3 = @splat(0),
     target_yaw: f32 = 0,
+    boat: u8 = 0,
+    boat_yaw: f32 = 0,
+};
+
+/// Where a player is, as sent.
+const Whereabouts = struct {
+    pos: V3,
+    yaw: f32,
+    boat: u8 = 0,
+    boat_yaw: f32 = 0,
+
+    fn of(g: *const Game) Whereabouts {
+        const b = g.boat orelse return .{ .pos = g.player.pos, .yaw = g.player.yaw };
+        return .{ .pos = g.player.pos, .yaw = g.player.yaw, .boat = b.len, .boat_yaw = b.yaw };
+    }
 };
 
 pub const Session = struct {
@@ -447,7 +464,7 @@ pub const Session = struct {
         for (g.net.outbox.items) |e| s.toPlayers(.edit, &.{&encodeEdit(e)}, null);
         if (now -| s.last_state >= state_every) {
             s.last_state = now;
-            s.toPlayers(.player, &.{&encodePlayer(0, g.player.pos, g.player.yaw)}, null);
+            s.toPlayers(.player, &.{&encodePlayer(0, Whereabouts.of(g))}, null);
         }
         if (now -| s.last_time >= time_every) {
             s.last_time = now;
@@ -496,8 +513,8 @@ pub const Session = struct {
             .player => if (p.state == .playing) {
                 const st = decodePlayer(f.payload) orelse return;
                 // As the one it came from, whatever it says.
-                s.heardPlayer(p.id, st.pos, st.yaw);
-                s.toPlayers(.player, &.{&encodePlayer(p.id, st.pos, st.yaw)}, k);
+                s.heardPlayer(p.id, st.state);
+                s.toPlayers(.player, &.{&encodePlayer(p.id, st.state)}, k);
             },
             else => {},
         }
@@ -528,7 +545,7 @@ pub const Session = struct {
         // Where the others are.
         for (s.peers, 0..) |other, j| if (other != null and j != k and other.?.state == .playing) {
             const r = s.remotes[other.?.id];
-            p.send(s.gpa, .player, &.{&encodePlayer(other.?.id, r.target, r.target_yaw)});
+            p.send(s.gpa, .player, &.{&encodePlayer(other.?.id, .{ .pos = r.target, .yaw = r.target_yaw, .boat = r.boat, .boat_yaw = r.boat_yaw })});
         };
     }
 
@@ -601,7 +618,7 @@ pub const Session = struct {
                     if (decodeEdit(f.payload)) |e| g.editFromNetwork(e);
                 },
                 .player => if (h.state == .playing) {
-                    if (decodePlayer(f.payload)) |st| if (st.id != s.my_id) s.heardPlayer(st.id, st.pos, st.yaw);
+                    if (decodePlayer(f.payload)) |st| if (st.id != s.my_id) s.heardPlayer(st.id, st.state);
                 },
                 .leave => if (f.payload.len == 1 and f.payload[0] < max_players) {
                     s.remotes[f.payload[0]].active = false;
@@ -620,7 +637,7 @@ pub const Session = struct {
             for (g.net.outbox.items) |e| h.send(s.gpa, .edit, &.{&encodeEdit(e)});
             if (now -| s.last_state >= state_every) {
                 s.last_state = now;
-                h.send(s.gpa, .player, &.{&encodePlayer(s.my_id, g.player.pos, g.player.yaw)});
+                h.send(s.gpa, .player, &.{&encodePlayer(s.my_id, Whereabouts.of(g))});
             }
             h.flush();
         }
@@ -638,14 +655,16 @@ pub const Session = struct {
 
     // --- The others ---------------------------------------------------------------------
 
-    fn heardPlayer(s: *Session, id: u8, pos: V3, yaw: f32) void {
+    fn heardPlayer(s: *Session, id: u8, st: Whereabouts) void {
         if (id >= max_players) return;
         const r = &s.remotes[id];
         if (!r.active) {
-            r.* = .{ .active = true, .shown = pos, .shown_yaw = yaw };
+            r.* = .{ .active = true, .shown = st.pos, .shown_yaw = st.yaw };
         }
-        r.target = pos;
-        r.target_yaw = yaw;
+        r.target = st.pos;
+        r.target_yaw = st.yaw;
+        r.boat = st.boat;
+        r.boat_yaw = st.boat_yaw;
     }
 
     /// Eases each player shown towards where they were last said to be (ten
@@ -658,7 +677,7 @@ pub const Session = struct {
             // The short way round.
             const turn = std.math.atan2(@sin(r.target_yaw - r.shown_yaw), @cos(r.target_yaw - r.shown_yaw));
             r.shown_yaw += turn * t;
-            s.others[n] = .{ .pos = r.shown, .yaw = r.shown_yaw, .colour = @intCast(id % max_players) };
+            s.others[n] = .{ .pos = r.shown, .yaw = r.shown_yaw, .colour = @intCast(id % max_players), .boat = r.boat, .boat_yaw = r.boat_yaw };
             n += 1;
         };
         g.net.others = s.others[0..n];
@@ -703,21 +722,25 @@ fn decodeEdit(b: []const u8) ?game_mod.Edit {
     return .{ .cell = cell, .block = block };
 }
 
-fn encodePlayer(id: u8, pos: V3, yaw: f32) [17]u8 {
-    var b: [17]u8 = undefined;
+fn encodePlayer(id: u8, st: Whereabouts) [22]u8 {
+    var b: [22]u8 = undefined;
     b[0] = id;
-    for ([_]f32{ pos[0], pos[1], pos[2], yaw }, 0..) |v, i| std.mem.writeInt(u32, b[1 + i * 4 ..][0..4], @bitCast(v), .little);
+    for ([_]f32{ st.pos[0], st.pos[1], st.pos[2], st.yaw }, 0..) |v, i| std.mem.writeInt(u32, b[1 + i * 4 ..][0..4], @bitCast(v), .little);
+    b[17] = st.boat;
+    std.mem.writeInt(u32, b[18..22], @bitCast(st.boat_yaw), .little);
     return b;
 }
 
-fn decodePlayer(b: []const u8) ?struct { id: u8, pos: V3, yaw: f32 } {
-    if (b.len != 17) return null;
-    var v: [4]f32 = undefined;
+fn decodePlayer(b: []const u8) ?struct { id: u8, state: Whereabouts } {
+    if (b.len != 22) return null;
+    var v: [5]f32 = undefined;
     for (&v, 0..) |*x, i| {
-        x.* = @bitCast(std.mem.readInt(u32, b[1 + i * 4 ..][0..4], .little));
+        const at = if (i < 4) 1 + i * 4 else 18;
+        x.* = @bitCast(std.mem.readInt(u32, b[at..][0..4], .little));
         if (!std.math.isFinite(x.*)) return null;
     }
-    return .{ .id = b[0], .pos = .{ v[0], v[1], v[2] }, .yaw = v[3] };
+    if (b[17] > furniture.most_canoe) return null;
+    return .{ .id = b[0], .state = .{ .pos = .{ v[0], v[1], v[2] }, .yaw = v[3], .boat = b[17], .boat_yaw = v[4] } };
 }
 
 // --- Sockets ---------------------------------------------------------------------------
@@ -759,10 +782,12 @@ test "beacons, changes and players, there and back" {
     bad[6] = 255;
     try testing.expect(decodeEdit(&bad) == null);
 
-    const p = decodePlayer(&encodePlayer(3, .{ 1.5, 31, -2 }, 0.25)).?;
+    const p = decodePlayer(&encodePlayer(3, .{ .pos = .{ 1.5, 31, -2 }, .yaw = 0.25, .boat = 3, .boat_yaw = 1.5 })).?;
     try testing.expectEqual(@as(u8, 3), p.id);
-    try testing.expectEqual(V3{ 1.5, 31, -2 }, p.pos);
-    try testing.expectEqual(@as(f32, 0.25), p.yaw);
+    try testing.expectEqual(V3{ 1.5, 31, -2 }, p.state.pos);
+    try testing.expectEqual(@as(f32, 0.25), p.state.yaw);
+    try testing.expectEqual(@as(u8, 3), p.state.boat);
+    try testing.expectEqual(@as(f32, 1.5), p.state.boat_yaw);
 }
 
 fn flatWorld() !*world_mod.World {

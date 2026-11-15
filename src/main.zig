@@ -28,6 +28,7 @@ const net = @import("net.zig");
 const options = @import("options.zig");
 const reach_mod = @import("reach.zig");
 const upscale = @import("upscale.zig");
+const boat_mod = @import("boat.zig");
 
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(vc4.Device);
@@ -118,11 +119,31 @@ fn newName(g: *const game_mod.Game, buf: []u8) []const u8 {
     }
 }
 
+/// The canoes being paddled: this player's, and the others'.
+const Boats = struct {
+    list: [net.max_players + 1]boat_mod.Shown = undefined,
+
+    fn items(b: *Boats, g: *const game_mod.Game) []const boat_mod.Shown {
+        var n: usize = 0;
+        if (g.boat) |mine| {
+            b.list[n] = mine.shown();
+            n += 1;
+        }
+        for (g.net.others) |o| {
+            if (o.boat == 0 or n == b.list.len) continue;
+            b.list[n] = .{ .pos = o.pos + @as(@TypeOf(o.pos), .{ 0, boat_mod.seat_drop, 0 }), .yaw = o.boat_yaw, .len = o.boat };
+            n += 1;
+        }
+        return b.list[0..n];
+    }
+};
+
 /// Makes a new island (from `seed`), to play from its start.
 fn makeIsland(g: *game_mod.Game, seed: u32) !void {
     const started = sys.nowNs();
     try g.world.generate(seed);
     g.player = .{ .pos = g.world.spawn, .yaw = g.world.spawn_yaw };
+    g.boat = null;
     g.time_of_day = 0.34;
     g.day = 0;
     g.target = null;
@@ -168,6 +189,7 @@ const Scene = struct {
         const waited = app.window.gpu_waited_ns -% s.waited_ns;
         s.waited_ns = app.window.gpu_waited_ns;
         _ = s.reach.frame(sys.nowNs(), waited);
+        var boats: Boats = .{};
         const v: renderer_mod.View = .{
             .camera = g.camera(),
             .aspect = @as(f32, @floatFromInt(vp.width)) / @as(f32, @floatFromInt(@max(vp.height, 1))),
@@ -179,6 +201,7 @@ const Scene = struct {
             .underwater = g.player.underwater(g.world),
             .outline = if (g.target) |t| t.cell else null,
             .avatars = g.net.others,
+            .boats = boats.items(g),
             .reach = s.reach.k,
         };
         if (s.stretch and s.quality < 1) {
@@ -657,6 +680,7 @@ test {
     _ = @import("weather.zig");
     _ = @import("math.zig");
     _ = @import("player.zig");
+    _ = @import("boat.zig");
     _ = @import("creatures.zig");
     _ = @import("renderer.zig");
     _ = @import("preview.zig");
