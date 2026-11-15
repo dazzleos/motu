@@ -520,7 +520,7 @@ pub const World = struct {
         while (i < w.blocks.len) {
             if (at + 2 > data.len) return error.Truncated;
             const n = @as(usize, data[at]) + 1;
-            const b: Block = @enumFromInt(data[at + 1]);
+            const b = (@as(Block, @enumFromInt(data[at + 1]))).current();
             if (!b.isValid() or i + n > w.blocks.len) return error.Corrupt;
             @memset(w.blocks[i..][0..n], b);
             i += n;
@@ -746,4 +746,17 @@ test "a world from before palms: trees' trunks are palms, without their leaves; 
     out.items[4] = World.version;
     _ = try back.decode(out.items);
     try testing.expect(std.mem.eql(Block, w.blocks, back.blocks));
+}
+
+test "removed kinds of block are read as the ones most like them" {
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    w.blocks[World.index(5, 30, 5)] = .iron;
+    w.blocks[World.index(6, 30, 5)] = .gold;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try w.encode(&out, testing.allocator);
+    _ = try w.decode(out.items);
+    try testing.expectEqual(Block.volcanic_bricks, w.get(5, 30, 5));
+    try testing.expectEqual(Block.yellow, w.get(6, 30, 5));
 }

@@ -1085,7 +1085,7 @@ test "the whole island in view fits one frame, the near chunks first" {
     try testing.expect(r.stats.triangles > 40000);
     // Meshing a changed chunk again replaces its buffer.
     const before = state.bos.count();
-    _ = w.set(64, 50, 64, .gold);
+    _ = w.set(64, 50, 64, .coral_stone);
     _ = try r.update(w, w.spawn, 1000);
     try testing.expectEqual(before, state.bos.count());
 

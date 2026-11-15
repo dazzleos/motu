@@ -548,7 +548,7 @@ pub const Game = struct {
         g.player = .{ .pos = .{ f[0], f[1], f[2] }, .yaw = f[3], .pitch = std.math.clamp(f[4], -1.55, 1.55), .flying = rest[29] != 0 };
         g.time_of_day = @mod(f[5], 1);
         for (&g.hotbar, rest[30..39]) |*h, b| {
-            const blk: Block = @enumFromInt(b);
+            const blk = (@as(Block, @enumFromInt(b))).current();
             h.* = if (blk.isValid() and blk != .air) blk else .volcanic_rock;
         }
         g.slot = rest[39] % 9;
@@ -687,9 +687,9 @@ test "keys: walking, choosing, flying, the palette" {
     try testing.expect(!g.player.flying);
     g.key(.e, true);
     try testing.expect(g.palette_open);
-    g.pickFromPalette(.gold);
+    g.pickFromPalette(.coral_stone);
     try testing.expect(!g.palette_open);
-    try testing.expectEqual(Block.gold, g.selected());
+    try testing.expectEqual(Block.coral_stone, g.selected());
     // A day goes by.
     const t = g.time_of_day;
     g.tick(day_length / 4);
@@ -768,7 +768,7 @@ test "the host saves, the guests' changes too; a game joined is not saved here" 
     try testing.expect(g.wantsSave());
     // Joined: changes, but not this computer's world to save.
     g.net.status = .{ .joined = "host-pi" };
-    _ = g.edit(.{ 12, 31, 10 }, .gold);
+    _ = g.edit(.{ 12, 31, 10 }, .coral_stone);
     try testing.expect(g.unsaved and !g.wantsSave());
 }
 

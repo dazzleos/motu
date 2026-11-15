@@ -30,7 +30,9 @@ pub const Block = enum(u8) {
     volcanic_bricks,
     thatch,
     plaster,
+    /// Removed: read as volcanic bricks (see `current`).
     iron,
+    /// Removed: read as yellow paint.
     gold,
     lamp,
     bookshelf,
@@ -76,7 +78,7 @@ pub const Block = enum(u8) {
 
     pub fn shape(b: Block) Shape {
         return switch (b) {
-            .air => .none,
+            .air, .iron, .gold => .none,
             .water => .water,
             .glass => .clear,
             .palm => .pole,
@@ -152,8 +154,6 @@ pub const Block = enum(u8) {
             .thatch => .thatch,
             .coral_stone => .coral_stone,
             .plaster => .plaster,
-            .iron => .iron,
-            .gold => .gold,
             .lamp => .lamp,
             .bookshelf => if (top or bottom) .planks else .bookshelf,
             .white => .white,
@@ -176,7 +176,7 @@ pub const Block = enum(u8) {
             .white_flower => .white_flower,
             .orange_flower => .orange_flower,
             .water => .water,
-            .air, _ => .volcanic_rock,
+            .air, .iron, .gold, _ => .volcanic_rock,
         };
     }
 
@@ -202,8 +202,6 @@ pub const Block = enum(u8) {
             .volcanic_bricks => "Volcanic bricks",
             .thatch => "Thatch",
             .plaster => "Plaster",
-            .iron => "Iron",
-            .gold => "Gold",
             .lamp => "Lamp",
             .bookshelf => "Bookshelf",
             .white => "White",
@@ -227,13 +225,23 @@ pub const Block = enum(u8) {
             .orange_flower => "Orange flowers",
             .paving => "Paving stones",
             .coral_stone => "Coral stone",
-            _ => "?",
+            .iron, .gold, _ => "?",
         };
     }
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.coral_stone);
+        return @intFromEnum(b) <= @intFromEnum(Block.coral_stone) and b.current() == b;
+    }
+
+    /// What a block is now: a kind that was removed is read as the one
+    /// most like it.
+    pub fn current(b: Block) Block {
+        return switch (b) {
+            .iron => .volcanic_bricks,
+            .gold => .yellow,
+            else => b,
+        };
     }
 
     /// Flowers: grass with flowers among it.
@@ -256,7 +264,7 @@ pub const Section = struct {
 
 pub const sections = [_]Section{
     .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .gravel, .clay, .snow, .water } },
-    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .volcanic_bricks, .sandstone_bricks, .coral_stone, .paving, .planks, .dark_planks, .plaster, .thatch, .glass, .iron, .gold, .lamp, .bookshelf } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .volcanic_bricks, .sandstone_bricks, .coral_stone, .paving, .planks, .dark_planks, .plaster, .thatch, .glass, .lamp, .bookshelf } },
     .{ .name = "Plants", .blocks = &.{ .palm, .leaves, .fern, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
@@ -339,8 +347,6 @@ pub const Tile = enum(u6) {
     volcanic_bricks,
     thatch,
     plaster,
-    iron,
-    gold,
     lamp,
     bookshelf,
     /// For water's icon (the water itself is drawn by its own shader).
@@ -407,4 +413,7 @@ test "every block that can be placed has a name and its own look" {
     try std.testing.expect(!Block.water.isSolid());
     const unknown: Block = @enumFromInt(200);
     try std.testing.expect(!unknown.isValid() and unknown.shape() == .none);
+    // Removed kinds are not placed, and are read as others.
+    try std.testing.expect(!Block.iron.isValid() and !Block.gold.isValid());
+    try std.testing.expect(Block.iron.current().isValid() and Block.gold.current().isValid());
 }

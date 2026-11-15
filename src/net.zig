@@ -822,7 +822,7 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
     try pair.init();
     defer pair.deinit();
     // Something built on the host before: the guest gets it with the world.
-    _ = pair.ga.edit(.{ 20, 31, 20 }, .gold);
+    _ = pair.ga.edit(.{ 20, 31, 20 }, .coral_stone);
 
     // Heard: the host is nearby (and the guest is to it).
     _ = try pair.until(struct {
@@ -852,7 +852,7 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
         }
     }.f);
     try testing.expect(joined != null and joined.? == .joined);
-    try testing.expectEqual(blocks.Block.gold, pair.gb.world.get(20, 31, 20));
+    try testing.expectEqual(blocks.Block.coral_stone, pair.gb.world.get(20, 31, 20));
     try testing.expectEqual(@as(u8, 1), pair.ga.net.status.hosting);
     try testing.expect(pair.ga.net.request == null);
     // The guest stands beside the host.

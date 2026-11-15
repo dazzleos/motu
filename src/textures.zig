@@ -331,8 +331,6 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const body = fbm(u, v, 4, 3, s);
             break :blk tx(scale(rgb(0xece6d6), 0.94 + body * 0.08 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.03), body * 1.2);
         },
-        .iron => metal(u, v, x, y, rgb(0xc9ccd2), s),
-        .gold => metal(u, v, x, y, rgb(0xf2c23c), s),
         .lamp => blk: {
             // A frame of four panes, glowing brightest in the middle.
             const fx = @mod(x, 32);
@@ -411,19 +409,6 @@ fn planks(u: f32, v: f32, x: f32, y: f32, base: Rgb, s: u32) Texel {
     const nd = @sqrt(@min((ex - 5) * (ex - 5), (ex - 58) * (ex - 58)) + (by - 8) * (by - 8));
     if (nd < 1.6) return tx(rgb(0x45403a), h + 0.8 * (1 - nd / 1.6));
     return tx(scale(base, tone * (0.88 + streak * 0.16)), h);
-}
-
-fn metal(u: f32, v: f32, x: f32, y: f32, base: Rgb, s: u32) Texel {
-    // Brushed across, a sheen, bevelled edges and domed rivets.
-    const brushed = noise(u * 0.0625, v, 64, s);
-    const sheen = 0.5 + 0.5 * @cos((u + v - 0.6) * 4);
-    const rivet_x = @min(@abs(x - 7), @abs(x - 57));
-    const rivet_y = @min(@abs(y - 7), @abs(y - 57));
-    const rd = @sqrt(rivet_x * rivet_x + rivet_y * rivet_y);
-    const edge = @min(@min(x, 64 - x), @min(y, 64 - y));
-    const h = 2.5 * smoothstep(0, 4, edge) + brushed * 0.25;
-    if (rd < 3) return tx(scale(base, 0.85), h + 1.8 * @sqrt(1 - (rd / 3) * (rd / 3)));
-    return tx(scale(base, 0.82 + sheen * 0.2 + brushed * 0.08), h);
 }
 
 fn fabric(u: f32, v: f32, x: f32, y: f32, base: Rgb, s: u32) Texel {
