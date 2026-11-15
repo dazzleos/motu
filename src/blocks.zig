@@ -1,6 +1,6 @@
-//! The kinds of block: how each is drawn (a solid cube, a see-through
-//! cube, water, a palm's trunk, a plant or furniture), which of the atlas's tiles
-//! each face shows, the light it gives, and its name.
+//! The kinds of block: how each is drawn (a solid cube, water, a palm's
+//! trunk, a plant or furniture), which of the atlas's tiles each face
+//! shows, the light it gives, and its name.
 //!
 //! Each kind's number is what worlds are saved with, so they are only
 //! ever added to: the trunk and the plants took the numbers of the log,
@@ -31,6 +31,7 @@ pub const Block = enum(u8) {
     leaves,
     /// Removed: read as stick wall.
     dark_planks,
+    /// Removed: read as lattice.
     glass,
     /// Removed: read as sandstone.
     sandstone_bricks,
@@ -118,18 +119,18 @@ pub const Block = enum(u8) {
     lattice,
     /// A woven mat, thin, on the floor.
     mat,
-    /// Strings of beads hanging from a rail, for doorways: walked
-    /// through.
+    /// Strings of shells and seeds hanging from a rail, for doorways:
+    /// walked through.
     curtain,
     /// A cloth slung between posts (or walls, or palms), sagging: hammocks
     /// in a row are one longer one.
     hammock,
-    /// A clay pot.
+    /// Removed: read as air.
     pot,
     /// A dugout canoe with an outrigger: canoes end to end are one longer
     /// one, pointed at its ends.
     canoe,
-    /// A carved tiki: stacked, a totem.
+    /// Removed: read as a stick.
     statue,
     _,
 
@@ -137,8 +138,6 @@ pub const Block = enum(u8) {
         none,
         /// A cube that hides what is behind it and casts shadows.
         cube,
-        /// A cube drawn see-through (glass).
-        clear,
         water,
         /// A round pole up the middle of the block (a palm's trunk), with
         /// a crown of fronds on top: solid, but hiding nothing.
@@ -153,10 +152,9 @@ pub const Block = enum(u8) {
 
     pub fn shape(b: Block) Shape {
         return switch (b) {
-            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf => .none,
-            .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo, .hibiscus, .lattice, .mat, .curtain, .hammock, .pot, .canoe, .statue => .furniture,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue => .none,
+            .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo, .hibiscus, .lattice, .mat, .curtain, .hammock, .canoe => .furniture,
             .water => .water,
-            .glass => .clear,
             .palm => .pole,
             .tall_grass, .seagrass, .leafy_plant, .banana, .mangrove, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
             _ => .none,
@@ -183,7 +181,7 @@ pub const Block = enum(u8) {
             .mat => 0.0625,
             .ladder, .campfire, .curtain => 0,
             else => switch (b.shape()) {
-                .cube, .clear, .pole, .furniture => 1,
+                .cube, .pole, .furniture => 1,
                 else => 0,
             },
         };
@@ -230,7 +228,6 @@ pub const Block = enum(u8) {
             .sand => .sand,
             .sandstone => if (top or bottom) .sandstone_top else .sandstone_side,
             .palm => .palm_bark,
-            .glass => .glass,
             .thatch => .thatch,
             .coral => .coral,
             .sticks => if (top or bottom) .sticks_top else .sticks_side,
@@ -254,8 +251,6 @@ pub const Block = enum(u8) {
             .mat => .mat,
             .curtain => .beads,
             .hammock => .hammock,
-            .pot => .pot,
-            .statue => if (top or bottom) .sticks_top else .tiki,
             .chest => if (top or bottom) .chest_top else .chest_side,
             .white => .white,
             .black => .black,
@@ -277,7 +272,7 @@ pub const Block = enum(u8) {
             .white_flower => .white_flower,
             .orange_flower => .orange_flower,
             .water => .water,
-            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, _ => .volcanic_rock,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, _ => .volcanic_rock,
         };
     }
 
@@ -292,7 +287,6 @@ pub const Block = enum(u8) {
             .sandstone => "Sandstone",
             .water => "Water",
             .palm => "Palm",
-            .glass => "Glass",
             .thatch => "Thatch",
             .lamp => "Lamp",
             .table => "Table",
@@ -317,9 +311,7 @@ pub const Block = enum(u8) {
             .mat => "Mat",
             .curtain => "Bead curtain",
             .hammock => "Hammock",
-            .pot => "Pot",
             .canoe => "Canoe",
-            .statue => "Tiki",
             .white => "White",
             .black => "Black",
             .red => "Red",
@@ -342,7 +334,7 @@ pub const Block = enum(u8) {
             .paving => "Paving stones",
             .sticks => "Stick wall",
             .coral => "Coral",
-            .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, _ => "?",
+            .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, _ => "?",
         };
     }
 
@@ -364,6 +356,9 @@ pub const Block = enum(u8) {
             .plaster => .sandstone,
             .leaves => .green,
             .bookshelf => .table,
+            .glass => .lattice,
+            .pot => .air,
+            .statue => .post,
             else => b,
         };
     }
@@ -388,9 +383,9 @@ pub const Section = struct {
 
 pub const sections = [_]Section{
     .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .black_sand, .shells, .sandstone, .water, .coral, .lava } },
-    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .glass, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .lattice, .mat, .curtain } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .lattice, .mat, .curtain } },
     // Made of sticks.
-    .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp, .campfire, .hammock, .pot, .canoe, .statue } },
+    .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp, .campfire, .hammock, .canoe } },
     .{ .name = "Plants", .blocks = &.{ .palm, .bamboo, .banana, .mangrove, .hibiscus, .leafy_plant, .tall_grass, .seagrass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
@@ -416,7 +411,7 @@ pub const palette = blk: {
 };
 
 /// The hotbar's blocks to start with.
-pub const starting_hotbar = [9]Block{ .grass, .volcanic_rock, .sticks, .palm, .glass, .volcanic_wall, .thatch, .lamp, .pink_flower };
+pub const starting_hotbar = [9]Block{ .grass, .volcanic_rock, .sticks, .palm, .lattice, .volcanic_wall, .thatch, .lamp, .pink_flower };
 
 /// A cube's faces, by the direction they face: +x, -x, +y (up), -y, +z, -z.
 pub const Face = enum(u3) {
@@ -467,7 +462,6 @@ pub const Tile = enum(u6) {
     leafy_plant,
     // Building.
     volcanic_wall = 16,
-    glass,
     thatch,
     /// A bed's pillow.
     plaster,
@@ -509,8 +503,6 @@ pub const Tile = enum(u6) {
     lava = 48,
     mat,
     hammock,
-    pot,
-    tiki,
     /// A string of beads.
     beads,
     /// A canoe's hull, carved.
@@ -554,7 +546,7 @@ test "every block that can be placed has a name and its own look" {
     try std.testing.expect(Block.table.isSolid() and !Block.table.isOpaque() and Block.lamp.emits() > 0);
     try std.testing.expect(Block.palm.isSolid() and !Block.palm.isOpaque());
     for (Block.flowers) |b| try std.testing.expect(b.isFlower() and b.shape() == .plant);
-    try std.testing.expect(!Block.glass.isOpaque() and Block.glass.isSolid());
+    try std.testing.expectEqual(Block.lattice, Block.glass.current());
     try std.testing.expect(!Block.water.isSolid());
     const unknown: Block = @enumFromInt(200);
     try std.testing.expect(!unknown.isValid() and unknown.shape() == .none);

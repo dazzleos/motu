@@ -1,6 +1,6 @@
 //! Blocks: their faces textured from the atlas, lit per vertex (sun and
 //! sky, lamps, ambient occlusion) and fogged with distance; leaves and
-//! plants sway in the wind. Built twice: opaque, and blended (glass and
+//! plants sway in the wind. Built twice: opaque, and blended (flames and
 //! plants, whose tiles have see-through pixels).
 //!
 //! The fragment shader is kept to a texture read and a multiply-add: it

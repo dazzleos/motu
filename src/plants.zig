@@ -1,6 +1,6 @@
 //! Palms and plants, as the mesher makes them: shapes of their own rather
 //! than cubes, drawn see-through (their tiles have clear pixels) with the
-//! glass.
+//! lamps' flames.
 //!
 //! - A palm's trunk is a round pole (eight sides) up its block, thinner
 //!   higher up and leaning more the higher it is, as palms do. Its top

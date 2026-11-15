@@ -4,8 +4,8 @@
 //! two triangles of each).
 //!
 //! Meshes for each chunk, drawn in turn: solid blocks; water (its
-//! surface, a quad a block so it can wave); and see-through things (glass
-//! and plants), drawn last, blended. Solid and see-through ones are split
+//! surface, a quad a block so it can wave); and see-through things
+//! (plants), drawn last, blended. Solid and see-through ones are split
 //! by the texture strip their tiles are in (see blocks.Tile), as a draw
 //! has one texture.
 //!
@@ -421,7 +421,7 @@ fn shapedSolids(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, 
     }
 }
 
-/// Water, glass, palms and plants.
+/// Water, palms and plants.
 fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, mesh: *Mesh) !void {
     var y: i32 = 0;
     while (y < top_y) : (y += 1) {
@@ -433,14 +433,6 @@ fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
                 const p = P{ origin[0] + @as(i32, @intCast(lx)), y, origin[2] + lz };
                 switch (blk.shape()) {
                     .water => try waterFaces(gpa, w, p, mesh),
-                    .clear => for (Face.all) |face| {
-                        const q = add(p, face.normal());
-                        const other = w.get(q[0], q[1], q[2]);
-                        if (other.isOpaque() or other == blk) continue;
-                        const look = faceLook(w, p, face, blk.tile(face), false);
-                        const corners = rectCorners(face, @floatFromInt(p[@intFromEnum(face) / 2] + @as(i32, if (@intFromEnum(face) % 2 == 0) 1 else 0)), @floatFromInt(p[(@intFromEnum(face) / 2 + 1) % 3]), @floatFromInt(p[(@intFromEnum(face) / 2 + 2) % 3]), 1, 1);
-                        try emitQuad(mesh.list(.clear(blk.tile(face).strip())), gpa, face, corners, cornerLooks(face, look), @splat(.none));
-                    },
                     // Leafy plants are solid (with the solid faces).
                     .plant => if (blk == .mangrove) {
                         // Its roots are solid; below the sea, in water.
@@ -658,20 +650,16 @@ test "water: a surface quad a block, lower than the block's top, with its depth"
     }
 }
 
-test "plants: fans of fronds, both ways round; glass: faces against air" {
+test "plants: fans of fronds, both ways round" {
     const w = try emptyWorld();
     defer w.destroy();
     _ = w.set(3, 20, 3, .red_flower);
-    _ = w.set(6, 20, 6, .glass);
-    _ = w.set(7, 20, 6, .glass);
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
     try testing.expectEqual(@as(usize, 0), m.solidCount());
-    // Seven fronds, both ways round (the island's strip); 10 glass faces
-    // (the building strip; none between the two panes).
+    // Seven fronds, both ways round (the island's strip).
     try testing.expectEqual(@as(usize, 14 * 4), m.items(.clear0).len);
-    try testing.expectEqual(@as(usize, 10 * 4), m.items(.clear1).len);
     // Their tips sway; their feet are on the ground, in the block.
     var tips: u32 = 0;
     for (m.items(.clear0)) |v| {
@@ -724,7 +712,7 @@ test "furniture: wound to face out, in its blocks, each way round" {
     defer w.destroy();
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
-    const kinds = [_]Block{ .lattice, .curtain, .mat, .hammock, .pot, .canoe, .statue };
+    const kinds = [_]Block{ .lattice, .curtain, .mat, .hammock, .canoe };
     for (kinds) |b| for ([2]bool{ true, false }) |along_x| for ([3]i32{ 1, 2, 3 }) |len| {
         // A row of them, on rock, between walls.
         var k: i32 = -1;

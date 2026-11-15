@@ -323,14 +323,6 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const dome = @max(0, 1 - (c.d1 / 0.62) * (c.d1 / 0.62));
             break :blk tx(scale(st.c, tone * (1.05 - 0.25 * c.d1) * (1 - gap * 0.7)), 5 * @sqrt(dome) * (1 - gap) + st.h * 0.3);
         },
-        .glass => blk: {
-            const edge = @min(@min(x, y), @min(n - x, n - y));
-            if (edge < 3) break :blk .{ .c = rgb(0xd8e8ee), .a = 0.95, .h = 1.5 };
-            // Reflections: two bright streaks.
-            const d = @mod(x + y, 64);
-            const streak = smoothstep(3, 0, @abs(d - 18)) * 0.6 + smoothstep(1.5, 0, @abs(d - 26)) * 0.4;
-            break :blk .{ .c = mix(rgb(0xbfdfeb), rgb(0xffffff), streak), .a = 0.1 + streak * 0.45 };
-        },
         .thatch => blk: {
             // Bundles of dried palm and grass laid in rows, each row
             // hanging over the one below: straws running down, their
@@ -509,60 +501,33 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk tx(scale(c, fibre * (1 - edge * 0.45)), if (edge > 0.5) -0.5 else 1);
         },
         .hammock => blk: {
-            // Woven cloth in stripes: red, yellow, white, sea green.
-            const stripes = [_]u24{ 0xc23a2a, 0xf0c83a, 0xf2ece0, 0x2a9a8a, 0xf2ece0, 0xf0c83a };
-            const band: usize = @intFromFloat(@floor(x * @as(f32, stripes.len) / 64));
-            const weave = 0.9 + 0.1 * @as(f32, if (@mod(@floor(x / 2) + @floor(y / 2), 2) == 0) 1 else 0);
-            break :blk tx(scale(rgb(stripes[band]), weave * (0.92 + fbm(u, v, 8, 2, s) * 0.12)), weave);
-        },
-        .pot => blk: {
-            // Fired clay, rings from the wheel, a dark zigzag painted
-            // round it.
-            const ring = 0.94 + 0.06 * @sin(y * 1.3 + noise(u, v, 4, s) * 2);
-            const clay = scale(mix(rgb(0xa8542e), rgb(0xc87a48), fbm(u, v, 4, 2, s)), ring);
-            const band_y = 26.0;
-            const zig = @abs(@mod(x, 12) - 6) * 0.8;
-            if (@abs(y - (band_y + zig)) < 1.6 or @abs(y - 18) < 1 or @abs(y - 40) < 1) break :blk tx(rgb(0x2a1a14), 0.2);
-            break :blk tx(clay, ring * 2);
-        },
-        .tiki => blk: {
-            // A face carved in dark wood: a heavy brow, round eyes, a
-            // broad nose and a wide mouth full of teeth; grain up it.
-            const grain = 0.9 + 0.1 * noise(u * 4, v * 0.5, 16, s);
-            const wood = scale(rgb(0x6a4628), grain);
-            const deep = scale(rgb(0x2a1a0e), grain);
-            const light = scale(rgb(0x9a7044), grain);
-            const ex = @abs(u - 0.5);
-            // Brow.
-            if (v > 0.12 and v < 0.2) break :blk tx(light, 4);
-            // Eyes: a raised ring, a dark pupil.
-            const eye_d = @sqrt((ex - 0.2) * (ex - 0.2) + (v - 0.32) * (v - 0.32));
-            if (eye_d < 0.05) break :blk tx(deep, -2);
-            if (eye_d < 0.11) break :blk tx(light, 3);
-            // Nose.
-            if (ex < 0.13 - (0.55 - v) * 0.2 and v > 0.36 and v < 0.55) break :blk tx(light, 3.5 - ex * 10);
-            // Mouth: dark, its teeth.
-            if (ex < 0.34 and v > 0.62 and v < 0.82) {
-                const tooth = @mod(u * 14, 1) < 0.75;
-                if ((v < 0.68 or v > 0.76) and tooth) break :blk tx(scale(rgb(0xd8c49a), grain), 1);
-                break :blk tx(deep, -2);
-            }
-            if (ex < 0.38 and v > 0.6 and v < 0.84) break :blk tx(light, 2.5);
-            // Carved lines across the chin and the top.
-            if (@mod(v * 32, 2) < 0.5 and (v > 0.88 or v < 0.08)) break :blk tx(deep, -1);
-            break :blk tx(wood, 1 + grain);
+            // A net of coconut-fibre cord, undyed: knotted in diamonds,
+            // the cords twisted, darker where they cross.
+            const a = @mod(x + y, 8) - 4;
+            const b = @mod(x - y + 64, 8) - 4;
+            const cord = @min(@abs(a), @abs(b));
+            const knot = @abs(a) < 1.2 and @abs(b) < 1.2;
+            const twist = 0.88 + 0.12 * @sin((x - y) * 1.9);
+            const fibre = mix(rgb(0xb89a6a), rgb(0xd8c49a), fbm(u, v, 8, 2, s));
+            if (knot) break :blk tx(scale(fibre, 0.8), 3);
+            if (cord < 1.3) break :blk tx(scale(fibre, twist), 2 - cord);
+            // Between the cords, the woven bed of the hammock, paler.
+            break :blk tx(scale(mix(rgb(0xc8b088), rgb(0xe2d2ae), noise(u, v, 16, s +% 1)), 0.82), -0.5);
         },
         .beads => blk: {
-            // A string of beads, round, in turn: red, white, yellow,
-            // turquoise, orange, black.
-            const colours = [_]u24{ 0xc8282a, 0xf4f0e6, 0xf0c02a, 0x2ab0b0, 0xf07a22, 0x2a2420 };
+            // A string of what the island has: cowrie shells, brown seeds,
+            // pale shell discs and wooden beads, in turn.
             const k: usize = @intFromFloat(@floor(y / 8));
             const by = @mod(y, 8) - 4;
             const bx = (u - 0.5) * 8;
             const r = @sqrt(bx * bx + by * by) / 4;
             const round = @sqrt(@max(0, 1 - r * r));
-            if (r > 1) break :blk tx(rgb(0x3a2a1a), -1);
-            break :blk tx(scale(rgb(colours[k % colours.len]), 0.55 + 0.5 * round), 3 * round);
+            if (r > 1) break :blk tx(rgb(0x5a4632), -1);
+            const kinds = [_]u24{ 0xeee2c8, 0x6a4024, 0xd8c8a8, 0x9a6a3e, 0xe8d8b8, 0x4a2e1a };
+            var c = rgb(kinds[k % kinds.len]);
+            // A cowrie's slit, a seed's sheen.
+            if (k % kinds.len == 0 and @abs(bx) < 0.4 and @abs(by) < 2.6) c = rgb(0x8a6a4a);
+            break :blk tx(scale(c, 0.55 + 0.5 * round), 3 * round);
         },
         .canoe => blk: {
             // Wood hollowed out, its grain along it, a band of red and
@@ -820,7 +785,7 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             fan(out, &px[0], .{ 24, 46 }, &.{ -0.55, -1.2, -1.95, -2.6 }, 26, 10);
             return;
         },
-        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo, .hibiscus, .mangrove, .lattice, .mat, .curtain, .hammock, .pot, .canoe, .statue => {
+        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo, .hibiscus, .mangrove, .lattice, .mat, .curtain, .hammock, .canoe => {
             furnitureIcon(b, out);
             return;
         },
@@ -966,23 +931,10 @@ fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             .{ .lo = .{ 0.7, 0.62, 0.15 }, .hi = .{ 0.88, 0.66, 0.85 }, .top = .hammock, .side = .hammock },
             .{ .lo = .{ 0.9, 0, 0.45 }, .hi = .{ 1, 1, 0.55 }, .top = .bamboo, .side = .bamboo },
         },
-        .pot => &.{
-            .{ .lo = .{ 0.32, 0, 0.32 }, .hi = .{ 0.68, 0.06, 0.68 }, .top = .pot, .side = .pot },
-            .{ .lo = .{ 0.24, 0.06, 0.24 }, .hi = .{ 0.76, 0.18, 0.76 }, .top = .pot, .side = .pot },
-            .{ .lo = .{ 0.18, 0.18, 0.18 }, .hi = .{ 0.82, 0.44, 0.82 }, .top = .pot, .side = .pot },
-            .{ .lo = .{ 0.22, 0.44, 0.22 }, .hi = .{ 0.78, 0.56, 0.78 }, .top = .pot, .side = .pot },
-            .{ .lo = .{ 0.3, 0.56, 0.3 }, .hi = .{ 0.7, 0.64, 0.7 }, .top = .pot, .side = .pot },
-            .{ .lo = .{ 0.37, 0.64, 0.37 }, .hi = .{ 0.63, 0.76, 0.63 }, .top = .pot, .side = .pot },
-            .{ .lo = .{ 0.33, 0.76, 0.33 }, .hi = .{ 0.67, 0.8, 0.67 }, .top = .black, .side = .pot },
-        },
         .canoe => &.{
             .{ .lo = .{ 0.3, 0.08, 0.82 }, .hi = .{ 0.7, 0.18, 0.92 }, .top = .canoe, .side = .canoe },
             .{ .lo = .{ 0.47, 0.44, 0.2 }, .hi = .{ 0.53, 0.5, 0.9 }, .top = .sticks_side, .side = .sticks_side },
             .{ .lo = .{ 0, 0.1, 0.2 }, .hi = .{ 1, 0.45, 0.56 }, .top = .canoe, .side = .canoe },
-        },
-        .statue => &.{
-            .{ .lo = .{ 0.2, 0, 0.2 }, .hi = .{ 0.8, 1, 0.8 }, .top = .sticks_top, .side = .tiki },
-            .{ .lo = .{ 0.12, 0.93, 0.12 }, .hi = .{ 0.88, 1, 0.88 }, .top = .sticks_top, .side = .canoe },
         },
         .post => &.{.{ .lo = .{ 0.42, 0, 0.42 }, .hi = .{ 0.58, 1, 0.58 }, .top = .bamboo, .side = .bamboo }},
         .lamp => &.{
@@ -1085,7 +1037,7 @@ test "every tile is in its strip, opaque except where things are see-through, an
             if (t.strip() != strip) continue;
             const oy = @as(u32, t.slot()) * tile_size;
             const see_through = switch (t) {
-                .glass, .water, .tall_grass, .seagrass, .frond, .leafy_plant, .lamp, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
+                .water, .tall_grass, .seagrass, .frond, .leafy_plant, .lamp, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => true,
                 else => false,
             };
             var clear: u32 = 0;

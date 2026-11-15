@@ -24,10 +24,8 @@
 //! - A hammock: cloth sagging between whatever holds its ends (a wall, a
 //!   post, a fence, a palm, or a stake of its own), hammocks in a row one
 //!   longer one.
-//! - A pot of clay, round (in steps).
 //! - A canoe: a hull hollowed out, pointed at the ends of a row of them,
 //!   an outrigger beside it on two booms.
-//! - A tiki: a post carved with a face on each side; stacked, a totem.
 
 const std = @import("std");
 const blocks = @import("blocks.zig");
@@ -332,32 +330,6 @@ pub fn build(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
             var skip = joined;
             if (w.get(p[0], p[1] - 1, p[2]).isOpaque()) skip.insert(.down);
             try box(o, .{ x, y, z }, .{ x + 1, y + 0.05, z + 1 }, .{ .top = .mat, .side = .mat, .bottom = .mat }, skip);
-        },
-        .pot => {
-            // Its profile, from the foot up: how far out, from and to.
-            const rings = [_][3]f32{
-                .{ 0.18, 0, 0.06 },   .{ 0.26, 0.06, 0.18 }, .{ 0.32, 0.18, 0.44 }, .{ 0.28, 0.44, 0.56 },
-                .{ 0.2, 0.56, 0.64 }, .{ 0.13, 0.64, 0.76 }, .{ 0.17, 0.76, 0.8 },
-            };
-            const clay: Tiles = .{ .top = .pot, .side = .pot, .bottom = .pot };
-            for (rings, 0..) |r, k| {
-                var skip: std.EnumSet(Face) = .{};
-                if (k > 0 or w.get(p[0], p[1] - 1, p[2]).isOpaque()) skip.insert(.down);
-                try box(o, .{ x + 0.5 - r[0], y + r[1], z + 0.5 - r[0] }, .{ x + 0.5 + r[0], y + r[2], z + 0.5 + r[0] }, clay, skip);
-            }
-            // Its mouth, dark.
-            try box(o, .{ x + 0.39, y + 0.8, z + 0.39 }, .{ x + 0.61, y + 0.805, z + 0.61 }, .{ .top = .black, .side = .black, .bottom = .black }, std.EnumSet(Face).initOne(.down));
-        },
-        .statue => {
-            const above = w.get(p[0], p[1] + 1, p[2]);
-            const below = w.get(p[0], p[1] - 1, p[2]);
-            var skip: std.EnumSet(Face) = .{};
-            if (above == .statue) skip.insert(.up);
-            if (below == .statue or below.isOpaque()) skip.insert(.down);
-            const wood: Tiles = .{ .top = .sticks_top, .side = .tiki, .bottom = .sticks_top, .fit = true };
-            try box(o, .{ x + 0.2, y, z + 0.2 }, .{ x + 0.8, y + 1, z + 0.8 }, wood, skip);
-            // A flat crown on the top one.
-            if (above != .statue) try box(o, .{ x + 0.12, y + 0.93, z + 0.12 }, .{ x + 0.88, y + 1, z + 0.88 }, .{ .top = .sticks_top, .side = .canoe, .bottom = .canoe }, .{});
         },
         .hammock => try hammock(o, w, p, x, y, z, bamboo, sticks),
         .canoe => try canoe(o, w, p, x, y, z, sticks),
