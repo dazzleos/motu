@@ -102,6 +102,13 @@ pub const World = struct {
         return w.blocks[index(x, y, z)];
     }
 
+    /// Whether there is water at a place: water, seagrass, or a mangrove's
+    /// roots below the sea's level.
+    pub fn wateryAt(w: *const World, x: i32, y: i32, z: i32) bool {
+        const b = w.get(x, y, z);
+        return b.isWatery() or (b == .mangrove and y < sea_level);
+    }
+
     /// The light at a place (outside the world, as the open sea would have).
     pub fn lightAt(w: *const World, x: i32, y: i32, z: i32) u8 {
         if (y < 0) return 0;
@@ -507,11 +514,28 @@ pub const World = struct {
             var x: i32 = 0;
             while (x < size_x) : (x += 1) {
                 const h = w.top(x, z);
-                if (h < 0 or h + 1 >= size_y or w.blocks[index(x, h, z)] != .grass) continue;
                 const fx: f32 = @floatFromInt(x);
                 const fz: f32 = @floatFromInt(z);
+                // Mangroves in the shallows, beside the beach.
+                if (h == sea_level - 1 and w.blocks[index(x, h, z)] == .water and w.get(x, h - 1, z) == .sand and fbm(seed +% 38, fx / 12, fz / 12, 2) > 0.55 and hash(seed +% 39, x, z) < 0.45) {
+                    const by_beach = for ([_][2]i32{ .{ 1, 0 }, .{ -1, 0 }, .{ 0, 1 }, .{ 0, -1 } }) |d| {
+                        if (w.get(x + d[0], h, z + d[1]) == .sand) break true;
+                    } else false;
+                    if (by_beach) w.blocks[index(x, h, z)] = .mangrove;
+                    continue;
+                }
+                if (h < 0 or h + 1 >= size_y or w.blocks[index(x, h, z)] != .grass) continue;
                 const meadow = fbm(seed +% 31, fx / 12, fz / 12, 2);
                 const r = hash(seed +% 32, x, z);
+                // Bananas in groves; hibiscus bushes here and there.
+                if (fbm(seed +% 37, fx / 14, fz / 14, 2) > 0.74 and r < 0.15) {
+                    w.blocks[index(x, h + 1, z)] = .banana;
+                    continue;
+                }
+                if (r > 0.994) {
+                    w.blocks[index(x, h + 1, z)] = .hibiscus;
+                    continue;
+                }
                 // Bamboo in clumps, here and there.
                 if (fbm(seed +% 35, fx / 9, fz / 9, 2) > 0.79 and r < 0.25 and h + 5 < size_y) {
                     const tall: i32 = 2 + @as(i32, @intFromFloat(hash(seed +% 36, x, z) * 3));
@@ -849,7 +873,7 @@ test "the atoll: a ring of islands round a lagoon, sea at the edges, beaches, tr
     // The lagoon in the middle.
     try testing.expectEqual(Block.water, w.get(size_x / 2, sea_level - 1, size_z / 2));
     try testing.expect(highest > sea_level + 16);
-    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .leafy_plant, .volcanic_rock, .coral, .bamboo, .seagrass }) |b| try testing.expect(counts.get(b) > 0);
+    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .leafy_plant, .volcanic_rock, .coral, .bamboo, .seagrass, .banana, .hibiscus, .mangrove }) |b| try testing.expect(counts.get(b) > 0);
     var flowers: usize = 0;
     for (Block.flowers) |b| flowers += counts.get(b);
     try testing.expect(flowers > 0);

@@ -363,6 +363,22 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const c = mix(mix(rgb(0xd83a10), rgb(0xff9a20), smoothstep(0, 0.5, heat)), rgb(0xfff2b0), smoothstep(0.5, 1, heat));
             break :blk .{ .c = c, .a = std.math.clamp((half - a) * 30, 0, 1) };
         },
+        .hibiscus => blk: {
+            // A bush's glossy leaves, overlapping, with big red flowers
+            // among them: five petals, a pale centre.
+            const fl = cellsAt(u, v, 3, s +% 9);
+            if (hash(@intCast(fl.id), 3, s) < 0.55) {
+                const ang = std.math.atan2(fl.cy, fl.cx);
+                const edge = 0.36 * (0.75 + 0.25 * @cos(ang * 5));
+                if (fl.d1 < 0.07) break :blk tx(rgb(0xf6e27a), 2);
+                if (fl.d1 < edge) {
+                    const vein = smoothstep(0.2, 0, @abs(@mod(ang * 5 / (2 * std.math.pi), 1) - 0.5));
+                    break :blk tx(scale(mix(rgb(0xb8102a), rgb(0xf04a5a), fl.d1 / edge), 1 - vein * 0.12), 2.5 - fl.d1 * 3);
+                }
+            }
+            break :blk leafCluster(u, v, rgb(0x1f5a1c), rgb(0x4e9a36), s);
+        },
+        .mangrove_leaf => leafCluster(u, v, rgb(0x2a5222), rgb(0x5f8c3a), s),
         .bamboo => blk: {
             // A stem of bamboo, lit across, a node part way up.
             const across = (u - 0.5) * 2;
@@ -538,6 +554,18 @@ fn flowers(u: f32, v: f32, petal: Rgb, centre: Rgb, s: u32) Texel {
     return if (v > 0.3) blades(u, v, s) else nothing;
 }
 
+/// Leaves in clumps, overlapping, glossy, darker deeper in.
+fn leafCluster(u: f32, v: f32, dark: Rgb, light: Rgb, s: u32) Texel {
+    const c = cellsAt(u, v, 7, s);
+    const depth = noise(u, v, 4, s +% 3);
+    const tone = hash(@intCast(c.id), 1, s);
+    const gap = smoothstep(0.1, 0, c.d2 - c.d1);
+    const dome = @max(0, 1 - c.d1 / 0.7);
+    // A rib down each leaf.
+    const rib = smoothstep(0.04, 0, @abs(c.cx * 0.7 - c.cy * 0.7)) * dome;
+    return tx(scale(mix(mix(dark, light, depth), light, tone * 0.4 + rib * 0.3), (1.05 - c.d1 * 0.35) * (1 - gap * 0.6)), 2.5 * @sqrt(dome) - gap * 1.5 + depth);
+}
+
 /// Blades of grass curving up from the bottom of the tile.
 fn blades(u: f32, v: f32, s: u32) Texel {
     var best: f32 = 0;
@@ -634,12 +662,21 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             fan(out, &px[1], .{ 24, 12 }, &.{ 2.8, 3.6, -1.57, -0.45, 0.35 }, 22, 7);
             return;
         },
+        .banana => {
+            tilePixels(.bamboo, &px[1]);
+            for (20..icon_size) |y| for (21..27) |x| {
+                out[y * icon_size + x] = px[1][(y * tile_size / icon_size) * tile_size + (x - 21) * 10] | 0xff000000;
+            };
+            tilePixels(.leafy_plant, &px[0]);
+            fan(out, &px[0], .{ 24, 20 }, &.{ 2.9, 3.6, -1.4, -0.6, 0.25 }, 24, 7);
+            return;
+        },
         .leafy_plant => {
             tilePixels(.leafy_plant, &px[0]);
             fan(out, &px[0], .{ 24, 46 }, &.{ -0.55, -1.2, -1.95, -2.6 }, 26, 10);
             return;
         },
-        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo => {
+        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo, .hibiscus, .mangrove => {
             furnitureIcon(b, out);
             return;
         },
@@ -740,6 +777,17 @@ fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             .{ .lo = .{ 0.44, 0.1, 0.22 }, .hi = .{ 0.56, 0.2, 0.78 }, .top = .sticks_side, .side = .sticks_side },
             .{ .lo = .{ 0.72, 0, 0.4 }, .hi = .{ 0.9, 0.15, 0.58 }, .top = .volcanic_rock, .side = .volcanic_rock },
             .{ .lo = .{ 0.4, 0, 0.72 }, .hi = .{ 0.58, 0.15, 0.9 }, .top = .volcanic_rock, .side = .volcanic_rock },
+        },
+        .hibiscus => &.{
+            .{ .lo = .{ 0.08, 0, 0.08 }, .hi = .{ 0.92, 0.72, 0.92 }, .top = .hibiscus, .side = .hibiscus },
+            .{ .lo = .{ 0.22, 0.72, 0.22 }, .hi = .{ 0.78, 0.98, 0.78 }, .top = .hibiscus, .side = .hibiscus },
+        },
+        .mangrove => &.{
+            .{ .lo = .{ 0.15, 0, 0.45 }, .hi = .{ 0.23, 0.6, 0.53 }, .top = .palm_bark, .side = .palm_bark },
+            .{ .lo = .{ 0.77, 0, 0.45 }, .hi = .{ 0.85, 0.6, 0.53 }, .top = .palm_bark, .side = .palm_bark },
+            .{ .lo = .{ 0.45, 0, 0.77 }, .hi = .{ 0.53, 0.6, 0.85 }, .top = .palm_bark, .side = .palm_bark },
+            .{ .lo = .{ 0.42, 0.4, 0.42 }, .hi = .{ 0.58, 0.7, 0.58 }, .top = .palm_bark, .side = .palm_bark },
+            .{ .lo = .{ 0, 0.65, 0 }, .hi = .{ 1, 1, 1 }, .top = .mangrove_leaf, .side = .mangrove_leaf },
         },
         .bamboo => &.{
             .{ .lo = .{ 0.25, 0, 0.3 }, .hi = .{ 0.37, 1, 0.42 }, .top = .bamboo, .side = .bamboo },

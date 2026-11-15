@@ -11,6 +11,9 @@
 //! - Tall grass: blades on two planes crossing; flowers, a fan of blades
 //!   with flowers among them.
 //! - Paving: flat round stones on grass, which join up into paths.
+//! - A banana plant: a stem, big paddle leaves arching out and drooping,
+//!   a bunch of bananas under them.
+//! - A mangrove: roots arching down from a short trunk, leaves over them.
 //!
 //! Fronds and blades are drawn both ways round (back faces are culled),
 //! their tops and tips swaying in the wind.
@@ -340,6 +343,8 @@ pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
     const turn = hash(seed, 0, 0) * 2 * std.math.pi;
     const base: V = .{ @as(f32, @floatFromInt(p[0])) + 0.5, @floatFromInt(p[1]), @as(f32, @floatFromInt(p[2])) + 0.5 };
     if (blk == .leafy_plant) return leafyPlant(o, base, seed, turn);
+    if (blk == .banana) return banana(o, base, seed, turn);
+    if (blk == .mangrove) return mangrove(o, w, p, base, seed, turn);
     if (blk == .tall_grass or blk == .seagrass) {
         // Two planes crossing on the block's diagonals.
         const x = base[0] - 0.5;
@@ -502,4 +507,184 @@ fn leafyPlant(o_in: Out, base: V, seed: u32, turn: f32) !void {
             }
         }
     }
+}
+
+fn cross(a: V, b: V) V {
+    return .{ a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
+}
+
+fn dot(a: V, b: V) f32 {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+fn normalize(a: V) V {
+    return mul(a, 1 / @max(@sqrt(dot(a, a)), 1e-6));
+}
+
+/// The cube face nearest to facing `n`: for lighting.
+fn nearestFace(n: V) Face {
+    const ax = @abs(n[0]);
+    const ay = @abs(n[1]);
+    const az = @abs(n[2]);
+    if (ay >= ax and ay >= az) return if (n[1] >= 0) .up else .down;
+    if (ax >= az) return if (n[0] >= 0) .east else .west;
+    return if (n[2] >= 0) .south else .north;
+}
+
+/// A quad, wound to face `out`, lit as the cube face nearest it. A quad
+/// a little twisted is split (into its two triangles, 0 1 2 and 0 2 3)
+/// along the diagonal that keeps both facing out.
+fn facing(o: Out, tile: Tile, c_in: [4]V, uv_in: [4][2]f32, out: V, anims_in: [4]Anim) !void {
+    var c = c_in;
+    var uv = uv_in;
+    var anims = anims_in;
+    if (dot(cross(sub(c[1], c[0]), sub(c[2], c[0])), out) < 0) {
+        c = .{ c_in[0], c_in[3], c_in[2], c_in[1] };
+        uv = .{ uv_in[0], uv_in[3], uv_in[2], uv_in[1] };
+        anims = .{ anims_in[0], anims_in[3], anims_in[2], anims_in[1] };
+    }
+    const both = struct {
+        fn f(q: [4]V, n: V) bool {
+            return dot(cross(sub(q[1], q[0]), sub(q[2], q[0])), n) > 0 and dot(cross(sub(q[2], q[0]), sub(q[3], q[0])), n) > 0;
+        }
+    }.f;
+    if (!both(c, out)) {
+        const r = [4]usize{ 1, 2, 3, 0 };
+        const c2 = [4]V{ c[r[0]], c[r[1]], c[r[2]], c[r[3]] };
+        if (both(c2, out)) {
+            c = c2;
+            uv = .{ uv[r[0]], uv[r[1]], uv[r[2]], uv[r[3]] };
+            anims = .{ anims[r[0]], anims[r[1]], anims[r[2]], anims[r[3]] };
+        }
+    }
+    try o.quad(tile, nearestFace(out), c, uv, anims);
+}
+
+/// A square beam from `a` to `b`, `w` from its middle to its sides, its
+/// four sides `tile`'s middle (u from `ua` to `ub`).
+fn beam(o: Out, a: V, b: V, w: f32, tile: Tile, ua: f32, ub: f32, an_a: Anim, an_b: Anim) !void {
+    const axis = normalize(sub(b, a));
+    const ref: V = if (@abs(axis[1]) > 0.9) .{ 1, 0, 0 } else up;
+    const s1 = normalize(cross(axis, ref));
+    const s2 = cross(axis, s1);
+    const sides = [4]V{ s1, s2, mul(s1, -1), mul(s2, -1) };
+    for (0..4) |k| {
+        const c0 = sides[k];
+        const c1 = sides[(k + 1) % 4];
+        const out = normalize(add(c0, c1));
+        const c = [4]V{ add(a, mul(c0, w)), add(a, mul(c1, w)), add(b, mul(c1, w)), add(b, mul(c0, w)) };
+        try facing(o, tile, c, .{ .{ ua, 1 }, .{ ub, 1 }, .{ ub, 0 }, .{ ua, 0 } }, out, .{ an_a, an_a, an_b, an_b });
+    }
+}
+
+/// A box from `lo` to `hi`, every face `tile` (the block's part of it),
+/// but its bottom if `bottom` is false.
+fn leafBox(o: Out, lo_v: V, hi_v: V, tile: Tile, bottom: bool, anim: Anim) !void {
+    for (Face.all) |face| {
+        if (face == .down and !bottom) continue;
+        const n = face.normal();
+        const ax: usize = @intFromEnum(face) / 2;
+        const b = (ax + 1) % 3;
+        const c = (ax + 2) % 3;
+        var corners: [4]V = undefined;
+        const q = [4][2]bool{ .{ false, false }, .{ true, false }, .{ true, true }, .{ false, true } };
+        var uv: [4][2]f32 = undefined;
+        for (q, 0..) |e, k| {
+            corners[k][ax] = if (n[ax] > 0) hi_v[ax] else lo_v[ax];
+            corners[k][b] = if (e[0]) hi_v[b] else lo_v[b];
+            corners[k][c] = if (e[1]) hi_v[c] else lo_v[c];
+            // Across by one corner's place, down within the tile.
+            uv[k] = .{ corners[k][b] + corners[k][c] * 0.37, if (e[1]) 0.98 else 0.02 };
+        }
+        const out: V = .{ @floatFromInt(n[0]), @floatFromInt(n[1]), @floatFromInt(n[2]) };
+        try facing(o, tile, corners, uv, out, @splat(anim));
+    }
+}
+
+/// A big paddle leaf from `start`, out along `dir` rising at `rise`,
+/// drooping to its tip: its outline in rows each side of its rib (the
+/// tile's leaf's middle, which is green the whole way).
+fn paddleLeaf(o: Out, start: V, dir: V, len: f32, half: f32, rise: f32, droop: f32) !void {
+    const side: V = normalize(.{ -dir[2], 0, dir[0] });
+    const rows = [_]f32{ 0, 0.12, 0.3, 0.5, 0.7, 0.88, 1 };
+    const at = struct {
+        fn f(s0: V, d: V, l: f32, r: f32, dr: f32, t: f32) V {
+            return add(s0, add(mul(d, l * t * @cos(r)), mul(up, l * t * @sin(r) - dr * t * t)));
+        }
+    }.f;
+    const width = struct {
+        fn f(t: f32) f32 {
+            return @max(0.03, std.math.pow(f32, @max(0, @sin(std.math.pi * @min(1, 0.08 + t))), 0.6));
+        }
+    }.f;
+    for (0..rows.len - 1) |j| {
+        const t0 = rows[j];
+        const t1 = rows[j + 1];
+        const p0 = at(start, dir, len, rise, droop, t0);
+        const p1 = at(start, dir, len, rise, droop, t1);
+        const an: [4]Anim = if (t0 < 0.3) .{ .sway, .sway, .plant, .plant } else @splat(.plant);
+        for ([2]f32{ 1, -1 }) |sgn| {
+            const e0 = mul(side, sgn * half * width(t0));
+            const e1 = mul(side, sgn * half * width(t1));
+            const lift = mul(up, 0.08 * half);
+            const c = [4]V{ p0, add(add(p0, e0), lift), add(add(p1, e1), lift), p1 };
+            const uv = [4][2]f32{ .{ 0.5, t0 * 0.8 + 0.1 }, .{ 0.5 + sgn * 0.2 * width(t0), t0 * 0.8 + 0.1 }, .{ 0.5 + sgn * 0.2 * width(t1), t1 * 0.8 + 0.1 }, .{ 0.5, t1 * 0.8 + 0.1 } };
+            const n = cross(sub(c[1], c[0]), sub(c[3], c[0]));
+            const upish: V = if (dot(n, up) >= 0) n else mul(n, -1);
+            try facing(o, .leafy_plant, c, uv, upish, an);
+            try facing(o, .leafy_plant, c, uv, mul(upish, -1), an);
+        }
+    }
+}
+
+/// A banana plant: a stem, six or so big paddle leaves from its top
+/// arching out and drooping, a bunch of bananas under them. Solid, as
+/// the leafy plant is.
+fn banana(o_in: Out, base: V, seed: u32, turn: f32) !void {
+    var o = o_in;
+    o.solid = true;
+    const tall = 1.5 + hash(seed, 5, 5) * 0.4;
+    const top = add(base, mul(up, tall));
+    try beam(o, base, top, 0.14, .bamboo, 0.35, 0.65, .none, .sway);
+    const n = 5 + @as(u32, @intFromFloat(hash(seed, 7, 7) * 3));
+    for (0..n) |k| {
+        const ki: i32 = @intCast(k);
+        const a = turn + @as(f32, @floatFromInt(k)) * 2 * std.math.pi / @as(f32, @floatFromInt(n)) + (hash(seed, ki, 1) - 0.5) * 0.4;
+        const dir: V = .{ @cos(a), 0, @sin(a) };
+        const len = 1.7 + hash(seed, ki, 2) * 0.5;
+        try paddleLeaf(o, add(top, mul(dir, 0.05)), dir, len, 0.4, 0.8 + (hash(seed, ki, 3) - 0.5) * 0.4, 0.75);
+    }
+    // The bunch, hanging from under the leaves.
+    const bunch = add(top, .{ @cos(turn + 0.6) * 0.18, -0.35, @sin(turn + 0.6) * 0.18 });
+    try leafBox(o, sub(bunch, .{ 0.09, 0.2, 0.09 }), add(bunch, .{ 0.09, 0.2, 0.09 }), .coconut, true, .sway);
+    try beam(o, add(bunch, .{ 0, 0.18, 0 }), add(top, .{ 0, -0.05, 0 }), 0.025, .bamboo, 0.4, 0.6, .sway, .sway);
+}
+
+/// A mangrove: roots arching down from a short trunk to the ground (or
+/// the shallows' floor) round it, and, with nothing above, leaves over
+/// it, wider than its block. Solid, as the leafy plant is.
+fn mangrove(o_in: Out, w: *const World, p: [3]i32, base: V, seed: u32, turn: f32) !void {
+    var o = o_in;
+    o.solid = true;
+    const trunk_foot = add(base, mul(up, 0.7));
+    // The trunk, up out of its block (the leaves are high over the water).
+    try beam(o, trunk_foot, add(base, mul(up, 1.9)), 0.1, .palm_bark, 0.3, 0.7, .none, .none);
+    const n = 5;
+    for (0..n) |k| {
+        const ki: i32 = @intCast(k);
+        const a = turn + @as(f32, @floatFromInt(k)) * 2 * std.math.pi / n + (hash(seed, ki, 1) - 0.5) * 0.5;
+        const dir: V = .{ @cos(a), 0, @sin(a) };
+        const reach = 0.36 + hash(seed, ki, 2) * 0.1;
+        const knee = add(trunk_foot, add(mul(dir, reach * 0.55), mul(up, 0.12)));
+        const foot = add(base, mul(dir, reach));
+        try beam(o, trunk_foot, knee, 0.045, .palm_bark, 0.4, 0.6, .none, .none);
+        try beam(o, knee, foot, 0.045, .palm_bark, 0.4, 0.6, .none, .none);
+    }
+    if (w.get(p[0], p[1] + 1, p[2]) != .air or w.get(p[0], p[1] + 2, p[2]) != .air) return;
+    const lo_y = base[1] + 1.75;
+    const c = add(base, .{ 0, 0, 0 });
+    try leafBox(o, .{ c[0] - 0.85, lo_y, c[2] - 0.85 }, .{ c[0] + 0.85, lo_y + 0.55, c[2] + 0.85 }, .mangrove_leaf, true, .sway);
+    const ox = (hash(seed, 9, 1) - 0.5) * 0.5;
+    const oz = (hash(seed, 9, 2) - 0.5) * 0.5;
+    try leafBox(o, .{ c[0] - 0.5 + ox, lo_y + 0.55, c[2] - 0.5 + oz }, .{ c[0] + 0.5 + ox, lo_y + 0.85, c[2] + 0.5 + oz }, .mangrove_leaf, false, .sway);
 }

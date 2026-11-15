@@ -511,7 +511,7 @@ pub const Game = struct {
 
     fn besideWater(g: *const Game, c: world_mod.Pos) bool {
         for ([_][3]i32{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 }, .{ 0, 1, 0 } }) |d| {
-            if (g.world.get(c[0] + d[0], c[1] + d[1], c[2] + d[2]).isWatery()) return true;
+            if (g.world.wateryAt(c[0] + d[0], c[1] + d[1], c[2] + d[2])) return true;
         }
         return false;
     }

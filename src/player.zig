@@ -74,17 +74,18 @@ pub const Player = struct {
     /// Whether the eye is in water.
     pub fn underwater(p: *const Player, w: *const World) bool {
         const e = p.eye();
-        const b = w.get(@intFromFloat(@floor(e[0])), @intFromFloat(@floor(e[1])), @intFromFloat(@floor(e[2])));
-        if (!b.isWatery()) return false;
+        const ex: i32 = @intFromFloat(@floor(e[0]));
+        const ey: i32 = @intFromFloat(@floor(e[1]));
+        const ez: i32 = @intFromFloat(@floor(e[2]));
+        if (!w.wateryAt(ex, ey, ez)) return false;
         // Above a surface block's surface is out of the water.
-        const above = w.get(@intFromFloat(@floor(e[0])), @as(i32, @intFromFloat(@floor(e[1]))) + 1, @intFromFloat(@floor(e[2])));
-        return above.isWatery() or e[1] - @floor(e[1]) < 0.875;
+        return w.wateryAt(ex, ey + 1, ez) or e[1] - @floor(e[1]) < 0.875;
     }
 
     fn inWater(p: *const Player, w: *const World) bool {
         const x: i32 = @intFromFloat(@floor(p.pos[0]));
         const z: i32 = @intFromFloat(@floor(p.pos[2]));
-        return w.get(x, @intFromFloat(@floor(p.pos[1] + 0.4)), z).isWatery();
+        return w.wateryAt(x, @intFromFloat(@floor(p.pos[1] + 0.4)), z);
     }
 
     /// Whether it is at a ladder (its feet or its middle in one).

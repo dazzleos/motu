@@ -100,6 +100,13 @@ pub const Block = enum(u8) {
     seagrass,
     /// Canes of bamboo, leaves at their tops.
     bamboo,
+    /// A banana plant: a stem, big paddle leaves, a bunch of bananas.
+    banana,
+    /// A hibiscus bush: glossy leaves, big red flowers.
+    hibiscus,
+    /// A mangrove: arching roots, a short trunk, leaves over them; below
+    /// the sea's level, in the water (see World.wateryAt).
+    mangrove,
     _,
 
     pub const Shape = enum {
@@ -123,11 +130,11 @@ pub const Block = enum(u8) {
     pub fn shape(b: Block) Shape {
         return switch (b) {
             .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf => .none,
-            .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo => .furniture,
+            .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo, .hibiscus => .furniture,
             .water => .water,
             .glass => .clear,
             .palm => .pole,
-            .tall_grass, .seagrass, .leafy_plant, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
+            .tall_grass, .seagrass, .leafy_plant, .banana, .mangrove, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
             _ => .none,
             else => .cube,
         };
@@ -157,7 +164,8 @@ pub const Block = enum(u8) {
         };
     }
 
-    /// Water, or what is in water (and holds it too).
+    /// Water, or what is always in water (and holds it too); see also
+    /// World.wateryAt (mangroves, below the sea's level).
     pub fn isWatery(b: Block) bool {
         return b == .water or b == .seagrass;
     }
@@ -210,6 +218,9 @@ pub const Block = enum(u8) {
             .ladder, .fence => if (top or bottom) .sticks_top else .sticks_side,
             .campfire => .lamp,
             .seagrass => .seagrass,
+            .banana => .leafy_plant,
+            .hibiscus => .hibiscus,
+            .mangrove => .mangrove_leaf,
             .bed => .bed_cover,
             .chest => if (top or bottom) .chest_top else .chest_side,
             .white => .white,
@@ -262,6 +273,9 @@ pub const Block = enum(u8) {
             .campfire => "Campfire",
             .seagrass => "Seagrass",
             .bamboo => "Bamboo",
+            .banana => "Banana",
+            .hibiscus => "Hibiscus",
+            .mangrove => "Mangrove",
             .white => "White",
             .black => "Black",
             .red => "Red",
@@ -290,7 +304,7 @@ pub const Block = enum(u8) {
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.bamboo) and b.current() == b;
+        return @intFromEnum(b) <= @intFromEnum(Block.mangrove) and b.current() == b;
     }
 
     /// What a block is now: a kind that was removed is read as the one
@@ -333,7 +347,7 @@ pub const sections = [_]Section{
     .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .glass, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder } },
     // Made of sticks.
     .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp, .campfire } },
-    .{ .name = "Plants", .blocks = &.{ .palm, .bamboo, .leafy_plant, .tall_grass, .seagrass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
+    .{ .name = "Plants", .blocks = &.{ .palm, .bamboo, .banana, .mangrove, .hibiscus, .leafy_plant, .tall_grass, .seagrass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
 };
@@ -423,6 +437,8 @@ pub const Tile = enum(u6) {
     chest_top,
     bamboo,
     sticks_top,
+    hibiscus,
+    mangrove_leaf,
     // Colours.
     white = 32,
     black,

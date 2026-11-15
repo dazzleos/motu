@@ -264,6 +264,16 @@ pub fn build(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
                 }
             }
         },
+        .hibiscus => {
+            // A rounded bush: a body, and lumps on it.
+            const leaves: Tiles = .{ .top = .hibiscus, .side = .hibiscus, .bottom = .hibiscus };
+            const down_skip = std.EnumSet(Face).initOne(.down);
+            try box(o, .{ x + 0.08, y, z + 0.08 }, .{ x + 0.92, y + 0.72, z + 0.92 }, leaves, down_skip);
+            const ox = (world_mod.hash(91, p[0], p[2]) - 0.5) * 0.3;
+            const oz = (world_mod.hash(92, p[0], p[2]) - 0.5) * 0.3;
+            try box(o, .{ x + 0.22 + ox, y + 0.72, z + 0.22 + oz }, .{ x + 0.78 + ox, y + 0.98, z + 0.78 + oz }, leaves, down_skip);
+            try box(o, .{ x + 0.02, y + 0.15, z + 0.3 - oz }, .{ x + 0.2, y + 0.6, z + 0.7 - oz }, leaves, down_skip);
+        },
         else => {},
     }
 }
