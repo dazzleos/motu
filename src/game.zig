@@ -50,6 +50,8 @@ const V3 = math.V3;
 pub const reach: f32 = 24;
 /// Seconds a day lasts.
 pub const day_length: f32 = 600;
+/// How long water takes to flow a block.
+pub const flow_step: f32 = 0.25;
 /// Radians the view turns for a pixel dragged.
 const look_speed: f32 = 0.006;
 /// Radians a second the arrow keys turn it.
@@ -133,6 +135,8 @@ pub const Game = struct {
     day: u32 = 0,
     /// Seconds since the game started (for things that move).
     clock: f32 = 0,
+    /// Time since water last flowed.
+    flow_wait: f32 = 0,
     /// Keys held.
     held: std.EnumSet(kete.KeyboardKey) = .empty,
     /// When Space was last pressed, if a second press now would be a
@@ -526,20 +530,12 @@ pub const Game = struct {
     pub fn remove(g: *Game) bool {
         const t = g.target orelse return false;
         const c = t.cell;
-        // Water flows in from beside (still water: just its level).
-        const fill: Block = if (c[1] < world_mod.sea_level and g.besideWater(c)) .water else .air;
-        if (!g.edit(c, fill)) return false;
+        // Water beside it flows in, in time (see World.flow).
+        if (!g.edit(c, .air)) return false;
         const above = g.world.get(c[0], c[1] + 1, c[2]);
         // What grew on it goes too (seagrass leaving its water).
         if (above.shape() == .plant) _ = g.edit(.{ c[0], c[1] + 1, c[2] }, if (above == .seagrass) .water else .air);
         return true;
-    }
-
-    fn besideWater(g: *const Game, c: world_mod.Pos) bool {
-        for ([_][3]i32{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 }, .{ 0, 1, 0 } }) |d| {
-            if (g.world.wateryAt(c[0] + d[0], c[1] + d[1], c[2] + d[2])) return true;
-        }
-        return false;
     }
 
     /// What the pointer is over (with the mouse taken, what is in the
@@ -586,6 +582,12 @@ pub const Game = struct {
         const t = g.time_of_day + dt / day_length;
         if (t >= 1) g.day +%= 1;
         g.time_of_day = @mod(t, 1);
+        // Water flows a block a step (one a frame at most).
+        g.flow_wait += dt;
+        if (g.flow_wait >= flow_step) {
+            g.flow_wait = @min(g.flow_wait - flow_step, flow_step);
+            if (g.world.flowing()) g.world.flow();
+        }
         var turn: f32 = 0;
         if (!g.menu_open) {
             if (g.held.contains(.left)) turn -= 1;

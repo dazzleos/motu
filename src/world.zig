@@ -11,6 +11,11 @@
 //! world. Changing a block lights the blocks around it again, within
 //! light's reach.
 //!
+//! Water flows, a block a step: down into what is empty under it, and,
+//! below the sea's level (where the sea keeps it full), sideways and up
+//! too. So a trench dug from the sea fills, and a tunnel under the land
+//! floods once it is dug through to the sea, up to the sea's level.
+//!
 //! The world is in chunks, 16 by 16 blocks and the full height, which are
 //! drawn as a mesh each: a change marks the chunks it changes the look of
 //! (`dirty`) for the renderer to mesh again.
@@ -62,6 +67,10 @@ pub const World = struct {
     spawn_yaw: f32 = 0,
     /// For spreading light.
     queue: std.ArrayList(u32) = .empty,
+    /// Places water may flow into at the next step (see `flow`), and
+    /// those being looked at in this one.
+    flow_next: std.ArrayList(u32) = .empty,
+    flow_now: std.ArrayList(u32) = .empty,
     /// How far what was read was moved (a world from before the atoll
     /// is put in the middle of this one), for what was saved with it.
     moved_by: [2]i32 = .{ 0, 0 },
@@ -80,6 +89,8 @@ pub const World = struct {
 
     pub fn destroy(w: *World) void {
         w.queue.deinit(w.gpa);
+        w.flow_next.deinit(w.gpa);
+        w.flow_now.deinit(w.gpa);
         w.gpa.free(w.blocks);
         w.gpa.free(w.light);
         w.gpa.destroy(w);
@@ -135,7 +146,96 @@ pub const World = struct {
             w.computeLight() catch {};
             w.dirty = .full;
         };
+        // An opening, or more water: water may flow from here.
+        if (b == .air or b.isWatery()) w.wake(x, y, z);
         return true;
+    }
+
+    // --- Water ----------------------------------------------------------------------
+
+    /// Whether water flows into a place: it is empty, with water above it,
+    /// or (below the sea's level, which the sea keeps it at) beside it or
+    /// under it. Water does not spread out above the sea's level: it falls.
+    pub fn floodsInto(w: *const World, x: i32, y: i32, z: i32) bool {
+        if (!inBounds(x, y, z) or w.blocks[index(x, y, z)] != .air) return false;
+        if (w.wateryAt(x, y + 1, z)) return true;
+        if (y >= sea_level) return false;
+        if (w.wateryAt(x, y - 1, z)) return true;
+        for ([4][2]i32{ .{ 1, 0 }, .{ -1, 0 }, .{ 0, 1 }, .{ 0, -1 } }) |d| {
+            if (w.wateryAt(x + d[0], y, z + d[1])) return true;
+        }
+        return false;
+    }
+
+    /// The places water at (x, y, z) could flow into, and it itself, to
+    /// look at the next step.
+    fn wake(w: *World, x: i32, y: i32, z: i32) void {
+        for ([7][3]i32{ .{ 0, 0, 0 }, .{ 0, -1, 0 }, .{ 0, 1, 0 }, .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } }) |d| {
+            const p = Pos{ x + d[0], y + d[1], z + d[2] };
+            if (!inBounds(p[0], p[1], p[2])) continue;
+            w.flow_next.append(w.gpa, index(p[0], p[1], p[2])) catch return;
+        }
+    }
+
+    /// The most places filled in a step (any more wait for the next).
+    const flow_most = 256;
+
+    /// Water flows a block: into each place woken (by a change beside it)
+    /// that it floods into. Those filled wake the places beside them, for
+    /// the next step.
+    pub fn flow(w: *World) void {
+        std.mem.swap(std.ArrayList(u32), &w.flow_now, &w.flow_next);
+        w.flow_next.clearRetainingCapacity();
+        // Which flood, all decided before any is filled (so water goes a
+        // block a step, however they are in the list).
+        var n: usize = 0;
+        for (w.flow_now.items) |i| {
+            const p = posOf(i);
+            if (!w.floodsInto(p[0], p[1], p[2])) continue;
+            w.flow_now.items[n] = i;
+            n += 1;
+        }
+        for (w.flow_now.items[0..n], 0..) |i, k| {
+            if (k >= flow_most) {
+                w.flow_next.append(w.gpa, i) catch {};
+                continue;
+            }
+            const p = posOf(i);
+            _ = w.set(p[0], p[1], p[2], .water);
+        }
+        w.flow_now.clearRetainingCapacity();
+    }
+
+    /// Whether water is still flowing somewhere.
+    pub fn flowing(w: *const World) bool {
+        return w.flow_next.items.len > 0;
+    }
+
+    /// Floods at once everywhere water would flow (a world just made, or
+    /// read: one saved while water was flowing). Before lighting it.
+    fn settle(w: *World) void {
+        w.flow_next.clearRetainingCapacity();
+        const q = &w.queue;
+        defer q.clearRetainingCapacity();
+        for (0..w.blocks.len) |iu| {
+            const i: u32 = @intCast(iu);
+            if (w.blocks[i] != .air) continue;
+            const p = posOf(i);
+            if (w.floodsInto(p[0], p[1], p[2])) q.append(w.gpa, i) catch return;
+        }
+        while (q.pop()) |i| {
+            const p = posOf(i);
+            if (!w.floodsInto(p[0], p[1], p[2])) continue;
+            w.blocks[i] = .water;
+            for ([6][3]i32{ .{ 0, -1, 0 }, .{ 0, 1, 0 }, .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } }) |d| {
+                const n = Pos{ p[0] + d[0], p[1] + d[1], p[2] + d[2] };
+                if (inBounds(n[0], n[1], n[2])) q.append(w.gpa, index(n[0], n[1], n[2])) catch return;
+            }
+        }
+    }
+
+    fn posOf(i: u32) Pos {
+        return .{ @intCast(i % size_x), @intCast(i / (size_x * size_z)), @intCast(i / size_x % size_z) };
     }
 
     /// Marks the chunks holding columns x0..x1, z0..z1 as needing meshing.
@@ -375,6 +475,7 @@ pub const World = struct {
         w.growTrees(heights);
         w.growPlants();
         w.findSpawn(heights);
+        w.settle();
         try w.computeLight();
         w.dirty = .full;
     }
@@ -698,6 +799,7 @@ pub const World = struct {
         };
         if (from < 2) w.fromTrees();
         for (w.blocks) |*b| b.* = b.current();
+        w.settle();
         try w.computeLight();
         w.dirty = .full;
         w.moved_by = small_offset;
@@ -733,6 +835,7 @@ pub const World = struct {
         }
         if (from < 2) w.fromTrees();
         for (w.blocks) |*b| b.* = b.current();
+        w.settle();
         try w.computeLight();
         w.dirty = .full;
         return at;
@@ -1089,4 +1192,89 @@ test "a world from before the atoll (128 across) is read into the middle of this
     // Round it, the sea.
     try testing.expectEqual(Block.water, w.get(2, sea_level - 1, 2));
     try testing.expectEqual(Block.air, w.get(2, sea_level, 2));
+}
+
+/// A world of rock, a little above the sea's level, the sea at x < 10.
+fn shoreWorld() !*World {
+    const w = try World.create(testing.allocator);
+    for (0..size_z) |zu| for (0..size_x) |xu| for (0..sea_level + 3) |yu| {
+        const sea = xu < 10 and yu >= sea_level - 6;
+        w.blocks[World.index(@intCast(xu), @intCast(yu), @intCast(zu))] = if (!sea) .volcanic_rock else if (yu < sea_level) .water else .air;
+    };
+    try w.computeLight();
+    return w;
+}
+
+fn flowFor(w: *World, steps: usize) void {
+    for (0..steps) |_| w.flow();
+}
+
+test "water: a trench dug from the sea fills, a block a step" {
+    const w = try shoreWorld();
+    defer w.destroy();
+    const y = sea_level - 1;
+    var x: i32 = 10;
+    while (x < 20) : (x += 1) _ = w.set(x, y, 50, .air);
+    // Not at once: one step fills the first, at the sea.
+    try testing.expectEqual(Block.air, w.get(10, y, 50));
+    w.flow();
+    try testing.expectEqual(Block.water, w.get(10, y, 50));
+    try testing.expectEqual(Block.air, w.get(12, y, 50));
+    flowFor(w, 12);
+    x = 10;
+    while (x < 20) : (x += 1) try testing.expectEqual(Block.water, w.get(x, y, 50));
+    try testing.expect(!w.flowing());
+    // It stays in the trench.
+    try testing.expectEqual(Block.volcanic_rock, w.get(15, y, 51));
+}
+
+test "water: a tunnel under the land floods when opened to the sea, up to the sea's level" {
+    const w = try shoreWorld();
+    defer w.destroy();
+    const y = sea_level - 4;
+    // A tunnel from x 12 to 30, and a shaft up from its end into the air.
+    var x: i32 = 12;
+    while (x <= 30) : (x += 1) _ = w.set(x, y, 40, .air);
+    var sy: i32 = y + 1;
+    while (sy < sea_level + 3) : (sy += 1) _ = w.set(30, sy, 40, .air);
+    flowFor(w, 40);
+    try testing.expectEqual(Block.air, w.get(20, y, 40));
+    // Dug through to the sea.
+    _ = w.set(11, y, 40, .air);
+    _ = w.set(10, y, 40, .air);
+    flowFor(w, 60);
+    x = 10;
+    while (x <= 30) : (x += 1) try testing.expectEqual(Block.water, w.get(x, y, 40));
+    // The shaft fills to the sea's level, and no higher.
+    try testing.expectEqual(Block.water, w.get(30, sea_level - 1, 40));
+    try testing.expectEqual(Block.air, w.get(30, sea_level, 40));
+}
+
+test "water: above the sea it falls, and does not spread" {
+    const w = try shoreWorld();
+    defer w.destroy();
+    // A pit above the sea, water put at its rim.
+    const top = sea_level + 2;
+    _ = w.set(40, top, 40, .air);
+    _ = w.set(40, top - 1, 40, .air);
+    _ = w.set(41, top - 1, 40, .air);
+    _ = w.set(40, top, 40, .water);
+    flowFor(w, 10);
+    try testing.expectEqual(Block.water, w.get(40, top - 1, 40));
+    try testing.expectEqual(Block.air, w.get(41, top - 1, 40));
+}
+
+test "water: a world saved while it flowed is flooded when read" {
+    const w = try shoreWorld();
+    defer w.destroy();
+    var x: i32 = 10;
+    while (x < 20) : (x += 1) _ = w.set(x, sea_level - 1, 50, .air);
+    w.flow();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try w.encode(&out, testing.allocator);
+    const r = try World.create(testing.allocator);
+    defer r.destroy();
+    _ = try r.decode(out.items);
+    try testing.expectEqual(Block.water, r.get(19, sea_level - 1, 50));
 }
