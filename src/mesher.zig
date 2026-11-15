@@ -399,7 +399,7 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
 }
 
 /// Solid things that are not cubes: palms' trunks, paving's stones,
-/// furniture.
+/// leafy plants, furniture.
 fn shapedSolids(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, mesh: *Mesh) !void {
     var y: i32 = 0;
     while (y < top_y) : (y += 1) {
@@ -411,6 +411,7 @@ fn shapedSolids(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, 
                 switch (blk) {
                     .palm => try plants.trunk(gpa, w, p, mesh),
                     .paving => if (!w.get(p[0], p[1] + 1, p[2]).isOpaque()) try plants.paving(gpa, w, p, mesh),
+                    .leafy_plant => try plants.plant(gpa, w, p, blk, mesh),
                     else => if (blk.shape() == .furniture) try furniture.build(gpa, w, p, blk, mesh),
                 }
             }
@@ -438,7 +439,8 @@ fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
                         const corners = rectCorners(face, @floatFromInt(p[@intFromEnum(face) / 2] + @as(i32, if (@intFromEnum(face) % 2 == 0) 1 else 0)), @floatFromInt(p[(@intFromEnum(face) / 2 + 1) % 3]), @floatFromInt(p[(@intFromEnum(face) / 2 + 2) % 3]), 1, 1);
                         try emitQuad(mesh.list(.clear(blk.tile(face).strip())), gpa, face, corners, cornerLooks(face, look), @splat(.none));
                     },
-                    .plant => try plants.plant(gpa, w, p, blk, mesh),
+                    // Leafy plants are solid (with the solid faces).
+                    .plant => if (blk != .leafy_plant) try plants.plant(gpa, w, p, blk, mesh),
                     .pole => try plants.crown(gpa, w, p, mesh),
                     else => {},
                 }

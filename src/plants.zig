@@ -411,7 +411,12 @@ test "paving's stones keep in from grass, and carry on into the next paving" {
 
 /// Leafy plants: three to five leaves, each held out on a stalk from the
 /// middle of the block, big and arrow-shaped, their points drooping.
-fn leafyPlant(o: Out, base: V, seed: u32, turn: f32) !void {
+fn leafyPlant(o_in: Out, base: V, seed: u32, turn: f32) !void {
+    // Solid: its leaves are their own shape, not a picture of one with
+    // clear around it, so they hide what is behind them as blocks do
+    // (drawn with the solid faces that look up).
+    var o = o_in;
+    o.solid = true;
     const n = 3 + @as(u32, @intFromFloat(hash(seed, 7, 7) * 3));
     for (0..n) |k| {
         const ki: i32 = @intCast(k);
@@ -421,15 +426,21 @@ fn leafyPlant(o: Out, base: V, seed: u32, turn: f32) !void {
         const tall = 0.95 + hash(seed, ki, 2) * 0.55;
         const foot = add(base, .{ 0, 0.02, 0 });
         const top = add(base, add(mul(dir, 0.2 + hash(seed, ki, 3) * 0.1), mul(up, tall)));
-        // The stalk: two narrow strips crossing, from the leaf's rib.
+        // The stalk: two narrow strips crossing, coloured as the leaf's
+        // rib.
         const w = 0.035;
         const across = [2]V{ side, .{ dir[0], 0, dir[2] } };
         for (across) |acr| {
             const c = [4]V{ add(foot, mul(acr, -w)), add(foot, mul(acr, w)), add(top, mul(acr, w)), add(top, mul(acr, -w)) };
-            try o.twoSided(.leafy_plant, .up, .up, c, .{ .{ 0.485, 0.7 }, .{ 0.515, 0.7 }, .{ 0.515, 0.3 }, .{ 0.485, 0.3 } }, .{ .none, .none, .sway, .sway });
+            // Lit as the way each side faces.
+            const front = faceAt(std.math.atan2(acr[0], -acr[2]));
+            const back = faceAt(std.math.atan2(-acr[0], acr[2]));
+            try o.twoSided(.leafy_plant, front, back, c, .{ .{ 0.49, 0.7 }, .{ 0.51, 0.7 }, .{ 0.51, 0.3 }, .{ 0.49, 0.3 } }, .{ .none, .none, .sway, .sway });
         }
-        // The leaf, in two pieces: out and a little down, then down more
-        // to its point. Its lobes reach back past the stalk.
+        // The leaf: out and a little down, then down more to its point,
+        // its lobes reaching back past the stalk. Its outline is the
+        // tile's leaf's (see textures.zig), a little inside it, in rows
+        // from its base to its point, each side of the rib.
         const len = 1.05 + hash(seed, ki, 4) * 0.3;
         const half = len * 0.46;
         const d1 = add(mul(dir, @cos(0.2)), mul(up, -@sin(0.2)));
@@ -437,18 +448,58 @@ fn leafyPlant(o: Out, base: V, seed: u32, turn: f32) !void {
         const start = add(top, mul(d1, -0.14 * len));
         const mid = add(start, mul(d1, 0.5 * len));
         const tip = add(mid, mul(d2, 0.5 * len));
-        const cup = mul(up, half * 0.18);
-        const pts = [3]V{ start, mid, tip };
-        const ts = [3]f32{ 0, 0.5, 1 };
-        const anims = [3]Anim{ .sway, .plant, .plant };
-        for (0..2) |j| {
-            const l0 = add(add(pts[j], mul(side, -half)), cup);
-            const r0 = add(add(pts[j], mul(side, half)), cup);
-            const l1 = add(add(pts[j + 1], mul(side, -half)), cup);
-            const r1 = add(add(pts[j + 1], mul(side, half)), cup);
-            // Up the middle, the rib; out to each edge.
-            try o.twoSided(.leafy_plant, .up, .down, .{ pts[j], r0, r1, pts[j + 1] }, .{ .{ 0.5, ts[j] }, .{ hi, ts[j] }, .{ hi, ts[j + 1] }, .{ 0.5, ts[j + 1] } }, .{ anims[j], anims[j], anims[j + 1], anims[j + 1] });
-            try o.twoSided(.leafy_plant, .up, .down, .{ pts[j], pts[j + 1], l1, l0 }, .{ .{ 0.5, ts[j] }, .{ 0.5, ts[j + 1] }, .{ lo, ts[j + 1] }, .{ lo, ts[j] } }, .{ anims[j], anims[j + 1], anims[j + 1], anims[j] });
+        const rows = [_]f32{ 0, 0.1, 0.2, 0.35, 0.55, 0.78, 1 };
+        const at = struct {
+            fn f(s0: V, m: V, e: V, t: f32) V {
+                return if (t < 0.5) add(s0, mul(sub(m, s0), t * 2)) else add(m, mul(sub(e, m), t * 2 - 1));
+            }
+        }.f;
+        // Across the tile (0.5 the rib), out to the edge and in to the
+        // notch between the lobes.
+        const edge = struct {
+            fn f(t: f32) f32 {
+                // (A sliver wide at the point, not none.)
+                return @max(0.01, 0.47 * 0.94 * std.math.pow(f32, @max(0, @sin(std.math.pi * (0.25 + 0.75 * t))), 0.7));
+            }
+        }.f;
+        const notch = struct {
+            fn f(t: f32) f32 {
+                return if (t < 0.2) 0.22 * (1 - t / 0.2) + 0.01 else 0;
+            }
+        }.f;
+        const anim = struct {
+            fn f(t: f32) Anim {
+                return if (t < 0.3) .sway else .plant;
+            }
+        }.f;
+        for (0..rows.len - 1) |j| {
+            const t0 = rows[j];
+            const t1 = rows[j + 1];
+            const p0 = at(start, mid, tip, t0);
+            const p1 = at(start, mid, tip, t1);
+            for ([2]f32{ 1, -1 }) |sgn| {
+                // A point on the leaf, `u` across the tile from its rib,
+                // its edges cupped up a little.
+                const pt = struct {
+                    fn f(p: V, sd: V, hf: f32, sg: f32, u: f32) V {
+                        const x = u / 0.5 * hf;
+                        return add(add(p, mul(sd, sg * x)), mul(up, 0.18 * x * x / hf));
+                    }
+                }.f;
+                const in0 = notch(t0);
+                const in1 = notch(t1);
+                const out0 = @max(edge(t0), in0);
+                const out1 = @max(edge(t1), in1);
+                const c = [4]V{ pt(p0, side, half, sgn, in0), pt(p0, side, half, sgn, out0), pt(p1, side, half, sgn, out1), pt(p1, side, half, sgn, in1) };
+                const uv = [4][2]f32{ .{ 0.5 + sgn * in0, t0 }, .{ 0.5 + sgn * out0, t0 }, .{ 0.5 + sgn * out1, t1 }, .{ 0.5 + sgn * in1, t1 } };
+                const an = [4]Anim{ anim(t0), anim(t0), anim(t1), anim(t1) };
+                // Wound to face up on either side of the rib.
+                if (sgn > 0) {
+                    try o.twoSided(.leafy_plant, .up, .down, c, uv, an);
+                } else {
+                    try o.twoSided(.leafy_plant, .up, .down, .{ c[0], c[3], c[2], c[1] }, .{ uv[0], uv[3], uv[2], uv[1] }, .{ an[0], an[3], an[2], an[1] });
+                }
+            }
         }
     }
 }
