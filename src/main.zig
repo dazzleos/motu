@@ -76,7 +76,8 @@ const Scene = struct {
             .camera = g.camera(),
             .aspect = @as(f32, @floatFromInt(vp.width)) / @as(f32, @floatFromInt(@max(vp.height, 1))),
             .time = g.clock,
-            .env = renderer_mod.Environment.at(g.time_of_day),
+            .env = renderer_mod.Environment.at(g.time_of_day).withWeather(g.weather()),
+            .weather = g.weather(),
             .underwater = g.player.underwater(g.world),
             .outline = if (g.target) |t| t.cell else null,
             .avatars = g.net.others,
@@ -431,7 +432,7 @@ fn run(init: std.process.Init) !void {
             .joined => |j| {
                 // This island, kept for coming back to.
                 save(gpa, &game);
-                game.joinWorld(j.world, j.pos, j.yaw, j.time) catch |err| {
+                game.joinWorld(j.world, j.pos, j.yaw, j.time, j.day) catch |err| {
                     print(sys.log_warning ++ "dazzle-blocks: cannot play in that world ({s})\n", .{@errorName(err)});
                     game.leaveGame();
                 };
@@ -520,6 +521,7 @@ test {
     _ = @import("mesher.zig");
     _ = @import("plants.zig");
     _ = @import("furniture.zig");
+    _ = @import("weather.zig");
     _ = @import("math.zig");
     _ = @import("player.zig");
     _ = @import("creatures.zig");

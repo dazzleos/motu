@@ -30,6 +30,7 @@ const math = @import("math.zig");
 const textures = @import("textures.zig");
 const player_mod = @import("player.zig");
 const creatures = @import("creatures.zig");
+const weather_mod = @import("weather.zig");
 
 const World = world_mod.World;
 const Vertex = mesher.Vertex;
@@ -120,6 +121,8 @@ pub const Environment = struct {
     zenith: V3,
     horizon: V3,
     lamps: f32,
+    /// How far one sees, of a clear day's (less in rain).
+    visibility: f32 = 1,
 
     fn mix3(a: V3, b: V3, t: f32) V3 {
         return a + (b - a) * math.splat(t);
@@ -136,15 +139,17 @@ pub const Environment = struct {
         const angle = 2 * std.math.pi * (t - 0.25);
         const sun_dir = math.normalize(.{ @cos(angle), @sin(angle), 0.3 });
         const height = sun_dir[1];
-        const daylight = smoothstep(-0.12, 0.22, height);
+        // A long twilight: the light goes slowly as the sun sets, and
+        // comes slowly as it rises.
+        const daylight = smoothstep(-0.4, 0.3, height);
         // Reddest with the sun at the horizon.
-        const low = @exp(-(height / 0.2) * (height / 0.2)) * smoothstep(-0.2, 0, height);
+        const low = @exp(-(height / 0.25) * (height / 0.25)) * smoothstep(-0.35, 0, height);
         const day_zenith = V3{ 0.3, 0.54, 0.92 };
         const day_horizon = V3{ 0.7, 0.83, 0.95 };
         const dusk_zenith = V3{ 0.27, 0.32, 0.6 };
         const dusk_horizon = V3{ 0.98, 0.56, 0.3 };
-        const night_zenith = V3{ 0.008, 0.014, 0.045 };
-        const night_horizon = V3{ 0.035, 0.05, 0.1 };
+        const night_zenith = V3{ 0.015, 0.025, 0.07 };
+        const night_horizon = V3{ 0.05, 0.07, 0.13 };
         const zenith = mix3(night_zenith, mix3(day_zenith, dusk_zenith, low * 0.7), daylight);
         const horizon = mix3(night_horizon, mix3(day_horizon, dusk_horizon, low), daylight);
         // The faces are shaded by one light, the sun's or (once the sun
@@ -164,11 +169,32 @@ pub const Environment = struct {
             .sun_shows = smoothstep(-0.12, -0.02, height),
             .moon_shows = smoothstep(0.12, 0.22, -height),
             .sun_color = sunlight + moonlight,
-            .ambient = mix3(V3{ 0.11, 0.13, 0.22 }, V3{ 0.4, 0.45, 0.55 }, daylight) + V3{ 0.05, 0.03, 0.0 } * math.splat(low),
+            .ambient = mix3(V3{ 0.14, 0.16, 0.26 }, V3{ 0.4, 0.45, 0.55 }, daylight) + V3{ 0.05, 0.03, 0.0 } * math.splat(low),
             .zenith = zenith,
             .horizon = horizon,
             .lamps = 0.55 + 0.45 * night,
         };
+    }
+
+    /// The same, under clouds and rain: the sun dimmed and its disc
+    /// hidden, the sky greyed and, in rain, darker and the fog closer.
+    pub fn withWeather(e: Environment, wx: weather_mod.Weather) Environment {
+        var o = e;
+        const c = wx.clouds;
+        const grey = struct {
+            fn of(col: V3, k: f32, dark: f32) V3 {
+                const l = (col[0] + col[1] + col[2]) / 3;
+                return mix3(col, V3{ l * 0.95, l * 0.98, l * 1.04 }, k) * math.splat(1 - dark);
+            }
+        }.of;
+        o.sun_color = e.sun_color * math.splat(1 - 0.7 * c);
+        o.sun_shows = e.sun_shows * (1 - c);
+        o.moon_shows = e.moon_shows * (1 - c);
+        o.ambient = e.ambient * math.splat(1 - 0.12 * c - 0.15 * wx.rain);
+        o.zenith = grey(e.zenith, c * 0.8, 0.35 * wx.rain);
+        o.horizon = grey(e.horizon, c * 0.7, 0.3 * wx.rain);
+        o.visibility = 1 - 0.4 * wx.rain;
+        return o;
     }
 
     /// Which way the light that shades faces comes from: the sun, or by
@@ -289,6 +315,8 @@ pub const View = struct {
     /// How far one sees, of `view_distance` (the fog nearer to match):
     /// less to draw.
     reach: f32 = 1,
+    /// The clouds and rain (the light is in `env`).
+    weather: weather_mod.Weather = .{},
 };
 
 /// What the last frame drew.
@@ -399,7 +427,8 @@ pub fn Renderer(comptime Device: type) type {
             const figures = avatarMeshes();
             const avatars = try dev.createBo(@sizeOf(@TypeOf(figures)));
             @memcpy(avatars.map[0..@sizeOf(@TypeOf(figures))], std.mem.asBytes(&figures));
-            const creatures_bytes: u32 = creatures.max_quads * 4 * @sizeOf(Vertex);
+            // The creatures, then the clouds and rain.
+            const creatures_bytes: u32 = (creatures.max_quads + weather_mod.max_quads) * 4 * @sizeOf(Vertex);
             const creatures_bo0 = try dev.createBo(creatures_bytes);
             errdefer dev.destroyBo(creatures_bo0);
             const creatures_bo1 = try dev.createBo(creatures_bytes);
@@ -559,8 +588,8 @@ pub fn Renderer(comptime Device: type) type {
             const env = v.env;
             const light = env.lightDir();
             const fog: V3 = if (v.underwater) V3{ 0.07, 0.34, 0.44 } * math.splat(0.25 + 0.75 * env.daylight) else env.horizon;
-            const start: f32 = if (v.underwater) 0 else fog_start * v.reach;
-            const depth: f32 = if (v.underwater) 26 else fog_depth * v.reach;
+            const start: f32 = if (v.underwater) 0 else fog_start * v.reach * env.visibility;
+            const depth: f32 = if (v.underwater) 26 else fog_depth * v.reach * env.visibility;
             const scene: Scene = .{
                 .mvp = vp,
                 .camera = .{ cam.eye[0], cam.eye[1], cam.eye[2], @mod(v.time, 1000) },
@@ -639,8 +668,9 @@ pub fn Renderer(comptime Device: type) type {
                 r.creatures.sync(w, v.time);
                 const cbo = r.creatures_bo[r.creatures_frame];
                 r.creatures_frame ^= 1;
-                const cverts = std.mem.bytesAsSlice(Vertex, cbo.map[0 .. creatures.max_quads * 4 * @sizeOf(Vertex)]);
-                const cquads = r.creatures.buildMesh(w, &frustum, cam.eye, depth + start + 12, cverts);
+                const cverts = std.mem.bytesAsSlice(Vertex, cbo.map[0 .. (creatures.max_quads + weather_mod.max_quads) * 4 * @sizeOf(Vertex)]);
+                var cquads = r.creatures.buildMesh(w, &frustum, cam.eye, depth + start + 12, cverts[0 .. creatures.max_quads * 4]);
+                cquads += weather_mod.buildMesh(v.weather, w.seed, w, cam.eye, v.time, cverts[cquads * 4 ..]);
                 if (cquads > 0) {
                     try target.quads(&r.terrain, cbo.handle, 0, cquads, .{ tex[2], null, null });
                 }

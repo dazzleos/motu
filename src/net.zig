@@ -37,8 +37,9 @@ pub const max_players = player_mod.colours;
 pub const max_nearby = 8;
 
 const beacon_magic = "DZBN";
-/// 2: palms and new plants (a world sent is the new kind).
-const protocol_version: u8 = 2;
+/// 2: palms and new plants (a world sent is the new kind). 3: the day,
+/// for the weather.
+const protocol_version: u8 = 3;
 const beacon_every = std.time.ns_per_s;
 /// A game not heard for this long has gone.
 const nearby_for = 4 * std.time.ns_per_s;
@@ -75,7 +76,7 @@ const Kind = enum(u8) {
 pub const Event = union(enum) {
     /// Joined: the host's world (as `World.encode` writes it, until the
     /// next poll), and where to stand.
-    joined: struct { world: []const u8, pos: V3, yaw: f32, time: f32 },
+    joined: struct { world: []const u8, pos: V3, yaw: f32, time: f32, day: u32 },
     /// Left the game joined, or it went away: back to this island.
     left,
     /// The host said no.
@@ -450,7 +451,10 @@ pub const Session = struct {
         }
         if (now -| s.last_time >= time_every) {
             s.last_time = now;
-            s.toPlayers(.time, &.{std.mem.asBytes(&g.time_of_day)}, null);
+            var tb: [8]u8 = undefined;
+            std.mem.writeInt(u32, tb[0..4], @bitCast(g.time_of_day), .little);
+            std.mem.writeInt(u32, tb[4..8], g.day, .little);
+            s.toPlayers(.time, &.{&tb}, null);
         }
 
         // Sent; gone.
@@ -514,9 +518,10 @@ pub const Session = struct {
         };
         // Beside the host.
         const pos = g.player.pos + V3{ 1, 0, 0 };
-        var hdr: [21]u8 = undefined;
+        var hdr: [25]u8 = undefined;
         hdr[0] = p.id;
         for ([_]f32{ g.time_of_day, pos[0], pos[1], pos[2], g.player.yaw }, 0..) |v, i| std.mem.writeInt(u32, hdr[1 + i * 4 ..][0..4], @bitCast(v), .little);
+        std.mem.writeInt(u32, hdr[21..25], g.day, .little);
         p.send(s.gpa, .welcome, &.{ &hdr, world.items });
         p.state = .playing;
         g.say("Someone joined");
@@ -574,18 +579,19 @@ pub const Session = struct {
         var at: usize = 0;
         while (h.next(at)) |f| : (at += f.size) {
             switch (f.kind) {
-                .welcome => if (h.state == .hello and f.payload.len >= 21) {
+                .welcome => if (h.state == .hello and f.payload.len >= 25) {
                     const p = f.payload;
                     s.my_id = p[0];
                     var v: [5]f32 = undefined;
                     for (&v, 0..) |*x, i| x.* = @bitCast(std.mem.readInt(u32, p[1 + i * 4 ..][0..4], .little));
-                    s.world.appendSlice(s.gpa, p[21..]) catch {
+                    const day = std.mem.readInt(u32, p[21..25], .little);
+                    s.world.appendSlice(s.gpa, p[25..]) catch {
                         h.dead = true;
                         break;
                     };
                     h.state = .playing;
                     g.net.status = .{ .joined = h.name() };
-                    event = .{ .joined = .{ .world = s.world.items, .pos = .{ v[1], v[2], v[3] }, .yaw = v[4], .time = v[0] } };
+                    event = .{ .joined = .{ .world = s.world.items, .pos = .{ v[1], v[2], v[3] }, .yaw = v[4], .time = v[0], .day = day } };
                 },
                 .denied => if (h.state == .hello) {
                     h.consume(at + f.size);
@@ -600,8 +606,9 @@ pub const Session = struct {
                 .leave => if (f.payload.len == 1 and f.payload[0] < max_players) {
                     s.remotes[f.payload[0]].active = false;
                 },
-                .time => if (h.state == .playing and f.payload.len == 4) {
+                .time => if (h.state == .playing and f.payload.len == 8) {
                     g.time_of_day = @mod(@as(f32, @bitCast(std.mem.readInt(u32, f.payload[0..4], .little))), 1);
+                    g.day = std.mem.readInt(u32, f.payload[4..8], .little);
                 },
                 else => {},
             }
@@ -807,7 +814,7 @@ const Pair = struct {
             _ = pair.a.poll(&pair.ga, now);
             if (pair.b.poll(&pair.gb, now)) |e| {
                 event = e;
-                if (e == .joined) try pair.gb.joinWorld(e.joined.world, e.joined.pos, e.joined.yaw, e.joined.time);
+                if (e == .joined) try pair.gb.joinWorld(e.joined.world, e.joined.pos, e.joined.yaw, e.joined.time, e.joined.day);
             }
             if (done(pair)) return event;
             var ts: linux.timespec = .{ .sec = 0, .nsec = std.time.ns_per_ms };

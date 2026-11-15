@@ -30,6 +30,7 @@
 const std = @import("std");
 const kete = @import("kete");
 const blocks = @import("blocks.zig");
+const weather_mod = @import("weather.zig");
 const world_mod = @import("world.zig");
 const player_mod = @import("player.zig");
 const math = @import("math.zig");
@@ -121,6 +122,8 @@ pub const Game = struct {
     slot: u8 = 0,
     /// Through the day, from 0 (midnight) to 1; 0.5 is noon.
     time_of_day: f32 = 0.34,
+    /// Days gone by (for the weather, which goes on from day to day).
+    day: u32 = 0,
     /// Seconds since the game started (for things that move).
     clock: f32 = 0,
     /// Keys held.
@@ -285,10 +288,11 @@ pub const Game = struct {
 
     /// Joined: plays in the host's world (`data`, as `World.encode` wrote
     /// it), standing at `pos`; back to the game, from the menu.
-    pub fn joinWorld(g: *Game, data: []const u8, pos: V3, yaw: f32, time: f32) !void {
+    pub fn joinWorld(g: *Game, data: []const u8, pos: V3, yaw: f32, time: f32, day: u32) !void {
         _ = try g.world.decode(data);
         g.player = .{ .pos = pos, .yaw = yaw };
         g.time_of_day = @mod(time, 1);
+        g.day = day;
         g.target = null;
         g.unsaved = false;
         g.closeMenu();
@@ -505,7 +509,9 @@ pub const Game = struct {
     /// player there.
     pub fn tick(g: *Game, dt: f32) void {
         g.clock += dt;
-        g.time_of_day = @mod(g.time_of_day + dt / day_length, 1);
+        const t = g.time_of_day + dt / day_length;
+        if (t >= 1) g.day +%= 1;
+        g.time_of_day = @mod(t, 1);
         var turn: f32 = 0;
         if (!g.menu_open) {
             if (g.held.contains(.left)) turn -= 1;
@@ -519,7 +525,8 @@ pub const Game = struct {
     // --- Saving ---------------------------------------------------------------------------
 
     const magic = "DZBG";
-    const version = 1;
+    /// 2: the day, at the end.
+    const version = 2;
 
     /// The world, then the player and the hotbar.
     pub fn encode(g: *const Game, out: *std.ArrayList(u8)) !void {
@@ -535,13 +542,23 @@ pub const Game = struct {
         try out.append(g.gpa, @intFromBool(p.flying));
         for (g.hotbar) |b| try out.append(g.gpa, @intFromEnum(b));
         try out.append(g.gpa, g.slot);
+        var d: [4]u8 = undefined;
+        std.mem.writeInt(u32, &d, g.day, .little);
+        try out.appendSlice(g.gpa, &d);
+    }
+
+    /// The weather now (see weather.zig).
+    pub fn weather(g: *const Game) weather_mod.Weather {
+        return weather_mod.Weather.at(g.world.seed, g.day, g.time_of_day);
     }
 
     /// Reads what `encode` wrote.
     pub fn decode(g: *Game, data: []const u8) !void {
         const at = try g.world.decode(data);
         const rest = data[at..];
-        if (rest.len < 5 + 6 * 4 + 1 + 9 + 1 or !std.mem.eql(u8, rest[0..4], magic) or rest[4] != version) return error.Corrupt;
+        if (rest.len < 5 + 6 * 4 + 1 + 9 + 1 or !std.mem.eql(u8, rest[0..4], magic) or rest[4] < 1 or rest[4] > version) return error.Corrupt;
+        if (rest[4] >= 2 and rest.len < 44) return error.Corrupt;
+        g.day = if (rest[4] >= 2) std.mem.readInt(u32, rest[40..44], .little) else 0;
         var f: [6]f32 = undefined;
         for (&f, 0..) |*v, i| v.* = @bitCast(std.mem.readInt(u32, rest[5 + i * 4 ..][0..4], .little));
         for (f) |v| if (!std.math.isFinite(v)) return error.Corrupt;
