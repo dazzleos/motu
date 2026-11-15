@@ -394,6 +394,8 @@ pub const Tile = enum(u6) {
     blue_flower,
     white_flower,
     orange_flower,
+    /// For sharks.
+    grey,
 
     pub const per_strip = 16;
     pub const strips = 3;

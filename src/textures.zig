@@ -394,6 +394,7 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
         .purple => fabric(u, v, x, y, rgb(0x7d3db0), s),
         .pink => fabric(u, v, x, y, rgb(0xee8ab2), s),
         .cyan => fabric(u, v, x, y, rgb(0x27969c), s),
+        .grey => fabric(u, v, x, y, rgb(0x7a8590), s),
     };
 }
 

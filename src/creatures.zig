@@ -1,4 +1,5 @@
-//! Birds in the air over the island and fish in the sea around it: how
+//! Birds in the air over the island, fish in the sea around it, and,
+//! much rarer, turtles in the shallows and sharks in deeper water: how
 //! they move (flocking, circling, turning from the shore and rising over
 //! hills and trees) and how they are turned into quads of `mesher.Vertex`
 //! drawn from the colour strip (strip 2).
@@ -18,8 +19,10 @@ const V3 = math.V3;
 
 pub const bird_count = 24;
 pub const fish_count = 40;
-/// Enough for every bird and fish in view at once (each is under 40 quads).
-pub const max_quads = (bird_count + fish_count) * 40;
+pub const turtle_count = 3;
+pub const shark_count = 2;
+/// Enough for every creature in view at once (each is under 40 quads).
+pub const max_quads = (bird_count + fish_count + turtle_count + shark_count) * 40;
 
 pub const BirdKind = enum(u2) {
     /// White with grey-shaded wings, black wingtips and an orange beak;
@@ -77,9 +80,36 @@ pub const Fish = struct {
     kind: FishKind,
 };
 
+/// A turtle or a shark: alone, wandering near its home, in the water it
+/// keeps to.
+pub const Swimmer = struct {
+    pos: V3,
+    yaw: f32,
+    pitch: f32 = 0,
+    speed: f32,
+    /// Flipper or tail-beat phase, in radians.
+    phase: f32 = 0,
+    home: [2]f32,
+    kind: Kind,
+
+    pub const Kind = enum {
+        /// Keeps to the shallows (three blocks deep at most), paddling
+        /// slowly.
+        turtle,
+        /// Keeps to deeper water (five blocks or more).
+        shark,
+    };
+
+    /// Whether the water at (x, z) is the kind it keeps to.
+    fn keepsTo(s: *const Swimmer, w: *const World, x: f32, z: f32) bool {
+        return waterFor(s.kind, w, x, z);
+    }
+};
+
 pub const Creatures = struct {
     birds: [bird_count]Bird = undefined,
     fish: [fish_count]Fish = undefined,
+    swimmers: [turtle_count + shark_count]Swimmer = undefined,
     spawned: bool = false,
     seed: u32 = 0,
     time: f32 = 0,
@@ -182,6 +212,23 @@ pub const Creatures = struct {
                 };
             }
         }
+
+        // A few turtles in the shallows and a couple of sharks further
+        // out, each alone, round the island.
+        for (&c.swimmers, 0..) |*sw, i| {
+            const kind: Swimmer.Kind = if (i < turtle_count) .turtle else .shark;
+            const s = seed +% @as(u32, @intCast(i)) *% 2246822519 +% 77;
+            const home = findWaterFor(w, kind, s, i);
+            const floor = seaFloorAt(w, home[0], home[1]);
+            sw.* = .{
+                .pos = .{ home[0], (swimBand(kind, floor)[0] + swimBand(kind, floor)[1]) * 0.5, home[1] },
+                .yaw = rand01(s +% 1) * std.math.pi * 2,
+                .speed = if (kind == .turtle) 0.7 + 0.2 * rand01(s +% 2) else 1.6 + 0.4 * rand01(s +% 2),
+                .phase = rand01(s +% 3) * std.math.pi * 2,
+                .home = home,
+                .kind = kind,
+            };
+        }
     }
 
     /// Advances the simulation to `time` (spawning first if needed).
@@ -210,6 +257,57 @@ pub const Creatures = struct {
         if (dt == 0) return;
         c.tickBirds(w, dt);
         c.tickFish(w, dt);
+        c.tickSwimmers(w, dt);
+    }
+
+    fn tickSwimmers(c: *Creatures, w: *const World, dt: f32) void {
+        for (&c.swimmers, 0..) |*s, idx| {
+            // Wander, drawn back home when far from it.
+            var wish_x = @sin(s.yaw);
+            var wish_z = -@cos(s.yaw);
+            const hx = s.home[0] - s.pos[0];
+            const hz = s.home[1] - s.pos[2];
+            const hd = @sqrt(hx * hx + hz * hz);
+            const leash: f32 = if (s.kind == .turtle) 10 else 22;
+            if (hd > leash) {
+                wish_x += (hx / hd) * 0.8;
+                wish_z += (hz / hd) * 0.8;
+            }
+            const wander = @sin(s.phase * 0.05 + @as(f32, @floatFromInt(idx)) * 1.3) * 0.5;
+            wish_x += @cos(s.yaw) * wander;
+            wish_z += @sin(s.yaw) * wander;
+            // Turn from water not its own (land, or too deep or shallow).
+            const look: f32 = if (s.kind == .turtle) 1.5 else 3;
+            if (!s.keepsTo(w, s.pos[0] + @sin(s.yaw) * look, s.pos[2] - @cos(s.yaw) * look)) {
+                var best = s.yaw + std.math.pi;
+                for (1..8) |step| {
+                    const cand = s.yaw + @as(f32, @floatFromInt(step)) * (std.math.pi / 4.0);
+                    if (s.keepsTo(w, s.pos[0] + @sin(cand) * look, s.pos[2] - @cos(cand) * look)) {
+                        best = cand;
+                        break;
+                    }
+                }
+                wish_x = @sin(best) * 3;
+                wish_z = -@cos(best) * 3;
+            }
+            const diff = angleDiff(std.math.atan2(wish_x, -wish_z), s.yaw);
+            const max_turn: f32 = (if (s.kind == .turtle) @as(f32, 1.2) else 0.9) * dt;
+            s.yaw = wrapAngle(s.yaw + std.math.clamp(diff, -max_turn, max_turn));
+            const nx = s.pos[0] + @sin(s.yaw) * s.speed * dt;
+            const nz = s.pos[2] - @cos(s.yaw) * s.speed * dt;
+            if (s.keepsTo(w, nx, nz)) {
+                s.pos[0] = nx;
+                s.pos[2] = nz;
+            } else s.yaw = wrapAngle(s.yaw + std.math.pi * 0.5);
+            // Between the bed and the surface, as its kind swims.
+            const band = swimBand(s.kind, seaFloorAt(w, s.pos[0], s.pos[2]));
+            const target = band[0] + (band[1] - band[0]) * 0.5;
+            const dy = target - s.pos[1];
+            s.pitch = std.math.clamp(dy * 0.3, -0.2, 0.2);
+            s.pos[1] = std.math.clamp(s.pos[1] + dy * @min(1, 1.5 * dt), band[0], band[1]);
+            const rate: f32 = if (s.kind == .turtle) 2.2 else 3.5 + s.speed;
+            s.phase = @mod(s.phase + rate * dt, std.math.pi * 200);
+        }
     }
 
     fn tickBirds(c: *Creatures, w: *const World, dt: f32) void {
@@ -387,6 +485,17 @@ pub const Creatures = struct {
             emitFish(&builder, f, light);
         }
 
+        for (&c.swimmers) |*s| {
+            const d = s.pos - eye;
+            if (math.dot(d, d) > max_d2) continue;
+            if (!frustum.sees(s.pos - V3{ 1.2, 0.6, 1.2 }, s.pos + V3{ 1.2, 0.6, 1.2 })) continue;
+            const light = lightAtPos(w, s.pos);
+            switch (s.kind) {
+                .turtle => emitTurtle(&builder, s, light),
+                .shark => emitShark(&builder, s, light),
+            }
+        }
+
         return @intCast(builder.at / 4);
     }
 };
@@ -443,6 +552,55 @@ fn isSwimmableWater(w: *const World, x: f32, z: f32) bool {
     const ix: i32 = @intFromFloat(@floor(x));
     const iz: i32 = @intFromFloat(@floor(z));
     return w.get(ix, world_mod.sea_level - 2, iz) == .water and w.get(ix, world_mod.sea_level - 1, iz) == .water;
+}
+
+/// How deep the water is at (x, z), in blocks (deep, past the world's
+/// edge).
+fn waterDepth(w: *const World, x: f32, z: f32) i32 {
+    const ix: i32 = @intFromFloat(@floor(x));
+    const iz: i32 = @intFromFloat(@floor(z));
+    if (!World.inBounds(ix, 0, iz)) return 9;
+    var d: i32 = 0;
+    while (d < 12 and w.get(ix, world_mod.sea_level - 1 - d, iz) == .water) d += 1;
+    return d;
+}
+
+/// Whether a turtle (the shallows) or a shark (deeper water) keeps to
+/// the water at (x, z).
+fn waterFor(kind: Swimmer.Kind, w: *const World, x: f32, z: f32) bool {
+    if (x < -18 or x >= world_mod.size_x + 18 or z < -18 or z >= world_mod.size_z + 18) return false;
+    const d = waterDepth(w, x, z);
+    return switch (kind) {
+        .turtle => d >= 1 and d <= 3,
+        .shark => d >= 5,
+    };
+}
+
+/// The heights a turtle or shark keeps between over a sea bed at `floor`
+/// (its top at `floor + 1`): a turtle just under the surface, a shark in
+/// the middle of the water.
+fn swimBand(kind: Swimmer.Kind, floor: f32) [2]f32 {
+    const surface: f32 = world_mod.sea_level - 1 + mesher.water_top;
+    return switch (kind) {
+        .turtle => .{ @min(floor + 1.15, surface - 0.4), surface - 0.4 },
+        .shark => .{ floor + 1.6, @max(floor + 1.6, surface - 1.8) },
+    };
+}
+
+/// Water a turtle or shark keeps to, round the island (the `i`th of
+/// them, spread round it).
+fn findWaterFor(w: *const World, kind: Swimmer.Kind, seed: u32, i: usize) [2]f32 {
+    const base_a = @as(f32, @floatFromInt(i)) * 2.4 + rand01(seed) * 0.5;
+    for (0..48) |attempt| {
+        const a = base_a + @as(f32, @floatFromInt(attempt)) * 0.37;
+        var r: f32 = if (kind == .turtle) 30 else 50;
+        while (r <= 80) : (r += 2) {
+            const x = world_mod.size_x * 0.5 + @cos(a) * r;
+            const z = world_mod.size_z * 0.5 + @sin(a) * r;
+            if (waterFor(kind, w, x, z)) return .{ x, z };
+        }
+    }
+    return .{ -10, -10 };
 }
 
 /// Finds a coastal water spot with good depth for school `school`.
@@ -763,6 +921,54 @@ fn emitFish(b: *Builder, fish: *const Fish, light: u8) void {
     b.box(f_tail, tail_pos, .{ 0.014, 0.105, 0.08 }, .{ 1, 0.45 }, .{ 1, 1.25 }, BoxLook.uniform(fin_tile), light);
 }
 
+fn emitTurtle(b: *Builder, t: *const Swimmer, light: u8) void {
+    const f = Frame.fromAngles(t.yaw, t.pitch, @sin(t.phase) * 0.04);
+    // The shell: a low dome, a smaller one on top, darker.
+    b.box(f, t.pos, .{ 0.2, 0.05, 0.26 }, .{ 0.7, 0.8 }, .{ 0.7, 0.8 }, BoxLook.shaded(.green, 1), light);
+    b.box(f, f.point(t.pos, .{ 0, 0.07, 0 }), .{ 0.15, 0.03, 0.19 }, .{ 0.7, 1 }, .{ 0.7, 1 }, BoxLook.shaded(.green, 2), light);
+    // The head, out in front, nodding a little.
+    const head = f.pitchBy(@sin(t.phase * 0.5) * 0.1);
+    b.box(head, f.point(t.pos, .{ 0, 0.01, -0.33 }), .{ 0.065, 0.05, 0.08 }, .{ 0.75, 0.8 }, .{ 1, 1 }, BoxLook.uniform(.green), light);
+    // Front flippers, long, sweeping like wings; back ones small.
+    const stroke = @sin(t.phase);
+    for ([2]f32{ -1, 1 }) |side| {
+        const ff = f.yawBy(side * (0.5 + stroke * 0.35)).rollBy(side * stroke * 0.3);
+        b.box(ff, f.point(t.pos, .{ side * 0.27, -0.01, -0.12 }), .{ 0.13, 0.015, 0.05 }, .{ 1, 1 }, .{ 0.8, 1 }, BoxLook.shaded(.green, 1), light);
+        const bf = f.yawBy(-side * (0.6 - stroke * 0.2));
+        b.box(bf, f.point(t.pos, .{ side * 0.17, -0.02, 0.25 }), .{ 0.06, 0.012, 0.05 }, .{ 1, 1 }, .{ 0.7, 1 }, BoxLook.shaded(.green, 1), light);
+    }
+}
+
+fn emitShark(b: *Builder, s: *const Swimmer, light: u8) void {
+    const look = BoxLook.twoTone(.grey, .white);
+    const s0 = @sin(s.phase);
+    const s1 = @sin(s.phase - 1.0);
+    const s2 = @sin(s.phase - 2.0);
+    const base = Frame.fromAngles(s.yaw, s.pitch, 0);
+    // Snout and head, the body, then the tail end, each swinging a
+    // little more than the last.
+    const f_head = base.yawBy(-s0 * 0.05);
+    const head = base.point(s.pos, .{ 0, 0, -0.5 });
+    b.box(f_head, head, .{ 0.13, 0.12, 0.26 }, .{ 0.45, 0.5 }, .{ 1, 1 }, look, light);
+    const f_mid = base.yawBy(s0 * 0.06);
+    const mid = f_head.point(head, .{ 0, 0, 0.5 });
+    b.box(f_mid, mid, .{ 0.16, 0.15, 0.26 }, .{ 1, 1 }, .{ 0.75, 0.8 }, look, light);
+    // Dorsal fin, tall and swept back; pectoral fins out to the sides.
+    b.box(f_mid.pitchBy(-0.35), f_mid.point(mid, .{ 0, 0.25, 0.03 }), .{ 0.018, 0.13, 0.12 }, .{ 1, 0.3 }, .{ 1, 1 }, BoxLook.uniform(.grey), light);
+    for ([2]f32{ -1, 1 }) |side| {
+        const pf = f_mid.yawBy(side * 0.35).rollBy(-side * 0.35);
+        b.box(pf, f_mid.point(mid, .{ side * 0.26, -0.08, -0.12 }), .{ 0.14, 0.015, 0.08 }, .{ 1, 1 }, .{ 0.5, 1 }, BoxLook.uniform(.grey), light);
+    }
+    const f_rear = f_mid.yawBy(s1 * 0.18);
+    const rear = f_mid.point(mid, .{ 0, 0.01, 0.45 });
+    b.box(f_rear, rear, .{ 0.1, 0.1, 0.22 }, .{ 1, 1 }, .{ 0.45, 0.5 }, look, light);
+    // The tail fin: its upper lobe longer.
+    const f_tail = f_rear.yawBy(s2 * 0.35);
+    const tail = f_rear.point(rear, .{ 0, 0.06, 0.28 });
+    b.box(f_tail.pitchBy(-0.5), tail, .{ 0.015, 0.2, 0.08 }, .{ 1, 1 }, .{ 1, 0.4 }, BoxLook.uniform(.grey), light);
+    b.box(f_tail.pitchBy(0.6), f_rear.point(rear, .{ 0, -0.06, 0.26 }), .{ 0.015, 0.11, 0.06 }, .{ 1, 1 }, .{ 1, 0.4 }, BoxLook.uniform(.grey), light);
+}
+
 // --- Tests ---------------------------------------------------------------------------------
 
 const testing = std.testing;
@@ -787,6 +993,16 @@ test "birds fly in the air above the island and fish swim in the sea around it" 
         const iz: i32 = @intFromFloat(@floor(b.pos[2]));
         try testing.expectEqual(Block.air, w.get(ix, iy, iz));
     }
+
+    // Turtles in the shallows, sharks in deeper water, all in water.
+    for (c.swimmers) |s| {
+        try testing.expect(waterFor(s.kind, w, s.pos[0], s.pos[2]));
+        const ix: i32 = @intFromFloat(@floor(s.pos[0]));
+        const iy: i32 = @intFromFloat(@floor(s.pos[1]));
+        const iz: i32 = @intFromFloat(@floor(s.pos[2]));
+        try testing.expectEqual(Block.water, w.get(ix, iy, iz));
+    }
+    try testing.expect(c.swimmers.len < c.fish.len / 4);
 
     for (c.fish) |f| {
         try testing.expect(f.pos[1] < world_mod.sea_level - 0.5);
