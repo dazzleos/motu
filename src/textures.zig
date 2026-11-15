@@ -432,6 +432,150 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
         .pink => fabric(u, v, x, y, rgb(0xee8ab2), s),
         .cyan => fabric(u, v, x, y, rgb(0x27969c), s),
         .grey => fabric(u, v, x, y, rgb(0x7a8590), s),
+        .black_sand => blk: {
+            // Sand ground from lava: near black, grey grains, glints.
+            const ripple = noise(u + v * 0.25, v * 0.25, 8, s) * 0.5 + 0.5 * noise(u, v, 16, s +% 1);
+            const grain = hash(@intFromFloat(x), @intFromFloat(y), s);
+            const glint: f32 = if (grain > 0.94) 1.9 else 1;
+            break :blk tx(scale(mix(rgb(0x3e3a37), rgb(0x5a5450), noise(u, v, 4, s +% 2)), (0.85 + ripple * 0.15 + (grain - 0.5) * 0.3) * glint), ripple * 2.2 + grain * 0.3);
+        },
+        .shells => blk: {
+            // Sand, and here and there on it a shell: a scallop (a fan,
+            // ribbed), a cowrie (glossy, oval) or a starfish.
+            const sand = texel(.sand, xi, yi);
+            const c = cellsAt(u, v, 4, s);
+            const kind = hash(@intCast(c.id), 1, s);
+            if (kind > 0.6) break :blk sand;
+            const turn = hash(@intCast(c.id), 2, s) * std.math.pi * 2;
+            const px = c.cx * @cos(turn) - c.cy * @sin(turn);
+            const py = c.cx * @sin(turn) + c.cy * @cos(turn);
+            const r = @sqrt(px * px + py * py);
+            const ang = std.math.atan2(py, px);
+            if (kind < 0.25) {
+                // A scallop: a fan from its hinge, ribs out.
+                const hy = py + 0.2;
+                const hr = @sqrt(px * px + hy * hy);
+                const ha = std.math.atan2(px, hy);
+                if (hy > 0 and hr < 0.36 * (1 - 0.06 * @abs(@sin(ha * 9))) and @abs(ha) < 1.1) {
+                    const rib = 0.5 + 0.5 * @cos(ha * 18);
+                    break :blk tx(scale(mix(rgb(0xe8b08a), rgb(0xfbe4cc), hr / 0.36), 0.85 + rib * 0.2), 1.5 + rib);
+                }
+            } else if (kind < 0.42) {
+                // A cowrie.
+                const e = (px / 0.2) * (px / 0.2) + (py / 0.13) * (py / 0.13);
+                if (e < 1) {
+                    const slit = @abs(py) < 0.015 and @abs(px) < 0.15;
+                    if (slit) break :blk tx(rgb(0x5a3a2a), 0);
+                    const spot = smoothstep(0.35, 0.2, cellsAt(u, v, 24, s +% 3).d1);
+                    break :blk tx(scale(mix(rgb(0xc89a6a), rgb(0x6a4a30), spot * 0.6), 0.8 + 0.35 * (1 - e)), 3 * (1 - e));
+                }
+            } else {
+                // A starfish: five arms.
+                const arm = 0.06 + 0.24 * std.math.pow(f32, 0.5 + 0.5 * @cos(ang * 5), 3);
+                if (r < arm) {
+                    const bump = smoothstep(0.4, 0.2, cellsAt(u, v, 28, s +% 4).d1);
+                    break :blk tx(scale(rgb(0xe8703a), 0.8 + bump * 0.3 + (1 - r / arm) * 0.15), 1.5 + bump);
+                }
+            }
+            break :blk sand;
+        },
+        .lava => blk: {
+            // Plates of crust, dark and cooling, cracked apart: molten
+            // rock glowing between them, yellow at the heart.
+            const c = cellsAt(u + noise(u, v, 4, s) * 0.06, v, 4, s);
+            const seam = c.d2 - c.d1;
+            const heat = smoothstep(0.16, 0.01, seam) + smoothstep(0.55, 0.2, fbm(u, v, 4, 3, s +% 1)) * 0.5;
+            if (heat > 0.35) {
+                const k = std.math.clamp((heat - 0.35) / 0.65, 0, 1);
+                break :blk tx(mix(rgb(0xd8400c), rgb(0xffe070), k * k), -1.5 * k);
+            }
+            const crust = fbm(u, v, 8, 3, s +% 2);
+            const glow = smoothstep(0.35, 0.15, heat);
+            break :blk tx(mix(scale(rgb(0x3a2a24), 0.75 + crust * 0.4), rgb(0x8a2a10), (1 - glow) * 0.8), 2 * crust + 1);
+        },
+        .mat => blk: {
+            // Strips of pandanus leaf woven over and under, eight a block,
+            // a darker one every few.
+            const sx = @floor(x / 8);
+            const sy = @floor(y / 8);
+            const over = @mod(sx + sy, 2) == 0;
+            const along = if (over) @mod(x, 8) else @mod(y, 8);
+            const id: i32 = @intFromFloat(if (over) sx else sy);
+            const dark = over and @mod(id, 4) == 1;
+            const edge = smoothstep(1.2, 0, @min(along, 8 - along));
+            const tone = hash(id, if (over) 1 else 2, s);
+            const c = if (dark) rgb(0x9a6a3e) else mix(rgb(0xc8a464), rgb(0xe2c88a), tone);
+            const fibre = 0.92 + 0.08 * noise(if (over) u * 0.25 else u * 4, if (over) v * 4 else v * 0.25, 16, s);
+            break :blk tx(scale(c, fibre * (1 - edge * 0.45)), if (edge > 0.5) -0.5 else 1);
+        },
+        .hammock => blk: {
+            // Woven cloth in stripes: red, yellow, white, sea green.
+            const stripes = [_]u24{ 0xc23a2a, 0xf0c83a, 0xf2ece0, 0x2a9a8a, 0xf2ece0, 0xf0c83a };
+            const band: usize = @intFromFloat(@floor(x * @as(f32, stripes.len) / 64));
+            const weave = 0.9 + 0.1 * @as(f32, if (@mod(@floor(x / 2) + @floor(y / 2), 2) == 0) 1 else 0);
+            break :blk tx(scale(rgb(stripes[band]), weave * (0.92 + fbm(u, v, 8, 2, s) * 0.12)), weave);
+        },
+        .pot => blk: {
+            // Fired clay, rings from the wheel, a dark zigzag painted
+            // round it.
+            const ring = 0.94 + 0.06 * @sin(y * 1.3 + noise(u, v, 4, s) * 2);
+            const clay = scale(mix(rgb(0xa8542e), rgb(0xc87a48), fbm(u, v, 4, 2, s)), ring);
+            const band_y = 26.0;
+            const zig = @abs(@mod(x, 12) - 6) * 0.8;
+            if (@abs(y - (band_y + zig)) < 1.6 or @abs(y - 18) < 1 or @abs(y - 40) < 1) break :blk tx(rgb(0x2a1a14), 0.2);
+            break :blk tx(clay, ring * 2);
+        },
+        .tiki => blk: {
+            // A face carved in dark wood: a heavy brow, round eyes, a
+            // broad nose and a wide mouth full of teeth; grain up it.
+            const grain = 0.9 + 0.1 * noise(u * 4, v * 0.5, 16, s);
+            const wood = scale(rgb(0x6a4628), grain);
+            const deep = scale(rgb(0x2a1a0e), grain);
+            const light = scale(rgb(0x9a7044), grain);
+            const ex = @abs(u - 0.5);
+            // Brow.
+            if (v > 0.12 and v < 0.2) break :blk tx(light, 4);
+            // Eyes: a raised ring, a dark pupil.
+            const eye_d = @sqrt((ex - 0.2) * (ex - 0.2) + (v - 0.32) * (v - 0.32));
+            if (eye_d < 0.05) break :blk tx(deep, -2);
+            if (eye_d < 0.11) break :blk tx(light, 3);
+            // Nose.
+            if (ex < 0.13 - (0.55 - v) * 0.2 and v > 0.36 and v < 0.55) break :blk tx(light, 3.5 - ex * 10);
+            // Mouth: dark, its teeth.
+            if (ex < 0.34 and v > 0.62 and v < 0.82) {
+                const tooth = @mod(u * 14, 1) < 0.75;
+                if ((v < 0.68 or v > 0.76) and tooth) break :blk tx(scale(rgb(0xd8c49a), grain), 1);
+                break :blk tx(deep, -2);
+            }
+            if (ex < 0.38 and v > 0.6 and v < 0.84) break :blk tx(light, 2.5);
+            // Carved lines across the chin and the top.
+            if (@mod(v * 32, 2) < 0.5 and (v > 0.88 or v < 0.08)) break :blk tx(deep, -1);
+            break :blk tx(wood, 1 + grain);
+        },
+        .beads => blk: {
+            // A string of beads, round, in turn: red, white, yellow,
+            // turquoise, orange, black.
+            const colours = [_]u24{ 0xc8282a, 0xf4f0e6, 0xf0c02a, 0x2ab0b0, 0xf07a22, 0x2a2420 };
+            const k: usize = @intFromFloat(@floor(y / 8));
+            const by = @mod(y, 8) - 4;
+            const bx = (u - 0.5) * 8;
+            const r = @sqrt(bx * bx + by * by) / 4;
+            const round = @sqrt(@max(0, 1 - r * r));
+            if (r > 1) break :blk tx(rgb(0x3a2a1a), -1);
+            break :blk tx(scale(rgb(colours[k % colours.len]), 0.55 + 0.5 * round), 3 * round);
+        },
+        .canoe => blk: {
+            // Wood hollowed out, its grain along it, a band of red and
+            // white triangles carved along the top.
+            const grain = noise(u * 0.25, v * 4, 16, s) * 0.5 + 0.5 * noise(u, v * 2, 8, s +% 1);
+            const wood = scale(mix(rgb(0x5a3a1e), rgb(0x8a5e34), grain), 0.9 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.06);
+            if (y < 14) {
+                const tri = @abs(@mod(x, 10) - 5) < (y - 2) * 0.45;
+                if (y < 2 or y > 12) break :blk tx(rgb(0x2a1a0e), 0);
+                break :blk tx(if (tri) rgb(0xb83020) else rgb(0xe8dcc0), 1.5);
+            }
+            break :blk tx(wood, grain * 2);
+        },
     };
 }
 
@@ -676,7 +820,7 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             fan(out, &px[0], .{ 24, 46 }, &.{ -0.55, -1.2, -1.95, -2.6 }, 26, 10);
             return;
         },
-        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo, .hibiscus, .mangrove => {
+        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo, .hibiscus, .mangrove, .lattice, .mat, .curtain, .hammock, .pot, .canoe, .statue => {
             furnitureIcon(b, out);
             return;
         },
@@ -793,6 +937,52 @@ fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             .{ .lo = .{ 0.25, 0, 0.3 }, .hi = .{ 0.37, 1, 0.42 }, .top = .bamboo, .side = .bamboo },
             .{ .lo = .{ 0.55, 0, 0.2 }, .hi = .{ 0.67, 0.8, 0.32 }, .top = .bamboo, .side = .bamboo },
             .{ .lo = .{ 0.45, 0, 0.62 }, .hi = .{ 0.57, 0.95, 0.74 }, .top = .bamboo, .side = .bamboo },
+        },
+        .lattice => &.{
+            .{ .lo = .{ 0, 0, 0.44 }, .hi = .{ 0.08, 1, 0.56 }, .top = .sticks_top, .side = .sticks_side },
+            .{ .lo = .{ 0.3, 0.08, 0.46 }, .hi = .{ 0.37, 0.92, 0.54 }, .top = .sticks_top, .side = .sticks_side },
+            .{ .lo = .{ 0.63, 0.08, 0.46 }, .hi = .{ 0.7, 0.92, 0.54 }, .top = .sticks_top, .side = .sticks_side },
+            .{ .lo = .{ 0, 0.3, 0.465 }, .hi = .{ 1, 0.37, 0.535 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0, 0.63, 0.465 }, .hi = .{ 1, 0.7, 0.535 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0, 0, 0.44 }, .hi = .{ 1, 0.08, 0.56 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0, 0.92, 0.44 }, .hi = .{ 1, 1, 0.56 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0.92, 0, 0.44 }, .hi = .{ 1, 1, 0.56 }, .top = .sticks_top, .side = .sticks_side },
+        },
+        .mat => &.{.{ .lo = .{ 0, 0, 0 }, .hi = .{ 1, 0.08, 1 }, .top = .mat, .side = .mat }},
+        .curtain => &.{
+            .{ .lo = .{ 0.04, 0.05, 0.47 }, .hi = .{ 0.12, 0.9, 0.53 }, .top = .beads, .side = .beads },
+            .{ .lo = .{ 0.18, 0.1, 0.47 }, .hi = .{ 0.26, 0.9, 0.53 }, .top = .beads, .side = .beads },
+            .{ .lo = .{ 0.32, 0.03, 0.47 }, .hi = .{ 0.4, 0.9, 0.53 }, .top = .beads, .side = .beads },
+            .{ .lo = .{ 0.46, 0.08, 0.47 }, .hi = .{ 0.54, 0.9, 0.53 }, .top = .beads, .side = .beads },
+            .{ .lo = .{ 0.6, 0.04, 0.47 }, .hi = .{ 0.68, 0.9, 0.53 }, .top = .beads, .side = .beads },
+            .{ .lo = .{ 0.74, 0.1, 0.47 }, .hi = .{ 0.82, 0.9, 0.53 }, .top = .beads, .side = .beads },
+            .{ .lo = .{ 0.88, 0.05, 0.47 }, .hi = .{ 0.96, 0.9, 0.53 }, .top = .beads, .side = .beads },
+            .{ .lo = .{ 0, 0.9, 0.44 }, .hi = .{ 1, 0.98, 0.56 }, .top = .bamboo, .side = .bamboo },
+        },
+        .hammock => &.{
+            .{ .lo = .{ 0, 0, 0.45 }, .hi = .{ 0.1, 1, 0.55 }, .top = .bamboo, .side = .bamboo },
+            .{ .lo = .{ 0.12, 0.62, 0.15 }, .hi = .{ 0.3, 0.66, 0.85 }, .top = .hammock, .side = .hammock },
+            .{ .lo = .{ 0.3, 0.48, 0.15 }, .hi = .{ 0.7, 0.52, 0.85 }, .top = .hammock, .side = .hammock },
+            .{ .lo = .{ 0.7, 0.62, 0.15 }, .hi = .{ 0.88, 0.66, 0.85 }, .top = .hammock, .side = .hammock },
+            .{ .lo = .{ 0.9, 0, 0.45 }, .hi = .{ 1, 1, 0.55 }, .top = .bamboo, .side = .bamboo },
+        },
+        .pot => &.{
+            .{ .lo = .{ 0.32, 0, 0.32 }, .hi = .{ 0.68, 0.06, 0.68 }, .top = .pot, .side = .pot },
+            .{ .lo = .{ 0.24, 0.06, 0.24 }, .hi = .{ 0.76, 0.18, 0.76 }, .top = .pot, .side = .pot },
+            .{ .lo = .{ 0.18, 0.18, 0.18 }, .hi = .{ 0.82, 0.44, 0.82 }, .top = .pot, .side = .pot },
+            .{ .lo = .{ 0.22, 0.44, 0.22 }, .hi = .{ 0.78, 0.56, 0.78 }, .top = .pot, .side = .pot },
+            .{ .lo = .{ 0.3, 0.56, 0.3 }, .hi = .{ 0.7, 0.64, 0.7 }, .top = .pot, .side = .pot },
+            .{ .lo = .{ 0.37, 0.64, 0.37 }, .hi = .{ 0.63, 0.76, 0.63 }, .top = .pot, .side = .pot },
+            .{ .lo = .{ 0.33, 0.76, 0.33 }, .hi = .{ 0.67, 0.8, 0.67 }, .top = .black, .side = .pot },
+        },
+        .canoe => &.{
+            .{ .lo = .{ 0.3, 0.08, 0.82 }, .hi = .{ 0.7, 0.18, 0.92 }, .top = .canoe, .side = .canoe },
+            .{ .lo = .{ 0.47, 0.44, 0.2 }, .hi = .{ 0.53, 0.5, 0.9 }, .top = .sticks_side, .side = .sticks_side },
+            .{ .lo = .{ 0, 0.1, 0.2 }, .hi = .{ 1, 0.45, 0.56 }, .top = .canoe, .side = .canoe },
+        },
+        .statue => &.{
+            .{ .lo = .{ 0.2, 0, 0.2 }, .hi = .{ 0.8, 1, 0.8 }, .top = .sticks_top, .side = .tiki },
+            .{ .lo = .{ 0.12, 0.93, 0.12 }, .hi = .{ 0.88, 1, 0.88 }, .top = .sticks_top, .side = .canoe },
         },
         .post => &.{.{ .lo = .{ 0.42, 0, 0.42 }, .hi = .{ 0.58, 1, 0.58 }, .top = .bamboo, .side = .bamboo }},
         .lamp => &.{

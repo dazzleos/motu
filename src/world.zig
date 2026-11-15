@@ -337,8 +337,9 @@ pub const World = struct {
                     .{ .{ .sand, .sand }, 2 }
                 else if (h == sea_level - 1)
                     // The beach, all at the water's surface: anything
-                    // higher is earth or rock.
-                    .{ .{ .sand, .sand }, 3 }
+                    // higher is earth or rock. Some stretches are black,
+                    // from the rock.
+                    if (fbm(seed +% 51, fx / 28, fz / 28, 2) > 0.66) .{ .{ .black_sand, .black_sand }, 3 } else .{ .{ .sand, .sand }, 3 }
                 else if (h >= bare_line)
                     .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
                 else if (slope >= 3 and h > sea_level + 4)
@@ -351,7 +352,8 @@ pub const World = struct {
                     .{ .{ .grass, .dirt }, 4 };
                 var y: i32 = 0;
                 while (y <= h) : (y += 1) {
-                    const b: Block = if (y == h) surface[0] else if (y > h - depth) surface[1] else if (y > h - depth - 5 and surface[0] == .sand and h >= sea_level - 1) .sandstone else .volcanic_rock;
+                    // Shells washed up here and there on the beach.
+                    const b: Block = if (y == h and surface[0] == .sand and h == sea_level - 1 and hash(seed +% 52, x, z) < 0.012) .shells else if (y == h) surface[0] else if (y > h - depth) surface[1] else if (y > h - depth - 5 and surface[0] == .sand and h >= sea_level - 1) .sandstone else .volcanic_rock;
                     w.blocks[index(x, y, z)] = b;
                 }
                 while (y < sea_level) : (y += 1) w.blocks[index(x, y, z)] = .water;
@@ -873,7 +875,7 @@ test "the atoll: a ring of islands round a lagoon, sea at the edges, beaches, tr
     // The lagoon in the middle.
     try testing.expectEqual(Block.water, w.get(size_x / 2, sea_level - 1, size_z / 2));
     try testing.expect(highest > sea_level + 16);
-    for ([_]Block{ .grass, .sand, .palm, .tall_grass, .leafy_plant, .volcanic_rock, .coral, .bamboo, .seagrass, .banana, .hibiscus, .mangrove }) |b| try testing.expect(counts.get(b) > 0);
+    for ([_]Block{ .grass, .sand, .black_sand, .shells, .palm, .tall_grass, .leafy_plant, .volcanic_rock, .coral, .bamboo, .seagrass, .banana, .hibiscus, .mangrove }) |b| try testing.expect(counts.get(b) > 0);
     var flowers: usize = 0;
     for (Block.flowers) |b| flowers += counts.get(b);
     try testing.expect(flowers > 0);

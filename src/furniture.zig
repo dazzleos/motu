@@ -17,6 +17,17 @@
 //! - A campfire: a ring of stones, logs crossed, a fire burning.
 //! - Bamboo: canes, the same in each block up a stack, sprigs of leaves
 //!   at the top.
+//! - A lattice: a frame of sticks, crossed inside, across the way it joins
+//!   (to walls or more lattice); a bead curtain the same way, its strings
+//!   hanging from a rail.
+//! - A mat: thin, woven, joined to the next.
+//! - A hammock: cloth sagging between whatever holds its ends (a wall, a
+//!   post, a fence, a palm, or a stake of its own), hammocks in a row one
+//!   longer one.
+//! - A pot of clay, round (in steps).
+//! - A canoe: a hull hollowed out, pointed at the ends of a row of them,
+//!   an outrigger beside it on two booms.
+//! - A tiki: a post carved with a face on each side; stacked, a totem.
 
 const std = @import("std");
 const blocks = @import("blocks.zig");
@@ -274,7 +285,258 @@ pub fn build(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
             try box(o, .{ x + 0.22 + ox, y + 0.72, z + 0.22 + oz }, .{ x + 0.78 + ox, y + 0.98, z + 0.78 + oz }, leaves, down_skip);
             try box(o, .{ x + 0.02, y + 0.15, z + 0.3 - oz }, .{ x + 0.2, y + 0.6, z + 0.7 - oz }, leaves, down_skip);
         },
+        .lattice => {
+            const ax = acrossX(w, p, blk);
+            const skip_end = [2]bool{ sameAlong(w, p, blk, ax, -1), sameAlong(w, p, blk, ax, 1) };
+            const a: Axis = .{ .o = o, .x = x, .y = y, .z = z, .along_x = ax };
+            // Rails top and bottom, joined to the next lattice's.
+            var ends: std.EnumSet(Face) = .{};
+            if (skip_end[0]) ends.insert(a.endFace(-1));
+            if (skip_end[1]) ends.insert(a.endFace(1));
+            var bottom = ends;
+            if (w.get(p[0], p[1] - 1, p[2]).isOpaque()) bottom.insert(.down);
+            try a.part(0, 1, 0, 0.08, 0.44, 0.56, sticks, bottom);
+            try a.part(0, 1, 0.92, 1, 0.44, 0.56, sticks, ends);
+            // Posts at its ends, unless it goes on.
+            if (!skip_end[0]) try a.part(0, 0.08, 0.08, 0.92, 0.44, 0.56, sticks, std.EnumSet(Face).initMany(&.{ .up, .down }));
+            if (!skip_end[1]) try a.part(0.92, 1, 0.08, 0.92, 0.44, 0.56, sticks, std.EnumSet(Face).initMany(&.{ .up, .down }));
+            // Slats crossing inside.
+            for ([2]f32{ 0.3, 0.63 }) |at| {
+                try a.part(at, at + 0.07, 0.08, 0.92, 0.46, 0.54, sticks, std.EnumSet(Face).initMany(&.{ .up, .down }));
+                try a.part(if (skip_end[0]) 0 else 0.08, if (skip_end[1]) 1 else 0.92, at, at + 0.07, 0.465, 0.535, sticks, .{});
+            }
+        },
+        .curtain => {
+            const ax = acrossX(w, p, blk);
+            const a: Axis = .{ .o = o, .x = x, .y = y, .z = z, .along_x = ax };
+            var ends: std.EnumSet(Face) = .{};
+            if (sameAlong(w, p, blk, ax, -1)) ends.insert(a.endFace(-1));
+            if (sameAlong(w, p, blk, ax, 1)) ends.insert(a.endFace(1));
+            if (w.get(p[0], p[1] + 1, p[2]).isOpaque()) ends.insert(.up);
+            // Stacked, one long curtain: the rail only at the top, the
+            // strings on down to the bottom.
+            const above = w.get(p[0], p[1] + 1, p[2]) == .curtain;
+            const below = w.get(p[0], p[1] - 1, p[2]) == .curtain;
+            const top: f32 = if (above) 1 else 0.9;
+            if (!above) try a.part(0, 1, 0.9, 0.98, 0.44, 0.56, bamboo, ends);
+            const beads: Tiles = .{ .top = .beads, .side = .beads, .bottom = .beads, .fit = true };
+            for (0..6) |k| {
+                const at = (@as(f32, @floatFromInt(k)) + 0.5) / 6;
+                const foot = if (below) 0 else 0.03 + world_mod.hash(101 +% @as(u32, @intCast(k)), p[0] + p[2], p[1]) * 0.08;
+                var skip: std.EnumSet(Face) = .initOne(.up);
+                if (below) skip.insert(.down);
+                try a.part(at - 0.04, at + 0.04, foot, top, 0.46, 0.54, beads, skip);
+            }
+        },
+        .mat => {
+            var skip = joined;
+            if (w.get(p[0], p[1] - 1, p[2]).isOpaque()) skip.insert(.down);
+            try box(o, .{ x, y, z }, .{ x + 1, y + 0.05, z + 1 }, .{ .top = .mat, .side = .mat, .bottom = .mat }, skip);
+        },
+        .pot => {
+            // Its profile, from the foot up: how far out, from and to.
+            const rings = [_][3]f32{
+                .{ 0.18, 0, 0.06 },   .{ 0.26, 0.06, 0.18 }, .{ 0.32, 0.18, 0.44 }, .{ 0.28, 0.44, 0.56 },
+                .{ 0.2, 0.56, 0.64 }, .{ 0.13, 0.64, 0.76 }, .{ 0.17, 0.76, 0.8 },
+            };
+            const clay: Tiles = .{ .top = .pot, .side = .pot, .bottom = .pot };
+            for (rings, 0..) |r, k| {
+                var skip: std.EnumSet(Face) = .{};
+                if (k > 0 or w.get(p[0], p[1] - 1, p[2]).isOpaque()) skip.insert(.down);
+                try box(o, .{ x + 0.5 - r[0], y + r[1], z + 0.5 - r[0] }, .{ x + 0.5 + r[0], y + r[2], z + 0.5 + r[0] }, clay, skip);
+            }
+            // Its mouth, dark.
+            try box(o, .{ x + 0.39, y + 0.8, z + 0.39 }, .{ x + 0.61, y + 0.805, z + 0.61 }, .{ .top = .black, .side = .black, .bottom = .black }, std.EnumSet(Face).initOne(.down));
+        },
+        .statue => {
+            const above = w.get(p[0], p[1] + 1, p[2]);
+            const below = w.get(p[0], p[1] - 1, p[2]);
+            var skip: std.EnumSet(Face) = .{};
+            if (above == .statue) skip.insert(.up);
+            if (below == .statue or below.isOpaque()) skip.insert(.down);
+            const wood: Tiles = .{ .top = .sticks_top, .side = .tiki, .bottom = .sticks_top, .fit = true };
+            try box(o, .{ x + 0.2, y, z + 0.2 }, .{ x + 0.8, y + 1, z + 0.8 }, wood, skip);
+            // A flat crown on the top one.
+            if (above != .statue) try box(o, .{ x + 0.12, y + 0.93, z + 0.12 }, .{ x + 0.88, y + 1, z + 0.88 }, .{ .top = .sticks_top, .side = .canoe, .bottom = .canoe }, .{});
+        },
+        .hammock => try hammock(o, w, p, x, y, z, bamboo, sticks),
+        .canoe => try canoe(o, w, p, x, y, z, sticks),
         else => {},
+    }
+}
+
+/// Parts laid along an axis (x, or z): places in the block given along
+/// it, up, and across it.
+const Axis = struct {
+    o: Out,
+    x: f32,
+    y: f32,
+    z: f32,
+    along_x: bool,
+
+    fn at(a: Axis, along: f32, up: f32, across: f32) V {
+        return if (a.along_x) .{ a.x + along, a.y + up, a.z + across } else .{ a.x + across, a.y + up, a.z + along };
+    }
+
+    fn part(a: Axis, a0: f32, a1: f32, y0: f32, y1: f32, c0: f32, c1: f32, tiles: Tiles, skip: std.EnumSet(Face)) !void {
+        try box(a.o, a.at(a0, y0, c0), a.at(a1, y1, c1), tiles, skip);
+    }
+
+    /// The face at the end of the axis, towards `dir` (-1 or 1).
+    fn endFace(a: Axis, dir: i32) Face {
+        return if (a.along_x) (if (dir < 0) .west else .east) else (if (dir < 0) .north else .south);
+    }
+
+    /// A quad facing up (or down), from `a0` to `a1` along and `c0` to
+    /// `c1` across, at heights `y0` and `y1` at its ends.
+    fn slope(a: Axis, tile: Tile, face: Face, a0: f32, a1: f32, y0: f32, y1: f32, c0: f32, c1: f32, v0: f32, v1: f32) !void {
+        var c = [4]V{ a.at(a0, y0, c0), a.at(a0, y0, c1), a.at(a1, y1, c1), a.at(a1, y1, c0) };
+        var uv = [4][2]f32{ .{ 0.002, v0 }, .{ 0.998, v0 }, .{ 0.998, v1 }, .{ 0.002, v1 } };
+        // Swapping x and z turns it over: wind it back.
+        if (a.along_x != (face == .up)) {
+            const was = c;
+            const uv0 = uv;
+            c = .{ was[0], was[3], was[2], was[1] };
+            uv = .{ uv0[0], uv0[3], uv0[2], uv0[1] };
+        }
+        try a.o.quad(tile, face, c, uv, @splat(.none));
+    }
+};
+
+/// Whether a lattice (or curtain) goes across x: with the same, or walls,
+/// beside it that way (or none either way).
+fn acrossX(w: *const World, p: [3]i32, blk: Block) bool {
+    const joins = struct {
+        fn f(b: Block, me: Block) bool {
+            return b == me or b.isOpaque();
+        }
+    }.f;
+    const on_x = joins(w.get(p[0] - 1, p[1], p[2]), blk) or joins(w.get(p[0] + 1, p[1], p[2]), blk);
+    const on_z = joins(w.get(p[0], p[1], p[2] - 1), blk) or joins(w.get(p[0], p[1], p[2] + 1), blk);
+    return on_x or !on_z;
+}
+
+/// The same beside it along the axis, towards `dir` (and laid the same way).
+fn sameAlong(w: *const World, p: [3]i32, blk: Block, along_x: bool, dir: i32) bool {
+    const q: [3]i32 = if (along_x) .{ p[0] + dir, p[1], p[2] } else .{ p[0], p[1], p[2] + dir };
+    return w.get(q[0], q[1], q[2]) == blk and acrossX(w, q, blk) == along_x;
+}
+
+/// How many of the same are in a row with it along the axis, before it
+/// and after it (up to `most` each way).
+fn run(w: *const World, p: [3]i32, blk: Block, along_x: bool, most: i32) [2]i32 {
+    var out: [2]i32 = .{ 0, 0 };
+    for ([2]i32{ -1, 1 }, 0..) |dir, k| {
+        var n: i32 = 1;
+        while (n <= most) : (n += 1) {
+            const q: [3]i32 = if (along_x) .{ p[0] + dir * n, p[1], p[2] } else .{ p[0], p[1], p[2] + dir * n };
+            if (w.get(q[0], q[1], q[2]) != blk) break;
+        }
+        out[k] = n - 1;
+    }
+    return out;
+}
+
+/// What a hammock's end is tied to.
+fn holds(b: Block) bool {
+    return b.isOpaque() or b == .post or b == .fence or b == .palm or b == .lamp or b == .lattice;
+}
+
+fn hammock(o: Out, w: *const World, p: [3]i32, x: f32, y: f32, z: f32, bamboo: Tiles, sticks: Tiles) !void {
+    // Along whichever way it is held at both ends (or goes on).
+    const ends = struct {
+        fn f(wd: *const World, q: [3]i32, ax: bool) bool {
+            const r = run(wd, q, .hammock, ax, 8);
+            const lo: [3]i32 = if (ax) .{ q[0] - r[0] - 1, q[1], q[2] } else .{ q[0], q[1], q[2] - r[0] - 1 };
+            const hi: [3]i32 = if (ax) .{ q[0] + r[1] + 1, q[1], q[2] } else .{ q[0], q[1], q[2] + r[1] + 1 };
+            return holds(wd.get(lo[0], lo[1], lo[2])) and holds(wd.get(hi[0], hi[1], hi[2]));
+        }
+    }.f;
+    const in_x = w.get(p[0] - 1, p[1], p[2]) == .hammock or w.get(p[0] + 1, p[1], p[2]) == .hammock;
+    const in_z = w.get(p[0], p[1], p[2] - 1) == .hammock or w.get(p[0], p[1], p[2] + 1) == .hammock;
+    const ax = if (ends(w, p, true)) true else if (ends(w, p, false)) false else !(in_z and !in_x);
+    const r = run(w, p, .hammock, ax, 8);
+    const len: f32 = @floatFromInt(r[0] + r[1] + 1);
+    const before: f32 = @floatFromInt(r[0]);
+    const a: Axis = .{ .o = o, .x = x, .y = y, .z = z, .along_x = ax };
+    const first = r[0] == 0;
+    const last = r[1] == 0;
+    // The cloth: from a spreader bar at each end, sagging in the middle.
+    const top: f32 = 0.8;
+    const sag: f32 = @min(0.5, 0.25 + 0.1 * len);
+    const from: f32 = if (first) 0.15 else 0;
+    const to: f32 = if (last) 0.85 else 1;
+    const span = len - 0.3;
+    const steps = 6;
+    for (0..steps) |k| {
+        const a0 = from + (to - from) * @as(f32, @floatFromInt(k)) / steps;
+        const a1 = from + (to - from) * @as(f32, @floatFromInt(k + 1)) / steps;
+        const h = struct {
+            fn f(t: f32, tp: f32, sg: f32) f32 {
+                return tp - sg * @sin(std.math.pi * std.math.clamp(t, 0, 1));
+            }
+        }.f;
+        const y0 = h((before + a0 - 0.15) / span, top, sag);
+        const y1 = h((before + a1 - 0.15) / span, top, sag);
+        try a.slope(.hammock, .up, a0, a1, y0, y1, 0.15, 0.85, a0, a1);
+        try a.slope(.hammock, .down, a0, a1, y0 - 0.02, y1 - 0.02, 0.15, 0.85, a0, a1);
+    }
+    for ([2]bool{ first, last }, [2]i32{ -1, 1 }) |is_end, dir| {
+        if (!is_end) continue;
+        const bar0: f32 = if (dir < 0) 0.12 else 0.85;
+        try a.part(bar0, bar0 + 0.03, top - 0.03, top + 0.02, 0.1, 0.9, sticks, .{});
+        // A rope to what holds it, or to a stake of its own.
+        const r0: f32 = if (dir < 0) 0 else 0.88;
+        try a.part(r0, r0 + 0.12, top - 0.01, top + 0.02, 0.48, 0.52, sticks, .{});
+        const q: [3]i32 = if (ax) .{ p[0] + dir, p[1], p[2] } else .{ p[0], p[1], p[2] + dir };
+        if (!holds(w.get(q[0], q[1], q[2]))) {
+            const s0: f32 = if (dir < 0) 0 else 0.9;
+            var skip: std.EnumSet(Face) = .{};
+            if (w.get(p[0], p[1] - 1, p[2]).isOpaque()) skip.insert(.down);
+            try a.part(s0, s0 + 0.1, 0, 1, 0.45, 0.55, bamboo, skip);
+        }
+    }
+}
+
+fn canoe(o: Out, w: *const World, p: [3]i32, x: f32, y: f32, z: f32, sticks: Tiles) !void {
+    const in_x = w.get(p[0] - 1, p[1], p[2]) == .canoe or w.get(p[0] + 1, p[1], p[2]) == .canoe;
+    const in_z = w.get(p[0], p[1], p[2] - 1) == .canoe or w.get(p[0], p[1], p[2] + 1) == .canoe;
+    const ax = !(in_z and !in_x);
+    const r = run(w, p, .canoe, ax, 16);
+    const len: f32 = @floatFromInt(r[0] + r[1] + 1);
+    const before: f32 = @floatFromInt(r[0]);
+    const a: Axis = .{ .o = o, .x = x, .y = y, .z = z, .along_x = ax };
+    const hull: Tiles = .{ .top = .canoe, .side = .canoe, .bottom = .canoe };
+    // The hull, in slices: narrowing to points at the ends, its bottom
+    // and sides rising there.
+    const centre: f32 = 0.38;
+    const slices = 8;
+    for (0..slices) |k| {
+        const a0 = @as(f32, @floatFromInt(k)) / slices;
+        const a1 = @as(f32, @floatFromInt(k + 1)) / slices;
+        const mid = before + (a0 + a1) / 2;
+        const from_end = @min(mid, len - mid);
+        const taper = std.math.pow(f32, @min(1, from_end / @min(1.2, len / 2)), 0.6);
+        const hw = 0.04 + 0.2 * taper;
+        const wall = @min(0.05, hw * 0.5);
+        const floor0 = 0.04 + 0.16 * (1 - taper);
+        const rim = 0.4 + 0.12 * (1 - taper);
+        var skip: std.EnumSet(Face) = .{};
+        if (k > 0 or r[0] > 0) skip.insert(a.endFace(-1));
+        if (k < slices - 1 or r[1] > 0) skip.insert(a.endFace(1));
+        try a.part(a0, a1, floor0, floor0 + 0.08, centre - hw + wall, centre + hw - wall, hull, skip);
+        try a.part(a0, a1, floor0, rim, centre - hw, centre - hw + wall, hull, skip);
+        try a.part(a0, a1, floor0, rim, centre + hw - wall, centre + hw, hull, skip);
+    }
+    // The outrigger: a float on two booms, at the row's ends (or the
+    // middle of one alone).
+    const f0 = @max(0, 0.3 - before);
+    const f1 = @min(1, len - 0.3 - before);
+    if (f1 > f0) try a.part(f0, f1, 0.08, 0.18, 0.82, 0.92, hull, .{});
+    const booms: []const f32 = if (len == 1) &.{0.5} else if (r[0] == 0) &.{0.6} else if (r[1] == 0) &.{0.4} else &.{};
+    for (booms) |at| {
+        try a.part(at - 0.03, at + 0.03, 0.44, 0.5, centre - 0.12, 0.9, sticks, .{});
+        try a.part(at - 0.025, at + 0.025, 0.18, 0.44, 0.845, 0.895, sticks, std.EnumSet(Face).initMany(&.{ .up, .down }));
     }
 }
 

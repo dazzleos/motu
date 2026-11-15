@@ -89,24 +89,26 @@ pub const Info = struct {
 pub const water_top: f32 = 0.875;
 
 /// A chunk's meshes, in the order they are drawn (and kept in its buffer).
-pub const Section = enum(u3) {
+pub const Section = enum(u4) {
     solid0,
     solid1,
     solid2,
+    solid3,
     water,
     clear0,
     clear1,
     clear2,
+    clear3,
 
     pub fn solid(strip: u2) Section {
-        return @enumFromInt(@as(u3, strip));
+        return @enumFromInt(@as(u4, strip));
     }
 
     pub fn clear(strip: u2) Section {
-        return @enumFromInt(@as(u3, 4) + strip);
+        return @enumFromInt(@as(u4, blocks.Tile.strips + 1) + strip);
     }
 
-    pub const count = 7;
+    pub const count = 2 * blocks.Tile.strips + 1;
 };
 
 /// The order a strip's solid faces are kept in, a face's after another's.
@@ -139,11 +141,11 @@ pub const Mesh = struct {
 
     /// All the solid (or see-through) vertices, whatever their strip.
     pub fn solidCount(m: *const Mesh) usize {
-        return m.items(.solid0).len + m.items(.solid1).len + m.items(.solid2).len;
+        return m.items(.solid0).len + m.items(.solid1).len + m.items(.solid2).len + m.items(.solid3).len;
     }
 
     pub fn clearCount(m: *const Mesh) usize {
-        return m.items(.clear0).len + m.items(.clear1).len + m.items(.clear2).len;
+        return m.items(.clear0).len + m.items(.clear1).len + m.items(.clear2).len + m.items(.clear3).len;
     }
 
     pub fn quads(m: *const Mesh) usize {
@@ -717,6 +719,35 @@ test "packing a vertex's information round trips, exactly as a float" {
     try testing.expectEqual(Info{ .tile = 0, .face = .east, .sky = 0, .lamp = 0 }, Info.unpack(0));
 }
 
+test "furniture: wound to face out, in its blocks, each way round" {
+    const w = try emptyWorld();
+    defer w.destroy();
+    var m: Mesh = .{};
+    defer m.deinit(testing.allocator);
+    const kinds = [_]Block{ .lattice, .curtain, .mat, .hammock, .pot, .canoe, .statue };
+    for (kinds) |b| for ([2]bool{ true, false }) |along_x| for ([3]i32{ 1, 2, 3 }) |len| {
+        // A row of them, on rock, between walls.
+        var k: i32 = -1;
+        while (k <= len) : (k += 1) {
+            const at: [2]i32 = if (along_x) .{ 4 + k, 5 } else .{ 5, 4 + k };
+            _ = w.set(at[0], 29, at[1], .volcanic_rock);
+            _ = w.set(at[0], 30, at[1], if (k < 0 or k == len) .volcanic_wall else b);
+        }
+        m.clearRetainingCapacity();
+        try build(testing.allocator, w, 0, 0, &m);
+        inline for (.{ Section.solid0, Section.solid1, Section.solid2, Section.solid3 }) |sec| {
+            try expectWound(m.items(sec));
+            for (m.items(sec)) |v| try testing.expect(v.pos[1] >= 29 and v.pos[1] <= 31.01 and v.pos[0] >= 2.99 and v.pos[0] <= 8.01 and v.pos[2] >= 2.99 and v.pos[2] <= 8.01);
+        }
+        try testing.expect(m.solidCount() > 0);
+        k = -1;
+        while (k <= len) : (k += 1) {
+            const at: [2]i32 = if (along_x) .{ 4 + k, 5 } else .{ 5, 4 + k };
+            _ = w.set(at[0], 30, at[1], .air);
+        }
+    };
+}
+
 test "the island's chunks: how many quads (to keep drawing it within budget)" {
     const w = try World.create(testing.allocator);
     defer w.destroy();
@@ -735,13 +766,13 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
         clear += m.clearCount() / 4;
         most = @max(most, m.quads());
         try expectWound(m.items(.solid0));
-        // Nothing built: the island's strip, but for bamboo's canes and
-        // hibiscus' and mangroves' leaves (the building strip's, an extra
-        // draw where they grow).
-        try testing.expectEqual(@as(usize, 0), m.items(.solid2).len);
+        // Nothing built: the island's strip, but for bamboo's canes,
+        // hibiscus' and mangroves' leaves, black sand and shells (the
+        // building strip's, an extra draw where they are).
+        try testing.expectEqual(@as(usize, 0), m.items(.solid2).len + m.items(.solid3).len);
         bamboo += m.items(.solid1).len / 4;
     };
-    try testing.expect(bamboo * 20 < solid);
+    try testing.expect(bamboo * 8 < solid);
     std.log.info("island: {d} solid, {d} water, {d} see-through quads; at most {d} in a chunk", .{ solid, water, clear, most });
     // A chunk's meshes fit one index range (16384 quads).
     try testing.expect(most < 16384);

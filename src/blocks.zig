@@ -107,6 +107,30 @@ pub const Block = enum(u8) {
     /// A mangrove: arching roots, a short trunk, leaves over them; below
     /// the sea's level, in the water (see World.wateryAt).
     mangrove,
+    /// Sand from volcanic rock, near black.
+    black_sand,
+    /// Sand with shells and starfish washed up on it.
+    shells,
+    /// Molten rock, glowing.
+    lava,
+    /// A see-through panel of crossed sticks, for windows and screens:
+    /// across the way it joins to walls or more of it.
+    lattice,
+    /// A woven mat, thin, on the floor.
+    mat,
+    /// Strings of beads hanging from a rail, for doorways: walked
+    /// through.
+    curtain,
+    /// A cloth slung between posts (or walls, or palms), sagging: hammocks
+    /// in a row are one longer one.
+    hammock,
+    /// A clay pot.
+    pot,
+    /// A dugout canoe with an outrigger: canoes end to end are one longer
+    /// one, pointed at its ends.
+    canoe,
+    /// A carved tiki: stacked, a totem.
+    statue,
     _,
 
     pub const Shape = enum {
@@ -130,7 +154,7 @@ pub const Block = enum(u8) {
     pub fn shape(b: Block) Shape {
         return switch (b) {
             .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf => .none,
-            .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo, .hibiscus => .furniture,
+            .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo, .hibiscus, .lattice, .mat, .curtain, .hammock, .pot, .canoe, .statue => .furniture,
             .water => .water,
             .glass => .clear,
             .palm => .pole,
@@ -155,8 +179,9 @@ pub const Block = enum(u8) {
     /// its bottom (0: none of it; 1: all of it).
     pub fn solidHeight(b: Block) f32 {
         return switch (b) {
-            .sandstone_slab, .rock_slab, .thatch_slab => 0.5,
-            .ladder, .campfire => 0,
+            .sandstone_slab, .rock_slab, .thatch_slab, .hammock, .canoe => 0.5,
+            .mat => 0.0625,
+            .ladder, .campfire, .curtain => 0,
             else => switch (b.shape()) {
                 .cube, .clear, .pole, .furniture => 1,
                 else => 0,
@@ -187,7 +212,7 @@ pub const Block = enum(u8) {
     /// The light it gives (0 to 15).
     pub fn emits(b: Block) u4 {
         return switch (b) {
-            .lamp => 15,
+            .lamp, .lava => 15,
             .campfire => 14,
             else => 0,
         };
@@ -222,6 +247,15 @@ pub const Block = enum(u8) {
             .hibiscus => .hibiscus,
             .mangrove => .mangrove_leaf,
             .bed => .bed_cover,
+            .black_sand => .black_sand,
+            .shells => if (top) .shells else .sand,
+            .lava => .lava,
+            .lattice, .canoe => if (top or bottom) .sticks_top else .sticks_side,
+            .mat => .mat,
+            .curtain => .beads,
+            .hammock => .hammock,
+            .pot => .pot,
+            .statue => if (top or bottom) .sticks_top else .tiki,
             .chest => if (top or bottom) .chest_top else .chest_side,
             .white => .white,
             .black => .black,
@@ -276,6 +310,16 @@ pub const Block = enum(u8) {
             .banana => "Banana",
             .hibiscus => "Hibiscus",
             .mangrove => "Mangrove",
+            .black_sand => "Black sand",
+            .shells => "Shells",
+            .lava => "Lava",
+            .lattice => "Lattice",
+            .mat => "Mat",
+            .curtain => "Bead curtain",
+            .hammock => "Hammock",
+            .pot => "Pot",
+            .canoe => "Canoe",
+            .statue => "Tiki",
             .white => "White",
             .black => "Black",
             .red => "Red",
@@ -304,7 +348,7 @@ pub const Block = enum(u8) {
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.mangrove) and b.current() == b;
+        return @intFromEnum(b) <= @intFromEnum(Block.statue) and b.current() == b;
     }
 
     /// What a block is now: a kind that was removed is read as the one
@@ -343,10 +387,10 @@ pub const Section = struct {
 };
 
 pub const sections = [_]Section{
-    .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .water, .coral } },
-    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .glass, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder } },
+    .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .black_sand, .shells, .sandstone, .water, .coral, .lava } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .glass, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .lattice, .mat, .curtain } },
     // Made of sticks.
-    .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp, .campfire } },
+    .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp, .campfire, .hammock, .pot, .canoe, .statue } },
     .{ .name = "Plants", .blocks = &.{ .palm, .bamboo, .banana, .mangrove, .hibiscus, .leafy_plant, .tall_grass, .seagrass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
@@ -439,6 +483,9 @@ pub const Tile = enum(u6) {
     sticks_top,
     hibiscus,
     mangrove_leaf,
+    black_sand,
+    /// Sand, shells on it.
+    shells,
     // Colours.
     white = 32,
     black,
@@ -458,9 +505,19 @@ pub const Tile = enum(u6) {
     orange_flower,
     /// For sharks.
     grey,
+    // More building and furniture.
+    lava = 48,
+    mat,
+    hammock,
+    pot,
+    tiki,
+    /// A string of beads.
+    beads,
+    /// A canoe's hull, carved.
+    canoe,
 
     pub const per_strip = 16;
-    pub const strips = 3;
+    pub const strips = 4;
 
     pub fn strip(t: Tile) u2 {
         return @intCast(@intFromEnum(t) / per_strip);
@@ -504,4 +561,7 @@ test "every block that can be placed has a name and its own look" {
     // Removed kinds are not placed, and are read as others.
     try std.testing.expect(!Block.iron.isValid() and !Block.gold.isValid());
     try std.testing.expect(Block.iron.current().isValid() and Block.gold.current().isValid());
+    // Lava glows; a curtain is walked through; a mat is stepped onto.
+    try std.testing.expect(Block.lava.emits() > 0 and Block.lava.isOpaque());
+    try std.testing.expect(!Block.curtain.isSolid() and Block.mat.solidHeight() < 0.1);
 }
