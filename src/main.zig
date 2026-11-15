@@ -185,86 +185,6 @@ const Timing = struct {
     }
 };
 
-/// While measuring (on the older GPU, which has them), the GPU's
-/// performance counters (`counted`), counting in the window's frames.
-const Counting = struct {
-    dev: vc4.Device,
-    id: ?u32 = null,
-
-    /// What is counted.
-    const counted: [vc4.device.max_counters]vc4.device.PerfCounter = .{
-        .fep_valid_prims_render,
-        .fep_valid_quads,
-        .tlb_quads_written_to_color_buf,
-        .qpu_idle_cycles,
-        .qpu_vertex_coord_shading_cycles,
-        .qpu_fragment_shading_cycles,
-        .qpu_valid_instruction_cycles,
-        .qpu_waiting_tmus_cycles,
-        .qpu_waiting_scoreboard_cycles,
-        .qpu_waiting_varyings_cycles,
-        .tmu_texture_quads,
-        .tmu_texture_cache_misses,
-        .qpu_inst_cache_misses,
-        .qpu_uniform_cache_hits,
-        .qpu_uniform_cache_misses,
-        .qpu_inst_cache_hits,
-    };
-
-    /// Counts the window's frames from now, or stops.
-    fn count(c: *Counting, on: bool) void {
-        if (c.id) |id| c.dev.destroyPerfmon(id);
-        c.id = null;
-        if (on and !c.dev.is_v3d) c.id = c.dev.createPerfmon(&counted) catch null;
-        app.window.perfmon_id = c.id orelse 0;
-    }
-
-    /// What was counted since `count` (the frames done: measuring draws
-    /// them one at a time), starting again from 0.
-    fn take(c: *Counting, out: *[counted.len]u64) bool {
-        const id = c.id orelse return false;
-        c.dev.perfmonValues(id, out) catch return false;
-        c.count(true);
-        return true;
-    }
-};
-
-/// What the GPU's counters say of the window's frames (`counts`, over
-/// `frames` of them), per frame: the shader processors' (QPUs') time on
-/// vertices and on pixels, idle, and waiting; the triangles and pixels;
-/// textures and caches.
-fn reportCounts(counts: *const [Counting.counted.len]u64, frames: u32) void {
-    const n: f64 = @floatFromInt(@max(frames, 1));
-    var per: [Counting.counted.len]f64 = undefined;
-    for (counts, &per) |c, *p| p.* = @as(f64, @floatFromInt(c)) / n;
-    const at = struct {
-        fn f(v: []const f64, comptime c: vc4.device.PerfCounter) f64 {
-            // Counted, or this does not build.
-            const i = comptime std.mem.indexOfScalar(vc4.device.PerfCounter, &Counting.counted, c).?;
-            return v[i];
-        }
-    }.f;
-    const idle = at(&per, .qpu_idle_cycles);
-    const vertex = at(&per, .qpu_vertex_coord_shading_cycles);
-    const fragment = at(&per, .qpu_fragment_shading_cycles);
-    const all = @max(idle + vertex + fragment, 1);
-    print("dazzle-blocks: GPU counters per frame: QPU cycles {d:.1}M (vertices {d:.0}%, pixels {d:.0}%, idle {d:.0}%), running instructions {d:.1}M, waiting for textures {d:.1}M, for the scoreboard {d:.1}M, for varyings {d:.1}M\n", .{
-        all / 1e6,                                     100 * vertex / all,                       100 * fragment / all,                           100 * idle / all,
-        at(&per, .qpu_valid_instruction_cycles) / 1e6, at(&per, .qpu_waiting_tmus_cycles) / 1e6, at(&per, .qpu_waiting_scoreboard_cycles) / 1e6, at(&per, .qpu_waiting_varyings_cycles) / 1e6,
-    });
-    print("dazzle-blocks: GPU counters per frame: triangles drawn {d:.0}k; quads {d:.0}k, written {d:.0}k; texture quads {d:.0}k, texture cache misses {d:.0}k; instruction cache {d:.0}k hits, {d:.0}k misses; uniform cache {d:.0}k hits, {d:.0}k misses\n", .{
-        at(&per, .fep_valid_prims_render) / 1e3,
-        at(&per, .fep_valid_quads) / 1e3,
-        at(&per, .tlb_quads_written_to_color_buf) / 1e3,
-        at(&per, .tmu_texture_quads) / 1e3,
-        at(&per, .tmu_texture_cache_misses) / 1e3,
-        at(&per, .qpu_inst_cache_hits) / 1e3,
-        at(&per, .qpu_inst_cache_misses) / 1e3,
-        at(&per, .qpu_uniform_cache_hits) / 1e3,
-        at(&per, .qpu_uniform_cache_misses) / 1e3,
-    });
-}
-
 /// The GPU's time on this process's work, from the kernel's counters for
 /// its GPU file (/proc/self/fdinfo): binning and rendering.
 const GpuTime = struct {
@@ -429,7 +349,7 @@ fn run(init: std.process.Init) !void {
     var upscaler = try upscale.Upscaler.init(gpa, host.dev);
     defer upscaler.deinit();
     var scene: Scene = .{ .game = &game, .renderer = renderer, .window_renderer = &host.renderer, .upscaler = &upscaler };
-    var counting: Counting = .{ .dev = host.dev };
+    var counting: app.gpu_counters.Counting = .{ .dev = host.dev };
     defer counting.count(false);
     const icons = try gpa.create(view.Icons);
     icons.init();
@@ -584,8 +504,8 @@ fn run(init: std.process.Init) !void {
             if (measuring) {
                 const n: f64 = @floatFromInt(@max(timing.frames, 1));
                 print("dazzle-blocks: measured on the GPU: {d:.1} ms a frame\n", .{@as(f64, @floatFromInt(timing.window_gpu_ns)) / std.time.ns_per_ms / n});
-                var counts: [Counting.counted.len]u64 = undefined;
-                if (counting.take(&counts)) reportCounts(&counts, timing.frames);
+                var counts: app.gpu_counters.Counting.Counts = undefined;
+                if (counting.take(&counts)) app.gpu_counters.report("dazzle-blocks", &counts, timing.frames);
             }
             timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
             log_since = now;
