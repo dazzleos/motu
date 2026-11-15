@@ -9,7 +9,8 @@
 //!    a pixel's shading once each. Then the other players (on the
 //!    network), as block figures, one draw each.
 //! 2. The sky, behind everything (only where nothing was drawn, again
-//!    thanks to early Z): its gradient and sun are per pixel.
+//!    thanks to early Z): its gradient and sun are per pixel. It is all
+//!    round, below the horizon too, so nothing is left undrawn.
 //! 3. Water and the sea, blended, the furthest first.
 //! 4. Glass and plants, blended, the furthest first.
 //! 5. The outline of the block picked.
@@ -944,17 +945,29 @@ fn seaRing(gpa: std.mem.Allocator) ![]Vertex {
     return seaRingPatches(gpa, &patches);
 }
 
-const dome_rings = 8;
+/// The dome's rings, by elevation: from straight down to straight up.
+/// Below the horizon it is the horizon's colour (the fog's), so it
+/// fills, as the fog would, wherever the sea and land have ended (from
+/// high up, the sea's edge is well below the horizon).
+const dome_elevations = blk: {
+    const above = 8;
+    var out: [above + 4]f32 = undefined;
+    out[0] = -std.math.pi / 2.0;
+    out[1] = -1.0;
+    out[2] = -0.55;
+    out[3] = -0.21;
+    for (1..above + 1) |k| out[3 + k] = -0.21 + (std.math.pi / 2.0 + 0.21) * @as(f32, @floatFromInt(k)) / above;
+    break :blk out;
+};
+const dome_rings = dome_elevations.len - 1;
 const dome_segments = 24;
 
-/// A dome of quads around the eye, from a little below the horizon to
-/// overhead: their corners are directions.
+/// A dome of quads all round the eye: their corners are directions.
 fn skyDome(buf: *[dome_rings * dome_segments * 4][3]f32) [][3]f32 {
     var n: usize = 0;
     const dir = struct {
         fn f(ring: usize, seg: usize) [3]f32 {
-            // From 12 degrees below the horizon up to the zenith.
-            const el = -0.21 + (std.math.pi / 2.0 + 0.21) * @as(f32, @floatFromInt(ring)) / dome_rings;
+            const el = dome_elevations[ring];
             const az = 2 * std.math.pi * @as(f32, @floatFromInt(seg)) / dome_segments;
             return .{ @cos(el) * @cos(az), @sin(el), @cos(el) * @sin(az) };
         }
