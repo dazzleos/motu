@@ -920,19 +920,19 @@ test "keys: walking, choosing, flying, the palette" {
     g.key(.e, false);
     try testing.expect(g.palette_open);
     // Clicking a block chooses it, and the palette stays open.
-    g.pickFromPalette(.thatch);
+    g.pickFromPalette(.thatch_slab);
     try testing.expect(g.palette_open);
-    try testing.expectEqual(Block.thatch, g.selected());
+    try testing.expectEqual(Block.thatch_slab, g.selected());
     // The arrows: the next block in the section shown, and back.
-    g.showPaletteSection(blocks.sectionOf(.thatch));
+    g.showPaletteSection(blocks.sectionOf(.thatch_slab));
     const sec = blocks.sections[g.palette_section].blocks;
-    const at = std.mem.indexOfScalar(Block, sec, .thatch).?;
+    const at = std.mem.indexOfScalar(Block, sec, .thatch_slab).?;
     g.key(.right, true);
     g.key(.right, false);
     try testing.expectEqual(sec[(at + 1) % sec.len], g.selected());
     g.key(.left, true);
     g.key(.left, false);
-    try testing.expectEqual(Block.thatch, g.selected());
+    try testing.expectEqual(Block.thatch_slab, g.selected());
     // Held, they do not turn the view.
     const yaw = g.player.yaw;
     g.key(.left, true);
@@ -1035,7 +1035,7 @@ test "the host saves, the guests' changes too; a game joined is not saved here" 
     try testing.expect(g.wantsSave());
     // Joined: changes, but not this computer's world to save.
     g.net.status = .{ .joined = "host-pi" };
-    _ = g.edit(.{ 12, 31, 10 }, .thatch);
+    _ = g.edit(.{ 12, 31, 10 }, .thatch_slab);
     try testing.expect(g.unsaved and !g.wantsSave());
 }
 

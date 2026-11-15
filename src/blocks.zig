@@ -37,6 +37,7 @@ pub const Block = enum(u8) {
     sandstone_bricks,
     /// Removed: read as volcanic wall.
     volcanic_bricks,
+    /// Removed: read as thatch (the slab: as a roof is).
     thatch,
     /// Removed: read as sandstone.
     plaster,
@@ -87,7 +88,8 @@ pub const Block = enum(u8) {
     chest,
     /// A single stick of bamboo, upright: a lamp on one is raised.
     post,
-    /// Half a block, its lower half: sandstone, rock and thatch.
+    /// Half a block, its lower half: sandstone, rock and thatch (the only
+    /// thatch: a roof's).
     sandstone_slab,
     rock_slab,
     thatch_slab,
@@ -152,7 +154,7 @@ pub const Block = enum(u8) {
 
     pub fn shape(b: Block) Shape {
         return switch (b) {
-            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue => .none,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, .thatch => .none,
             .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo, .hibiscus, .lattice, .mat, .curtain, .hammock, .canoe => .furniture,
             .water => .water,
             .palm => .pole,
@@ -228,7 +230,6 @@ pub const Block = enum(u8) {
             .sand => .sand,
             .sandstone => if (top or bottom) .sandstone_top else .sandstone_side,
             .palm => .palm_bark,
-            .thatch => .thatch,
             .coral => .coral,
             .sticks => if (top or bottom) .sticks_top else .sticks_side,
             .lamp => .lamp,
@@ -272,7 +273,7 @@ pub const Block = enum(u8) {
             .white_flower => .white_flower,
             .orange_flower => .orange_flower,
             .water => .water,
-            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, _ => .volcanic_rock,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, .thatch, _ => .volcanic_rock,
         };
     }
 
@@ -287,7 +288,6 @@ pub const Block = enum(u8) {
             .sandstone => "Sandstone",
             .water => "Water",
             .palm => "Palm",
-            .thatch => "Thatch",
             .lamp => "Lamp",
             .table => "Table",
             .bed => "Bed",
@@ -295,7 +295,7 @@ pub const Block = enum(u8) {
             .post => "Stick",
             .sandstone_slab => "Sandstone slab",
             .rock_slab => "Rock slab",
-            .thatch_slab => "Thatch slab",
+            .thatch_slab => "Thatch",
             .ladder => "Ladder",
             .fence => "Fence",
             .campfire => "Campfire",
@@ -334,7 +334,7 @@ pub const Block = enum(u8) {
             .paving => "Paving stones",
             .sticks => "Stick wall",
             .coral => "Coral",
-            .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, _ => "?",
+            .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, .thatch, _ => "?",
         };
     }
 
@@ -357,6 +357,7 @@ pub const Block = enum(u8) {
             .leaves => .green,
             .bookshelf => .table,
             .glass => .lattice,
+            .thatch => .thatch_slab,
             .pot => .air,
             .statue => .post,
             else => b,
@@ -383,7 +384,7 @@ pub const Section = struct {
 
 pub const sections = [_]Section{
     .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .black_sand, .shells, .sandstone, .water, .coral, .lava } },
-    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .lattice, .mat, .curtain } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .lattice, .mat, .curtain } },
     // Made of sticks.
     .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp, .campfire, .hammock, .canoe } },
     .{ .name = "Plants", .blocks = &.{ .palm, .bamboo, .banana, .mangrove, .hibiscus, .leafy_plant, .tall_grass, .seagrass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
@@ -411,7 +412,7 @@ pub const palette = blk: {
 };
 
 /// The hotbar's blocks to start with.
-pub const starting_hotbar = [9]Block{ .grass, .volcanic_rock, .sticks, .palm, .lattice, .volcanic_wall, .thatch, .lamp, .pink_flower };
+pub const starting_hotbar = [9]Block{ .grass, .volcanic_rock, .sticks, .palm, .lattice, .volcanic_wall, .thatch_slab, .lamp, .pink_flower };
 
 /// A cube's faces, by the direction they face: +x, -x, +y (up), -y, +z, -z.
 pub const Face = enum(u3) {
