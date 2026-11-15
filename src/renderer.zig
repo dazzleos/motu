@@ -147,15 +147,22 @@ pub const Environment = struct {
         const night_horizon = V3{ 0.035, 0.05, 0.1 };
         const zenith = mix3(night_zenith, mix3(day_zenith, dusk_zenith, low * 0.7), daylight);
         const horizon = mix3(night_horizon, mix3(day_horizon, dusk_horizon, low), daylight);
-        const sun_up = smoothstep(-0.04, 0.12, height);
+        // The faces are shaded by one light, the sun's or (once the sun
+        // is down) the moon's from the other way (see `lightDir`): each
+        // is nothing where it changes to the other, so the shading never
+        // jumps.
+        const sun_up = smoothstep(switch_height, 0.12, height);
         const sunlight = mix3(V3{ 0.64, 0.61, 0.54 }, V3{ 0.85, 0.48, 0.24 }, low) * math.splat(sun_up);
         const night = 1 - daylight;
-        const moonlight = V3{ 0.15, 0.18, 0.3 } * math.splat(night);
+        const moon_up = smoothstep(-switch_height, 0.25, -height);
+        const moonlight = V3{ 0.15, 0.18, 0.3 } * math.splat(night * moon_up);
         return .{
             .sun_dir = sun_dir,
             .daylight = daylight,
-            .sun_shows = smoothstep(-0.1, 0.02, height),
-            .moon_shows = smoothstep(-0.1, 0.02, -height),
+            // The sky draws one disc, whichever shows more: the sun's
+            // goes before the moon's comes, so neither jumps.
+            .sun_shows = smoothstep(-0.12, -0.02, height),
+            .moon_shows = smoothstep(0.12, 0.22, -height),
             .sun_color = sunlight + moonlight,
             .ambient = mix3(V3{ 0.11, 0.13, 0.22 }, V3{ 0.4, 0.45, 0.55 }, daylight) + V3{ 0.05, 0.03, 0.0 } * math.splat(low),
             .zenith = zenith,
@@ -165,10 +172,13 @@ pub const Environment = struct {
     }
 
     /// Which way the light that shades faces comes from: the sun, or by
-    /// night the moon.
+    /// night the moon (where both are nothing: see `at`).
     pub fn lightDir(e: Environment) V3 {
-        return if (e.sun_dir[1] > -0.05) e.sun_dir else -e.sun_dir;
+        return if (e.sun_dir[1] > switch_height) e.sun_dir else -e.sun_dir;
     }
+
+    /// The sun's height where its light gives way to the moon's.
+    const switch_height = -0.05;
 };
 
 // --- What is on the GPU -----------------------------------------------------------------
@@ -1120,6 +1130,32 @@ test "the whole island in view fits one frame, the near chunks first" {
     try testing.expect(r.regions[ri].bo.?.handle != old);
     try testing.expect(!r.regions[ri].dirty);
     try testing.expectEqual(before, state.bos.count());
+}
+
+test "the day changes smoothly: no jump in the light, the sky or the sun's and moon's discs" {
+    const steps = 4000;
+    var prev = Environment.at(0);
+    for (1..steps + 1) |i| {
+        const e = Environment.at(@as(f32, @floatFromInt(i)) / steps);
+        // The light on a face: its direction times its colour.
+        inline for (0..3) |k| {
+            const a = prev.lightDir() * math.splat(prev.sun_color[k]);
+            const b = e.lightDir() * math.splat(e.sun_color[k]);
+            try testing.expect(math.length(a - b) < 0.03);
+        }
+        try testing.expect(math.length(e.ambient - prev.ambient) < 0.01);
+        try testing.expect(math.length(e.horizon - prev.horizon) < 0.01);
+        try testing.expect(math.length(e.zenith - prev.zenith) < 0.01);
+        // The disc the sky draws: the sun's or the moon's, as much as it
+        // shows.
+        const disc = struct {
+            fn of(x: Environment) V3 {
+                return if (x.sun_shows >= x.moon_shows) x.sun_dir * math.splat(x.sun_shows) else -x.sun_dir * math.splat(x.moon_shows);
+            }
+        }.of;
+        try testing.expect(math.length(disc(e) - disc(prev)) < 0.05);
+        prev = e;
+    }
 }
 
 test "the day: bright at noon, dark at midnight, red at sunset, lamps brighter at night" {
