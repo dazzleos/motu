@@ -296,8 +296,11 @@ pub const World = struct {
         w.seed = seed;
         const heights = try w.gpa.alloc(i32, size_x * size_z);
         defer w.gpa.free(heights);
+        var rocks: std.StaticBitSet(size_x * size_z) = .empty;
         for (0..size_z) |z| for (0..size_x) |x| {
-            heights[z * size_x + x] = @intFromFloat(@floor(height(seed, @floatFromInt(x), @floatFromInt(z))));
+            const g = groundAt(seed, @floatFromInt(x), @floatFromInt(z));
+            heights[z * size_x + x] = @intFromFloat(@floor(g.h));
+            rocks.setValue(z * size_x + x, g.rock);
         };
         const hAt = struct {
             fn f(hs: []const i32, x: i32, z: i32) i32 {
@@ -318,7 +321,9 @@ pub const World = struct {
                 const fz: f32 = @floatFromInt(z);
                 const bare_line: i32 = 47 + @as(i32, @intFromFloat(fbm(seed +% 11, fx / 7, fz / 7, 2) * 4));
                 // The top few blocks, and what is under them.
-                const surface: [2]Block, const depth: i32 = if (h < sea_level - 1)
+                const surface: [2]Block, const depth: i32 = if (rocks.isSet(@intCast(z * size_x + x)))
+                    .{ .{ .volcanic_rock, .volcanic_rock }, 1 }
+                else if (h < sea_level - 1)
                     .{ .{ .sand, .sand }, 2 }
                 else if (h <= sea_level + 1)
                     .{ .{ .sand, .sand }, 3 }
@@ -574,21 +579,48 @@ fn fbm(seed: u32, x: f32, z: f32, octaves: u32) f32 {
     return sum / total;
 }
 
-/// The land's height at a place: an island in the middle, its coast made
-/// uneven by noise, rolling hills on it, a mountain off-centre, and the
-/// sea bed falling away around it.
-pub fn height(seed: u32, x: f32, z: f32) f32 {
+/// The ground at a place: how high it is, and whether it is bare rock.
+pub const Ground = struct { h: f32, rock: bool = false };
+
+/// The ground at a place: an island in the middle, its coast made uneven
+/// by noise; a beach all at one height (a block above the sea) and wide;
+/// shallow sea around it, then the sea bed falling away. In places rocky
+/// headlands take the beach's place and run out into the sea, and rocks
+/// stand on the beaches. Inland, rolling hills, and a mountain
+/// off-centre.
+pub fn groundAt(seed: u32, x: f32, z: f32) Ground {
     const sea: f32 = sea_level;
+    // The beach's top is at the water's surface.
+    const beach: f32 = sea - 1;
     const dx = (x - size_x / 2) / 58;
     const dz = (z - size_z / 2) / 58;
-    const warp = (fbm(seed +% 1, x / 26, z / 26, 4) - 0.5) * 0.9;
+    const warp = (fbm(seed +% 1, x / 26, z / 26, 4) - 0.5) * 0.7;
     const r = @sqrt(dx * dx + dz * dz) + warp;
     const land = 1 - r;
-    if (land < 0.3) {
-        // Under the sea: the sea bed shelving away from the beach.
-        return @max(sea - 2 - (0.3 - land) * 26, sea - 11) + fbm(seed +% 2, x / 10, z / 10, 2) * 2;
+    // Where the coast is, and how far the beach reaches inland.
+    const coast = 0.36;
+    const beach_end = 0.52;
+    // Headlands: rock in stretches of the coast, out into the sea.
+    const headland = std.math.clamp((fbm(seed +% 5, x / 22, z / 22, 3) - 0.56) * 7, 0, 1);
+    const rough = fbm(seed +% 6, x / 4, z / 4, 2);
+    if (land < beach_end and headland > 0) {
+        const out = @max(0, coast - land);
+        const rock_h = beach + 1 + headland * 3 + rough * 2.5 - out * 40 - @max(0, land - coast) * 4;
+        if (rock_h >= beach and (land < coast or headland > 0.25)) return .{ .h = @max(rock_h, beach), .rock = true };
     }
-    const inland = std.math.clamp((land - 0.3) / 0.5, 0, 1);
+    if (land < coast) {
+        // Shallow sea, a block or two deep; further out, the sea bed falls
+        // away.
+        const bed = fbm(seed +% 2, x / 10, z / 10, 2);
+        if (land > coast - 0.22) return .{ .h = beach - 1 - bed * 1.6 };
+        return .{ .h = @max(beach - 2.6 - (coast - 0.22 - land) * 40, sea - 11) + bed * 2 };
+    }
+    if (land < beach_end) {
+        // Rocks here and there on the sand.
+        if (fbm(seed +% 7, x / 3.5, z / 3.5, 2) > 0.74) return .{ .h = beach + 1 + rough, .rock = true };
+        return .{ .h = beach };
+    }
+    const inland = std.math.clamp((land - beach_end) / 0.4, 0, 1);
     const hills = (fbm(seed +% 3, x / 22, z / 22, 4) - 0.3) * 14 * inland;
     // The mountain.
     const mx = x - size_x * 0.58;
@@ -596,7 +628,7 @@ pub fn height(seed: u32, x: f32, z: f32) f32 {
     const md = @max(0, 1 - @sqrt(mx * mx + mz * mz) / 34);
     const ridge = 1 - @abs(fbm(seed +% 4, x / 12, z / 12, 3) * 2 - 1);
     const mountain = md * md * (22 + ridge * 12);
-    return std.math.clamp(sea - 2 + inland * 6 + @max(hills, -2) + mountain, 3, size_y - 6);
+    return .{ .h = std.math.clamp(beach + inland * 7 + @max(hills, 0) + mountain, 3, size_y - 6) };
 }
 
 const testing = std.testing;

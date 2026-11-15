@@ -361,12 +361,14 @@ test "the island from its beach, drawn with the real shaders: sky above, land an
         .env = renderer.Environment.at(0.38),
     }, width, height);
     defer testing.allocator.free(img.pixels);
-    // The top left is sky (out over the sea): blue, bright.
-    for (0..width / 4) |x| {
+    // The top row is mostly sky (palms' fronds may be against it): blue,
+    // bright.
+    var sky: u32 = 0;
+    for (0..width) |x| {
         const c = img.pixels[x];
-        try testing.expect(channel(c, 0) > channel(c, 16));
-        try testing.expect(channel(c, 0) > 150);
+        if (channel(c, 0) > channel(c, 16) and channel(c, 0) > 150) sky += 1;
     }
+    try testing.expect(sky > width / 2);
     // Something was drawn over every pixel (none left black).
     for (img.pixels) |c| try testing.expect(c & 0xffffff != 0);
     // The bottom row (the ground at the player's feet) is not sky-coloured.
