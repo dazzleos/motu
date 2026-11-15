@@ -1,8 +1,7 @@
 //! Water, and the sea around the world, all per vertex (see
 //! water_common.zig), with the sun glinting on the waves: the fragment
 //! shader only passes the colour on, so water costs little more to fill
-//! than to blend. Drawn so with bump mapping off; water_ripples.zig adds
-//! ripples per pixel.
+//! than to blend.
 
 const gpu = @import("gpu");
 const common = @import("common.zig");

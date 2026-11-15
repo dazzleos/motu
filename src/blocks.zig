@@ -298,28 +298,6 @@ pub const Tile = enum(u6) {
     pub fn slot(t: Tile) u4 {
         return @intCast(@intFromEnum(t) % per_strip);
     }
-
-    /// The fine detail drawn over it up close (see textures.detail).
-    pub fn detail(t: Tile) Detail {
-        return switch (t) {
-            .grass_top, .grass_side, .dirt, .sand, .gravel, .clay, .snow, .log_side, .log_top, .leaves, .plaster => .grain,
-            .white, .black, .red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan => .grain,
-            .planks, .dark_planks, .bookshelf, .iron, .gold => .streaks,
-            .stone, .sandstone_top, .sandstone_side, .cobblestone, .bricks, .stone_bricks, .roof => .rough,
-            .tall_grass, .red_flower, .yellow_flower, .glass, .lamp, .water => .none,
-        };
-    }
-};
-
-/// Fine detail over a tile, up close: the same noise, drawn differently.
-pub const Detail = enum(u2) {
-    none,
-    /// Small and even: sand's grains, soil, paint.
-    grain,
-    /// Drawn out across the tile: wood's fibres, brushed metal.
-    streaks,
-    /// Bigger and stronger: the grit of stone and fired clay.
-    rough,
 };
 
 test "every block that can be placed has a name and its own look" {

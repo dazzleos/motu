@@ -63,13 +63,10 @@ pub const Info = struct {
     sky: u4,
     lamp: u4,
     anim: Anim = .none,
-    /// The tile's fine detail (solid faces only).
-    detail: blocks.Detail = .none,
 
     pub fn pack(i: Info) f32 {
         const v: u32 = @as(u32, i.tile) | @as(u32, i.ao) << 6 | @as(u32, @intFromEnum(i.face)) << 8 |
-            @as(u32, i.sky) << 11 | @as(u32, i.lamp) << 15 | @as(u32, @intFromEnum(i.anim)) << 19 |
-            @as(u32, @intFromEnum(i.detail)) << 21;
+            @as(u32, i.sky) << 11 | @as(u32, i.lamp) << 15 | @as(u32, @intFromEnum(i.anim)) << 19;
         return @floatFromInt(v);
     }
 
@@ -82,7 +79,6 @@ pub const Info = struct {
             .sky = @truncate(v >> 11),
             .lamp = @truncate(v >> 15),
             .anim = @enumFromInt(@as(u2, @truncate(v >> 19))),
-            .detail = @enumFromInt(@as(u2, @truncate(v >> 21))),
         };
     }
 };
@@ -260,7 +256,7 @@ fn emitQuad(list: *std.ArrayList(Vertex), gpa: std.mem.Allocator, face: Face, co
         try list.append(gpa, .{
             .pos = c,
             .uv = .{ uv[0], stripT(tile, uv[1] - top) },
-            .info = (Info{ .tile = look.tile, .ao = look.ao[k], .face = face, .sky = look.sky[k], .lamp = look.lamp[k], .anim = anims[k], .detail = tile.detail() }).pack(),
+            .info = (Info{ .tile = look.tile, .ao = look.ao[k], .face = face, .sky = look.sky[k], .lamp = look.lamp[k], .anim = anims[k] }).pack(),
         });
     }
 }

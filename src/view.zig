@@ -206,7 +206,6 @@ pub const Blocks = struct {
         });
         const options = column(cx, 3, &.{
             quality,
-            cx.make(kete.SwitchRow{ .value = g.bump, .on_changed = .of(g, Game.setBump), .label = "Bumps and ripples" }),
             cx.make(kete.SwitchRow{ .value = g.stats, .on_changed = .of(g, Game.setStats), .label = "What is drawn" }),
             time,
         });
@@ -228,13 +227,11 @@ pub const Blocks = struct {
     fn statsPanel(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
         const s = self.stats;
         const p = self.game.player.pos;
-        const text = cx.fmt("{d:.0} fps  ·  drawn at {d:.0}%{s}\n{d} chunks, {d} draws ({d} detailed)\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
+        const text = cx.fmt("{d:.0} fps  ·  drawn at {d:.0}%\n{d} chunks, {d} draws\n{d}k triangles\n{d:.0}, {d:.0}, {d:.0}  ·  {s}", .{
             self.fps,
             self.game.quality * 100,
-            if (self.game.bump) "  ·  bump mapped" else "",
             s.chunks,
             s.draws,
-            s.detailed,
             s.triangles / 1000,
             p[0],
             p[1],
@@ -498,15 +495,6 @@ test "the menu fits from the smallest window up, and its switches set the option
     }
     try testing.expect(findText(u.root.?, "Menu") != null);
     try testing.expect(findText(u.root.?, "Resume") != null);
-    // Its bumps switch turns them off.
-    try testing.expect(g.bump);
-    const label_node = findText(u.root.?, "Bumps and ripples").?;
-    const at = label_node.position();
-    const p: kete.Point = .{ at[0] + 4, at[1] + 4 };
-    u.pointerMotion(p);
-    u.pointerButton(p, .left, true);
-    u.pointerButton(p, .left, false);
-    try testing.expect(!g.bump);
     // The quality: as big as the window, to start with; the slider goes
     // down to half.
     try testing.expect(findText(u.root.?, "100%") != null);

@@ -137,8 +137,6 @@ pub const Game = struct {
     /// How big the window is drawn, of its size across and down (the
     /// display stretches it): from half to all of it.
     quality: f32 = 1,
-    /// Solid blocks lit per pixel from their normal maps.
-    bump: bool = true,
     /// The view's size, and the pointer in it (if it is there).
     view_size: [2]f32 = .{ 1, 1 },
     pointer: ?[2]f32 = null,
@@ -317,10 +315,6 @@ pub const Game = struct {
     /// The quality, as the menu's slider shows it.
     pub fn qualitySlider(g: *const Game) f32 {
         return (g.quality - 0.5) / 0.5;
-    }
-
-    pub fn setBump(g: *Game, on: bool) void {
-        g.bump = on;
     }
 
     pub fn setStats(g: *Game, on: bool) void {

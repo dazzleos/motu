@@ -474,9 +474,9 @@ fn bookshelf(u: f32, v: f32, x: f32, y: f32, s: u32) Texel {
     return tx(rgb(0x241a10), -2);
 }
 
-/// The tile's normals (as a normal map: x across the tile, y down it, z
-/// out of the face), from its heights.
-fn normals(t: Tile, out: *[tile_size * tile_size][3]f32, cols: *[tile_size * tile_size]Texel, steep: f32) void {
+/// The tile's normals (x across the tile, y down it, z out of the face),
+/// from its heights: for the shading baked into its colours.
+fn normals(t: Tile, out: *[tile_size * tile_size][3]f32, cols: *[tile_size * tile_size]Texel) void {
     for (0..tile_size) |y| for (0..tile_size) |x| {
         cols[y * tile_size + x] = texel(t, @intCast(x), @intCast(y));
     };
@@ -489,26 +489,15 @@ fn normals(t: Tile, out: *[tile_size * tile_size][3]f32, cols: *[tile_size * til
     for (0..tile_size) |yu| for (0..tile_size) |xu| {
         const x: i32 = @intCast(xu);
         const y: i32 = @intCast(yu);
-        const dx = (h(cols, x + 1, y) - h(cols, x - 1, y)) * steep / 2;
-        const dy = (h(cols, x, y + 1) - h(cols, x, y - 1)) * steep / 2;
+        const dx = (h(cols, x + 1, y) - h(cols, x - 1, y)) / 2;
+        const dy = (h(cols, x, y + 1) - h(cols, x, y - 1)) / 2;
         const l = @sqrt(dx * dx + dy * dy + 1);
         out[yu * tile_size + xu] = .{ -dx / l, -dy / l, 1 / l };
     };
 }
 
-/// How much steeper the normal maps make the tiles' bumps than the
-/// shading baked in without them: real light from one side is subtler
-/// than that shading, which exaggerates.
-const bump_steep = 2;
-
-/// A normal as a texel: each part from -1..1 to 0..255 (R, G, B).
-fn packNormal(nm: [3]f32) Pixel {
-    return pack(.{ (nm[0] * 0.5 + 0.5) * 255, (nm[1] * 0.5 + 0.5) * 255, (nm[2] * 0.5 + 0.5) * 255 }, 1);
-}
-
-/// Light from the top left and in front, for what is drawn without normal
-/// maps (icons, and the blocks with bump mapping off): a gentle shading
-/// from the normals, 1 where the surface is flat.
+/// Light from the top left and in front, baked into the tiles' colours: a
+/// gentle shading from their normals, 1 where the surface is flat.
 fn shaded(c: Rgb, nm: [3]f32) Rgb {
     const l = [3]f32{ -0.45, -0.45, 0.77 };
     const d = nm[0] * l[0] + nm[1] * l[1] + nm[2] * l[2];
@@ -516,69 +505,19 @@ fn shaded(c: Rgb, nm: [3]f32) Rgb {
 }
 
 /// Strip `strip`, `strip_width` by `strip_height`, row by row: its
-/// colours (with the gentle shading of `shaded` if `shade`, for drawing
-/// without normal maps), and its normal map (tiles not used left clear,
-/// and facing straight out).
-pub fn strips(strip: u2, colours: *[strip_width * strip_height]Pixel, normal_map: ?*[strip_width * strip_height]Pixel, shade: bool) void {
+/// colours, shaded (see `shaded`); tiles not used left clear.
+pub fn strips(strip: u2, colours: *[strip_width * strip_height]Pixel) void {
     @memset(colours, 0);
-    if (normal_map) |nm| @memset(nm, packNormal(.{ 0, 0, 1 }));
     var ns: [tile_size * tile_size][3]f32 = undefined;
     var cols: [tile_size * tile_size]Texel = undefined;
     for (std.enums.values(Tile)) |t| {
         if (t.strip() != strip) continue;
-        normals(t, &ns, &cols, if (shade) 1 else bump_steep);
+        normals(t, &ns, &cols);
         const oy = @as(u32, t.slot()) * tile_size;
         for (0..tile_size * tile_size) |i| {
             const at = (oy + i / tile_size) * strip_width + i % tile_size;
-            const c = cols[i];
-            colours[at] = pack(if (shade) shaded(c.c, ns[i]) else c.c, c.a);
-            if (normal_map) |nm| nm[at] = packNormal(ns[i]);
+            colours[at] = pack(shaded(cols[i].c, ns[i]), cols[i].a);
         }
-    }
-}
-
-/// Strip `strip` in all three forms at once (shaded colours, plain
-/// colours and normal map), evaluating each tile's procedural texels only
-/// once.
-pub fn allStrips(
-    strip: u2,
-    shaded_colours: *[strip_width * strip_height]Pixel,
-    plain_colours: *[strip_width * strip_height]Pixel,
-    normal_map: *[strip_width * strip_height]Pixel,
-) void {
-    @memset(shaded_colours, 0);
-    @memset(plain_colours, 0);
-    @memset(normal_map, packNormal(.{ 0, 0, 1 }));
-    var cols: [tile_size * tile_size]Texel = undefined;
-    const h = struct {
-        fn at(c: *const [tile_size * tile_size]Texel, x: i32, y: i32) f32 {
-            return c[@intCast(@mod(y, tile_size) * tile_size + @mod(x, tile_size))].h;
-        }
-    }.at;
-    for (std.enums.values(Tile)) |t| {
-        if (t.strip() != strip) continue;
-        for (0..tile_size) |y| for (0..tile_size) |x| {
-            cols[y * tile_size + x] = texel(t, @intCast(x), @intCast(y));
-        };
-        const oy = @as(u32, t.slot()) * tile_size;
-        for (0..tile_size) |yu| for (0..tile_size) |xu| {
-            const x: i32 = @intCast(xu);
-            const y: i32 = @intCast(yu);
-            const dx = (h(&cols, x + 1, y) - h(&cols, x - 1, y)) * 0.5;
-            const dy = (h(&cols, x, y + 1) - h(&cols, x, y - 1)) * 0.5;
-            const l1 = @sqrt(dx * dx + dy * dy + 1);
-            const nm1 = [3]f32{ -dx / l1, -dy / l1, 1 / l1 };
-            const bdx = dx * bump_steep;
-            const bdy = dy * bump_steep;
-            const lb = @sqrt(bdx * bdx + bdy * bdy + 1);
-            const nmb = [3]f32{ -bdx / lb, -bdy / lb, 1 / lb };
-            const i = yu * tile_size + xu;
-            const at = (oy + yu) * strip_width + xu;
-            const c = cols[i];
-            shaded_colours[at] = pack(shaded(c.c, nm1), c.a);
-            plain_colours[at] = pack(c.c, c.a);
-            normal_map[at] = packNormal(nmb);
-        };
     }
 }
 
@@ -586,71 +525,8 @@ pub fn allStrips(
 pub fn tilePixels(t: Tile, out: *[tile_size * tile_size]Pixel) void {
     var ns: [tile_size * tile_size][3]f32 = undefined;
     var cols: [tile_size * tile_size]Texel = undefined;
-    normals(t, &ns, &cols, 1);
+    normals(t, &ns, &cols);
     for (out, cols, ns) |*o, c, nm| o.* = pack(shaded(c.c, nm), c.a);
-}
-
-// --- Detail ---------------------------------------------------------------------------
-
-/// The detail texture's size: a patch of fine noise, repeating both ways,
-/// drawn over near faces several times a block (see terrain_bump.zig).
-pub const detail_size = 64;
-
-/// The detail texture, row by row: red and green, which way the noise's
-/// surface leans (across, down, as a normal map's x and y); blue, how
-/// light it is. All are 128 where it is level.
-pub fn detail(out: *[detail_size * detail_size]Pixel) void {
-    var h: [detail_size * detail_size]f32 = undefined;
-    for (0..detail_size) |y| for (0..detail_size) |x| {
-        const u = @as(f32, @floatFromInt(x)) / detail_size;
-        const v = @as(f32, @floatFromInt(y)) / detail_size;
-        // Grains of two sizes, and a texel's worth of grit.
-        h[y * detail_size + x] = fbm(u, v, 8, 3, 0xde7a11) * 0.6 + hash(@intCast(x), @intCast(y), 0x9417) * 0.4;
-    };
-    const at = struct {
-        fn f(hs: *const [detail_size * detail_size]f32, x: usize, y: usize) f32 {
-            return hs[(y % detail_size) * detail_size + x % detail_size];
-        }
-    }.f;
-    for (0..detail_size) |y| for (0..detail_size) |x| {
-        const dx = (at(&h, x + 1, y) - at(&h, x + detail_size - 1, y)) * 1.5;
-        const dy = (at(&h, x, y + 1) - at(&h, x, y + detail_size - 1)) * 1.5;
-        const l = @sqrt(dx * dx + dy * dy + 1);
-        const lum = 0.5 + (at(&h, x, y) - 0.5) * 0.8;
-        out[y * detail_size + x] = pack(.{ (-dx / l * 0.5 + 0.5) * 255, (-dy / l * 0.5 + 0.5) * 255, lum * 255 }, 1);
-    };
-}
-
-// --- Ripples ---------------------------------------------------------------------------
-
-/// The ripple texture's size: a normal map of small waves, repeating both
-/// ways, which water reads twice, moving different ways (see
-/// water_ripples.zig).
-pub const ripple_size = 64;
-
-/// The ripple texture, row by row: a normal map (x, y as across and down
-/// the texture, z up out of the water).
-pub fn ripples(out: *[ripple_size * ripple_size]Pixel) void {
-    var h: [ripple_size * ripple_size]f32 = undefined;
-    for (0..ripple_size) |y| for (0..ripple_size) |x| {
-        const u = @as(f32, @floatFromInt(x)) / ripple_size;
-        const v = @as(f32, @floatFromInt(y)) / ripple_size;
-        // Rounded crests: noise folded over (|n - 0.5|), at two sizes.
-        const a = @abs(fbm(u, v, 4, 2, 0x5ea) - 0.5);
-        const b = @abs(noise(u, v, 8, 0xc0a57) - 0.5);
-        h[y * ripple_size + x] = (0.5 - a) * 7 + (0.5 - b) * 3;
-    };
-    const at = struct {
-        fn f(hs: *const [ripple_size * ripple_size]f32, x: usize, y: usize) f32 {
-            return hs[(y % ripple_size) * ripple_size + x % ripple_size];
-        }
-    }.f;
-    for (0..ripple_size) |y| for (0..ripple_size) |x| {
-        const dx = (at(&h, x + 1, y) - at(&h, x + ripple_size - 1, y)) / 2;
-        const dy = (at(&h, x, y + 1) - at(&h, x, y + ripple_size - 1)) / 2;
-        const l = @sqrt(dx * dx + dy * dy + 1);
-        out[y * ripple_size + x] = packNormal(.{ -dx / l, -dy / l, 1 / l });
-    };
 }
 
 // --- Icons ------------------------------------------------------------------------------
@@ -716,7 +592,7 @@ test "every tile is in its strip, opaque except where things are see-through, an
     const px = try std.testing.allocator.create([strip_width * strip_height]Pixel);
     defer std.testing.allocator.destroy(px);
     for (0..Tile.strips) |strip| {
-        strips(@intCast(strip), px, null, false);
+        strips(@intCast(strip), px);
         for (std.enums.values(Tile)) |t| {
             if (t.strip() != strip) continue;
             const oy = @as(u32, t.slot()) * tile_size;
@@ -730,7 +606,7 @@ test "every tile is in its strip, opaque except where things are see-through, an
     }
     // Wrapping noise: the left and right edges of grass are close in
     // colour (they meet when the tile repeats).
-    strips(0, px, null, false);
+    strips(0, px);
     var diff: i32 = 0;
     for (0..tile_size) |y| {
         const a = px[y * strip_width];
@@ -749,30 +625,4 @@ test "icons show the cube's three faces, or the plant" {
     try std.testing.expectEqual(@as(Pixel, 0), px[0]);
     icon(.red_flower, &px);
     try std.testing.expectEqual(@as(Pixel, 0), px[0]);
-}
-
-test "normal maps: flat where the tile is, tilted at the edges of what stands out" {
-    const gpa = std.testing.allocator;
-    const col = try gpa.create([strip_width * strip_height]Pixel);
-    defer gpa.destroy(col);
-    const nm = try gpa.create([strip_width * strip_height]Pixel);
-    defer gpa.destroy(nm);
-    strips(1, col, nm, false);
-    const n = struct {
-        fn at(m: []const Pixel, t: Tile, x: u32, y: u32) [3]f32 {
-            const p = m[(@as(u32, t.slot()) * tile_size + y) * strip_width + x];
-            return .{ @as(f32, @floatFromInt(p >> 16 & 0xff)) / 127.5 - 1, @as(f32, @floatFromInt(p >> 8 & 0xff)) / 127.5 - 1, @as(f32, @floatFromInt(p & 0xff)) / 127.5 - 1 };
-        }
-    }.at;
-    // Every normal is about a unit long and faces out.
-    for (nm) |p| {
-        const v = [3]f32{ @as(f32, @floatFromInt(p >> 16 & 0xff)) / 127.5 - 1, @as(f32, @floatFromInt(p >> 8 & 0xff)) / 127.5 - 1, @as(f32, @floatFromInt(p & 0xff)) / 127.5 - 1 };
-        try std.testing.expectApproxEqAbs(@as(f32, 1), @sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), 0.03);
-        try std.testing.expect(v[2] > 0);
-    }
-    // A brick's middle faces out; its top edge (rising from the mortar
-    // above) tilts up the tile (towards -y), its left edge left.
-    try std.testing.expect(n(nm, .bricks, 16, 9)[2] > 0.95);
-    try std.testing.expect(n(nm, .bricks, 16, 3)[1] < -0.3);
-    try std.testing.expect(n(nm, .bricks, 3, 9)[0] < -0.3);
 }

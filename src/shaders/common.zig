@@ -36,8 +36,6 @@ pub const Info = struct {
     sky: f32,
     lamp: f32,
     anim: f32,
-    /// blocks.Detail: 0 none, 1 grain, 2 streaks, 3 rough.
-    detail: f32,
 };
 
 /// The packed float, taken apart (each field is a power of two wide, so
@@ -56,7 +54,6 @@ pub fn unpack(info: f32) Info {
         .sky = c - d * 16,
         .lamp = d - e * 16,
         .anim = e - f * 4,
-        .detail = f,
     };
 }
 

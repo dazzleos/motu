@@ -578,7 +578,6 @@ const Builder = struct {
             .face = face,
             .sky = world_mod.skyOf(light),
             .lamp = world_mod.lampOf(light),
-            .detail = .grain,
         }).pack();
         for (corners, uvs, 0..) |c, uv, k| {
             b.out[b.at + k] = .{

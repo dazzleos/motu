@@ -1,5 +1,4 @@
-//! What both water shaders work out per vertex (water.zig, and
-//! water_ripples.zig, which adds ripples per pixel): waves moving across
+//! What the water shader works out per vertex (water.zig): waves moving across
 //! the surface (the vertices rise and fall; the sea's beyond the world's
 //! edge fade to flat further out, where its quads are big), shallows clear
 //! and turquoise and the deep dark blue, the sky reflected more at a

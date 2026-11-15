@@ -71,7 +71,6 @@ const Scene = struct {
             .time = g.clock,
             .env = renderer_mod.Environment.at(g.time_of_day),
             .underwater = g.player.underwater(g.world),
-            .bump = g.bump,
             .outline = if (g.target) |t| t.cell else null,
             .avatars = g.net.others,
             .reach = s.reach.k,
@@ -141,7 +140,7 @@ const Timing = struct {
     waited_ns: u64,
     gpu: GpuTime,
 
-    fn report(t: *const Timing, fd: linux.fd_t, elapsed_ns: u64, quality: f32, bump: bool, reach: f32) void {
+    fn report(t: *const Timing, fd: linux.fd_t, elapsed_ns: u64, quality: f32, reach: f32) void {
         const n: f64 = @floatFromInt(@max(t.frames, 1));
         const ms = struct {
             fn per(ns: u64, frames: f64) f64 {
@@ -158,13 +157,12 @@ const Timing = struct {
             }) catch "GPU time not known"
         else
             "GPU time not known";
-        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels (drawn at {d:.0}%, widgets redrawn in {d:.0}%), seen {d:.0} blocks away{s}; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
+        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels (drawn at {d:.0}%, widgets redrawn in {d:.0}%), seen {d:.0} blocks away; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
             gpu_text,
             t.pixels / n / 1e6,
             quality * 100,
             100 * @as(f64, @floatFromInt(t.layers)) / n,
             renderer_mod.view_distance * reach,
-            if (bump) ", bump mapped" else "",
             ms(t.step_ns, n),
             ms(t.record_ns, n),
             ms(app.window.gpu_waited_ns -% t.waited_ns, n),
@@ -405,8 +403,7 @@ fn run(init: std.process.Init) !void {
     // The options as chosen, or as suit the GPU (the Pi 4's and 5's draws
     // them fast enough; the older one's does not).
     var kept = options.effective(options.load(), host.dev.is_v3d);
-    game.quality = kept.quality;
-    game.bump = kept.bump;
+    game.quality = kept;
     const renderer = try Renderer.init(gpa, host.dev);
     var trouble: Trouble = .{};
     {
@@ -529,9 +526,9 @@ fn run(init: std.process.Init) !void {
             last_save = now;
         }
         // Changed in the menu: kept.
-        if (game.quality != kept.quality or game.bump != kept.bump) {
-            kept = .{ .quality = game.quality, .bump = game.bump };
-            options.save(.{ .quality = kept.quality, .bump = kept.bump });
+        if (game.quality != kept) {
+            kept = game.quality;
+            options.save(.{ .quality = kept });
         }
         // Drawn as big as the quality chosen: the shell (or the display)
         // stretches it to the window's size.
@@ -564,7 +561,7 @@ fn run(init: std.process.Init) !void {
         if (now - log_since >= 10 * std.time.ns_per_s) {
             const s = renderer.stats;
             print("dazzle-blocks: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
-            timing.report(host.dev.fd, now - log_since, game.quality, game.bump, scene.reach.k);
+            timing.report(host.dev.fd, now - log_since, game.quality, scene.reach.k);
             if (measuring) {
                 const n: f64 = @floatFromInt(@max(timing.frames, 1));
                 print("dazzle-blocks: measured on the GPU: {d:.1} ms a frame\n", .{@as(f64, @floatFromInt(timing.window_gpu_ns)) / std.time.ns_per_ms / n});

@@ -42,39 +42,6 @@ pub const max_quads = 16384;
 /// Mipmap levels after the first: down to a pixel a tile (64 to 1).
 const mip_levels = 6;
 
-/// Chunks nearer than this (in blocks, along the ground) are drawn with
-/// their bumps and detail (terrain_bump.zig, whose `bump_far` it is);
-/// further off, the bumps are too small to see, and terrain.zig draws them
-/// for less.
-pub const near_distance = 32;
-
-/// The detail texture: as the strips, but repeating both ways.
-fn detailConfig() vc4.texture.Config {
-    const layout = vc4.texture.mipmapLayout(textures.detail_size, textures.detail_size, detail_levels);
-    return .{
-        .offset = layout.base,
-        .width = textures.detail_size,
-        .height = textures.detail_size,
-        .mag_filter = .linear,
-        .min_filter = .nearest,
-        .mip_levels = detail_levels,
-        .mip_filter = .linear,
-        .wrap_s = .repeat,
-        .wrap_t = .repeat,
-    };
-}
-
-const detail_levels = 6;
-
-/// The ripple texture: as the detail texture.
-fn rippleConfig() vc4.texture.Config {
-    var c = detailConfig();
-    c.offset = vc4.texture.mipmapLayout(textures.ripple_size, textures.ripple_size, detail_levels).base;
-    c.width = textures.ripple_size;
-    c.height = textures.ripple_size;
-    return c;
-}
-
 /// How the strips are sampled: smoothly (bilinear) up close; further off,
 /// from the mipmap levels, the nearest texel of the two nearest levels
 /// mixed (so a texel of the next tile down never bleeds in); repeating
@@ -302,9 +269,6 @@ pub const View = struct {
     time: f32,
     env: Environment,
     underwater: bool = false,
-    /// Solid blocks lit per pixel from their normal maps, and water
-    /// rippled.
-    bump: bool = true,
     /// The block to outline.
     outline: ?world_mod.Pos = null,
     /// The other players.
@@ -319,8 +283,6 @@ pub const Stats = struct {
     chunks: u32 = 0,
     draws: u32 = 0,
     triangles: u32 = 0,
-    /// Of the draws, those with bumps and detail (the near chunks').
-    detailed: u32 = 0,
 };
 
 pub fn Renderer(comptime Device: type) type {
@@ -330,22 +292,12 @@ pub fn Renderer(comptime Device: type) type {
         gpa: std.mem.Allocator,
         dev: Device,
         terrain: shader.Pipeline,
-        terrain_bump: shader.Pipeline,
         terrain_blend: shader.Pipeline,
         water: shader.Pipeline,
-        water_ripples: shader.Pipeline,
         sky: shader.Pipeline,
         line: shader.Pipeline,
-        /// The tiles, a strip each (see textures.zig), with mipmaps: shaded
-        /// for drawing without normal maps, their plain colours for
-        /// drawing with them, and the normal maps.
+        /// The tiles, a strip each (see textures.zig), with mipmaps.
         strips: [blocks.Tile.strips]vc4.Bo,
-        albedo: [blocks.Tile.strips]vc4.Bo,
-        normals: [blocks.Tile.strips]vc4.Bo,
-        /// Fine detail drawn over near faces.
-        detail: vc4.Bo,
-        /// Ripples on water.
-        ripples: vc4.Bo,
         indices: vc4.Bo,
         sea: vc4.Bo,
         sea_quads: u32,
@@ -379,51 +331,29 @@ pub fn Renderer(comptime Device: type) type {
             const prog = shader.Program.decode;
             var terrain = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
             errdefer terrain.deinit(dev);
-            var terrain_bump = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain_bump.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
-            errdefer terrain_bump.deinit(dev);
             var terrain_blend = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain_blend.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
             errdefer terrain_blend.deinit(dev);
             var water = try shader.Pipeline.init(gpa, dev, prog(@embedFile("water.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
             errdefer water.deinit(dev);
-            var water_ripples = try shader.Pipeline.init(gpa, dev, prog(@embedFile("water_ripples.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
-            errdefer water_ripples.deinit(dev);
             var sky = try shader.Pipeline.init(gpa, dev, prog(@embedFile("sky.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .cull = .none, .early_z = true });
             errdefer sky.deinit(dev);
             var line = try shader.Pipeline.init(gpa, dev, prog(@embedFile("line.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .primitive = .lines, .early_z = true });
             errdefer line.deinit(dev);
 
-            // The tiles: shaded, plain and normal maps (see `strips`).
+            // The tiles (see `strips`).
             const layout = vc4.texture.mipmapLayout(textures.strip_width, textures.strip_height, mip_levels);
-            var bos: [3 * blocks.Tile.strips]vc4.Bo = undefined;
+            var bos: [blocks.Tile.strips]vc4.Bo = undefined;
             var made: usize = 0;
             errdefer for (bos[0..made]) |bo| dev.destroyBo(bo);
             for (&bos) |*bo| {
                 bo.* = try dev.createBo(layout.size);
                 made += 1;
             }
-            const detail_layout = vc4.texture.mipmapLayout(textures.detail_size, textures.detail_size, detail_levels);
-            const detail = try dev.createBo(detail_layout.size);
-            errdefer dev.destroyBo(detail);
-            {
-                var fine: [textures.detail_size * textures.detail_size]u32 = undefined;
-                textures.detail(&fine);
-                try vc4.texture.uploadMipmaps(gpa, detail.map, &fine, textures.detail_size, textures.detail_size, detail_levels, .colour);
-            }
-            const ripples = try dev.createBo(vc4.texture.mipmapLayout(textures.ripple_size, textures.ripple_size, detail_levels).size);
-            errdefer dev.destroyBo(ripples);
-            {
-                var px: [textures.ripple_size * textures.ripple_size]u32 = undefined;
-                textures.ripples(&px);
-                try vc4.texture.uploadMipmaps(gpa, ripples.map, &px, textures.ripple_size, textures.ripple_size, detail_levels, .normal);
-            }
-            const px = try gpa.create([3][textures.strip_width * textures.strip_height]u32);
+            const px = try gpa.create([textures.strip_width * textures.strip_height]u32);
             defer gpa.destroy(px);
-            for (0..blocks.Tile.strips) |i| {
-                textures.allStrips(@intCast(i), &px[0], &px[1], &px[2]);
-                for (0..3) |set| {
-                    const bo = bos[set * blocks.Tile.strips + i];
-                    try vc4.texture.uploadMipmaps(gpa, bo.map, &px[set], textures.strip_width, textures.strip_height, mip_levels, if (set == 2) .normal else .colour);
-                }
+            for (bos, 0..) |bo, i| {
+                textures.strips(@intCast(i), px);
+                try vc4.texture.uploadMipmaps(gpa, bo.map, px, textures.strip_width, textures.strip_height, mip_levels, .colour);
             }
 
             // Every quad's triangles.
@@ -466,17 +396,11 @@ pub fn Renderer(comptime Device: type) type {
                 .gpa = gpa,
                 .dev = dev,
                 .terrain = terrain,
-                .terrain_bump = terrain_bump,
                 .terrain_blend = terrain_blend,
                 .water = water,
-                .water_ripples = water_ripples,
                 .sky = sky,
                 .line = line,
-                .strips = bos[0..blocks.Tile.strips].*,
-                .albedo = bos[blocks.Tile.strips..][0..blocks.Tile.strips].*,
-                .normals = bos[2 * blocks.Tile.strips ..][0..blocks.Tile.strips].*,
-                .detail = detail,
-                .ripples = ripples,
+                .strips = bos,
                 .indices = indices,
                 .sea = sea,
                 .sea_quads = @intCast(sea_verts.len / 4),
@@ -493,13 +417,11 @@ pub fn Renderer(comptime Device: type) type {
         pub fn deinit(r: *Self) void {
             for (&r.chunks) |*c| r.gpa.free(c.verts);
             for (&r.regions) |*g| if (g.bo) |bo| r.dev.destroyBo(bo);
-            for ([_][blocks.Tile.strips]vc4.Bo{ r.strips, r.albedo, r.normals }) |set| for (set) |bo| r.dev.destroyBo(bo);
-            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.detail, r.ripples, r.creatures_bo[0], r.creatures_bo[1] }) |bo| r.dev.destroyBo(bo);
+            for (r.strips) |bo| r.dev.destroyBo(bo);
+            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.creatures_bo[0], r.creatures_bo[1] }) |bo| r.dev.destroyBo(bo);
             r.terrain.deinit(r.dev);
-            r.terrain_bump.deinit(r.dev);
             r.terrain_blend.deinit(r.dev);
             r.water.deinit(r.dev);
-            r.water_ripples.deinit(r.dev);
             r.sky.deinit(r.dev);
             r.line.deinit(r.dev);
             r.mesh.deinit(r.gpa);
@@ -638,10 +560,8 @@ pub fn Renderer(comptime Device: type) type {
             };
             const bytes = std.mem.asBytes(&scene);
             r.terrain.setUniforms(bytes);
-            r.terrain_bump.setUniforms(bytes);
             r.terrain_blend.setUniforms(bytes);
             r.water.setUniforms(bytes);
-            r.water_ripples.setUniforms(bytes);
 
             // The regions in view, nearest first.
             const frustum = math.Frustum.of(vp);
@@ -666,31 +586,18 @@ pub fn Renderer(comptime Device: type) type {
             r.stats.chunks = @intCast(n * region_chunks * region_chunks);
             var tex: [blocks.Tile.strips]vc4.render.Texture = undefined;
             for (&tex, r.strips) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
-            var plain: [blocks.Tile.strips]vc4.render.Texture = undefined;
-            for (&plain, r.albedo) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
-            var normal: [blocks.Tile.strips]vc4.render.Texture = undefined;
-            for (&normal, r.normals) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
-            const fine: vc4.render.Texture = .{ .handle = r.detail.handle, .config = detailConfig() };
             const target: Target(@TypeOf(sink)) = .{ .sink = sink, .viewport = viewport, .scissor = scissor, .indices = r.indices.handle, .stats = &r.stats };
 
             // 1. Solid blocks, near to far.
             for (visible) |o| {
                 const c = r.regions[o.i];
                 const corner = regionCorner(o.i);
-                const near = o.d < near_distance;
                 for (0..blocks.Tile.strips) |k| {
                     const sec = mesher.Section.solid(@intCast(k));
                     var runs: [3][2]u32 = undefined;
                     for (c.facing(k, corner, cam.eye, &runs)) |run| {
                         const offset = c.offset(sec) + run[0] * 4 * @sizeOf(Vertex);
-                        if (!v.bump) {
-                            try target.quads(&r.terrain, c.bo.?.handle, offset, run[1], .{ tex[k], null, null });
-                        } else if (near) {
-                            try target.quads(&r.terrain_bump, c.bo.?.handle, offset, run[1], .{ plain[k], normal[k], fine });
-                            r.stats.detailed += 1;
-                        } else {
-                            try target.quads(&r.terrain, c.bo.?.handle, offset, run[1], .{ plain[k], null, null });
-                        }
+                        try target.quads(&r.terrain, c.bo.?.handle, offset, run[1], .{ tex[k], null, null });
                     }
                 }
             }
@@ -710,7 +617,7 @@ pub fn Renderer(comptime Device: type) type {
                 at.sun = .{ sun[0], sun[1], sun[2], scene.sun[3] };
                 r.terrain.setUniforms(std.mem.asBytes(&at));
                 const offset = @as(u32, o.colour) * avatar_quads * 4 * @sizeOf(Vertex);
-                try target.quads(&r.terrain, r.avatars.handle, offset, avatar_quads, .{ if (v.bump) plain[figure_strip] else tex[figure_strip], null, null });
+                try target.quads(&r.terrain, r.avatars.handle, offset, avatar_quads, .{ tex[figure_strip], null, null });
             }
             if (v.avatars.len > 0) r.terrain.setUniforms(bytes);
             if (r.world) |w| {
@@ -720,7 +627,7 @@ pub fn Renderer(comptime Device: type) type {
                 const cverts = std.mem.bytesAsSlice(Vertex, cbo.map[0 .. creatures.max_quads * 4 * @sizeOf(Vertex)]);
                 const cquads = r.creatures.buildMesh(w, &frustum, cam.eye, depth + start + 12, cverts);
                 if (cquads > 0) {
-                    try target.quads(&r.terrain, cbo.handle, 0, cquads, .{ if (v.bump) plain[2] else tex[2], null, null });
+                    try target.quads(&r.terrain, cbo.handle, 0, cquads, .{ tex[2], null, null });
                 }
             }
             // 2. The sky.
@@ -747,9 +654,8 @@ pub fn Renderer(comptime Device: type) type {
             try target.quads(&r.sky, r.dome.handle, 0, r.dome_quads, .{ null, null, null });
             // 3. Water, far to near; the sea around the world first (it is
             // furthest), culled in 64x64 patches.
-            const water = if (v.bump) &r.water_ripples else &r.water;
-            const ripple_one: ?vc4.render.Texture = if (v.bump) .{ .handle = r.ripples.handle, .config = rippleConfig() } else null;
-            const ripple_tex: [3]?vc4.render.Texture = .{ ripple_one, ripple_one, null };
+            const water = &r.water;
+            const no_tex: [3]?vc4.render.Texture = .{ null, null, null };
             const sea_y: f32 = world_mod.sea_level - 1 + mesher.water_top;
             const max_sea_d = depth + start + 16;
             var sea_run_first: u32 = 0;
@@ -764,7 +670,7 @@ pub fn Renderer(comptime Device: type) type {
                         sea_run_count += sp.quad_count;
                     } else {
                         if (sea_run_count > 0) {
-                            try target.quads(water, r.sea.handle, sea_run_first * 4 * @sizeOf(Vertex), sea_run_count, ripple_tex);
+                            try target.quads(water, r.sea.handle, sea_run_first * 4 * @sizeOf(Vertex), sea_run_count, no_tex);
                         }
                         sea_run_first = sp.first_quad;
                         sea_run_count = sp.quad_count;
@@ -772,13 +678,13 @@ pub fn Renderer(comptime Device: type) type {
                 }
             }
             if (sea_run_count > 0) {
-                try target.quads(water, r.sea.handle, sea_run_first * 4 * @sizeOf(Vertex), sea_run_count, ripple_tex);
+                try target.quads(water, r.sea.handle, sea_run_first * 4 * @sizeOf(Vertex), sea_run_count, no_tex);
             }
             var k = visible.len;
             while (k > 0) {
                 k -= 1;
                 const c = r.regions[visible[k].i];
-                try target.quads(water, c.bo.?.handle, c.offset(.water), c.quads[@intFromEnum(mesher.Section.water)], ripple_tex);
+                try target.quads(water, c.bo.?.handle, c.offset(.water), c.quads[@intFromEnum(mesher.Section.water)], no_tex);
             }
             // 4. Glass and plants, far to near.
             k = visible.len;
