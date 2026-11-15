@@ -166,8 +166,8 @@ pub const Game = struct {
     /// it (the player standing still). The game starts in it, so the mouse
     /// is not taken before it is wanted.
     menu_open: bool = true,
-    /// The menu's list of islands, over it.
-    islands_open: bool = false,
+    /// The menu's tab shown.
+    menu_tab: MenuTab = .islands,
     /// The islands kept (main.zig finds them), the one played first.
     islands: Islands = .{},
     /// Asked for in the menu, for main.zig to do (it keeps the islands).
@@ -245,9 +245,15 @@ pub const Game = struct {
             g.net.answer = code == .y;
             return;
         }
-        // In the menu, only Esc (back to the game) does anything.
+        // In the menu, only Esc (back to the game) and Tab (the next tab;
+        // with Shift, the one before) do anything.
         if (g.menu_open) {
             if (code == .escape) g.closeMenu();
+            if (code == .tab) {
+                const n: i32 = std.enums.values(MenuTab).len;
+                const dir: i32 = if (g.held.contains(.left_shift) or g.held.contains(.right_shift)) -1 else 1;
+                g.showMenuTab(@intCast(@mod(@as(i32, @intFromEnum(g.menu_tab)) + dir, n)));
+            }
             return;
         }
         // The palette: the arrows choose a block, Tab another section,
@@ -395,13 +401,17 @@ pub const Game = struct {
         g.fps_count = @min(g.fps_count + 1, fps_seconds);
     }
 
-    pub fn showIslands(g: *Game) void {
-        g.islands_open = true;
+    pub fn showMenuTab(g: *Game, i: usize) void {
+        if (i < std.enums.values(MenuTab).len) g.menu_tab = @enumFromInt(i);
         g.delete_asked = null;
     }
 
+    pub fn showIslands(g: *Game) void {
+        g.showMenuTab(@intFromEnum(MenuTab.islands));
+    }
+
+    /// An island asked to be deleted, not now.
     pub fn hideIslands(g: *Game) void {
-        g.islands_open = false;
         g.delete_asked = null;
     }
 
@@ -756,6 +766,9 @@ pub const Game = struct {
         g.unsaved = false;
     }
 };
+
+/// The menu's tabs.
+pub const MenuTab = enum(u2) { islands, play, settings };
 
 /// How many seconds the menu's frame rate graph shows.
 pub const fps_seconds = 30;
