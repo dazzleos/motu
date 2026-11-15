@@ -1,5 +1,5 @@
 //! The kinds of block: how each is drawn (a solid cube, a see-through
-//! cube, water, a palm's trunk, or a plant), which of the atlas's tiles
+//! cube, water, a palm's trunk, a plant or furniture), which of the atlas's tiles
 //! each face shows, the light it gives, and its name.
 //!
 //! Each kind's number is what worlds are saved with, so they are only
@@ -27,6 +27,7 @@ pub const Block = enum(u8) {
     palm,
     /// Removed: read as stick wall.
     planks,
+    /// Removed: read as green paint.
     leaves,
     /// Removed: read as stick wall.
     dark_planks,
@@ -36,12 +37,16 @@ pub const Block = enum(u8) {
     /// Removed: read as volcanic wall.
     volcanic_bricks,
     thatch,
+    /// Removed: read as sandstone.
     plaster,
     /// Removed: read as volcanic wall.
     iron,
     /// Removed: read as yellow paint.
     gold,
+    /// A small lantern of sticks, glowing, standing on the block below
+    /// (or a stick, raised up).
     lamp,
+    /// Removed: read as a table (stacked, they make shelves).
     bookshelf,
     white,
     black,
@@ -71,6 +76,16 @@ pub const Block = enum(u8) {
     sticks,
     /// Living coral, for reefs.
     coral,
+    /// A table top on four legs: tables side by side make one bigger
+    /// table (legs only at its corners), and stacked they make shelves.
+    table,
+    /// A low frame of sticks with a mattress and a pillow: beds side by
+    /// side or end to end make one bigger bed.
+    bed,
+    /// A treasure chest.
+    chest,
+    /// A single stick, upright: a lamp on one is raised.
+    post,
     _,
 
     pub const Shape = enum {
@@ -86,11 +101,15 @@ pub const Block = enum(u8) {
         /// Fronds and blades from the ground, drawn see-through, not in
         /// the way.
         plant,
+        /// Made of parts smaller than the block (see furniture.zig):
+        /// solid, but hiding nothing.
+        furniture,
     };
 
     pub fn shape(b: Block) Shape {
         return switch (b) {
-            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone => .none,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf => .none,
+            .table, .bed, .chest, .post, .lamp => .furniture,
             .water => .water,
             .glass => .clear,
             .palm => .pole,
@@ -109,16 +128,15 @@ pub const Block = enum(u8) {
     /// The player cannot walk through it.
     pub fn isSolid(b: Block) bool {
         return switch (b.shape()) {
-            .cube, .clear, .pole => true,
+            .cube, .clear, .pole, .furniture => true,
             else => false,
         };
     }
 
     /// How much more than a step light loses going through it: sunlight
-    /// dims under leaves and water.
+    /// dims under water.
     pub fn lightLoss(b: Block) u4 {
         return switch (b) {
-            .leaves => 1,
             .water => 2,
             else => 0,
         };
@@ -126,7 +144,7 @@ pub const Block = enum(u8) {
 
     /// Whether light passes through at all.
     pub fn passesLight(b: Block) bool {
-        return !b.isOpaque() or b == .leaves;
+        return !b.isOpaque();
     }
 
     /// The light it gives (0 to 15).
@@ -135,11 +153,6 @@ pub const Block = enum(u8) {
             .lamp => 15,
             else => 0,
         };
-    }
-
-    /// Its leaves sway in the wind.
-    pub fn sways(b: Block) bool {
-        return b == .leaves;
     }
 
     /// The tile on its face `face` (see `Face`).
@@ -154,14 +167,14 @@ pub const Block = enum(u8) {
             .sand => .sand,
             .sandstone => if (top or bottom) .sandstone_top else .sandstone_side,
             .palm => .palm_bark,
-            .leaves => .leaves,
             .glass => .glass,
             .thatch => .thatch,
             .coral => .coral,
             .sticks => if (top or bottom) .sticks_top else .sticks_side,
-            .plaster => .plaster,
             .lamp => .lamp,
-            .bookshelf => if (top or bottom) .planks else .bookshelf,
+            .table, .post => if (top or bottom) .sticks_top else .sticks_side,
+            .bed => .bed_cover,
+            .chest => if (top or bottom) .chest_top else .chest_side,
             .white => .white,
             .black => .black,
             .red => .red,
@@ -182,7 +195,7 @@ pub const Block = enum(u8) {
             .white_flower => .white_flower,
             .orange_flower => .orange_flower,
             .water => .water,
-            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, _ => .volcanic_rock,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, _ => .volcanic_rock,
         };
     }
 
@@ -197,12 +210,13 @@ pub const Block = enum(u8) {
             .sandstone => "Sandstone",
             .water => "Water",
             .palm => "Palm",
-            .leaves => "Leaves",
             .glass => "Glass",
             .thatch => "Thatch",
-            .plaster => "Plaster",
             .lamp => "Lamp",
-            .bookshelf => "Bookshelf",
+            .table => "Table",
+            .bed => "Bed",
+            .chest => "Treasure chest",
+            .post => "Stick",
             .white => "White",
             .black => "Black",
             .red => "Red",
@@ -225,13 +239,13 @@ pub const Block = enum(u8) {
             .paving => "Paving stones",
             .sticks => "Stick wall",
             .coral => "Coral",
-            .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, _ => "?",
+            .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, _ => "?",
         };
     }
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.coral) and b.current() == b;
+        return @intFromEnum(b) <= @intFromEnum(Block.post) and b.current() == b;
     }
 
     /// What a block is now: a kind that was removed is read as the one
@@ -244,6 +258,9 @@ pub const Block = enum(u8) {
             .gold => .yellow,
             .gravel, .clay => .sand,
             .snow => .volcanic_rock,
+            .plaster => .sandstone,
+            .leaves => .green,
+            .bookshelf => .table,
             else => b,
         };
     }
@@ -268,8 +285,10 @@ pub const Section = struct {
 
 pub const sections = [_]Section{
     .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .water, .coral } },
-    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .plaster, .thatch, .glass, .lamp, .bookshelf } },
-    .{ .name = "Plants", .blocks = &.{ .palm, .leaves, .fern, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .thatch, .glass } },
+    // Made of sticks.
+    .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp } },
+    .{ .name = "Plants", .blocks = &.{ .palm, .fern, .tall_grass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
 };
@@ -343,16 +362,17 @@ pub const Tile = enum(u6) {
     yellow_flower,
     // Building.
     volcanic_wall = 16,
-    planks,
     glass,
     thatch,
+    /// A bed's pillow.
     plaster,
     lamp,
-    bookshelf,
     /// For water's icon (the water itself is drawn by its own shader).
     water,
-    leaves,
     sticks_side,
+    bed_cover,
+    chest_side,
+    chest_top,
     // Colours.
     white = 32,
     black,
@@ -394,7 +414,7 @@ test "every block that can be placed has a name and its own look" {
         }
         try std.testing.expectEqual(@as(usize, 1), n);
     }
-    try std.testing.expectEqual(@as(usize, 2), sectionOf(.palm));
+    try std.testing.expectEqual(@as(usize, 3), sectionOf(.palm));
     for (palette) |b| {
         try std.testing.expect(b.isValid() and b != .air);
         try std.testing.expect(!std.mem.eql(u8, b.name(), "?"));
@@ -406,7 +426,7 @@ test "every block that can be placed has a name and its own look" {
         for (Face.all) |f| try std.testing.expectEqual(@as(u2, 0), b.tile(f).strip());
     try std.testing.expectEqual(Tile.grass_top, Block.grass.tile(.up));
     try std.testing.expectEqual(Tile.grass_side, Block.grass.tile(.north));
-    try std.testing.expect(Block.leaves.isOpaque() and Block.leaves.passesLight());
+    try std.testing.expect(Block.table.isSolid() and !Block.table.isOpaque() and Block.lamp.emits() > 0);
     try std.testing.expect(Block.palm.isSolid() and !Block.palm.isOpaque());
     for (Block.flowers) |b| try std.testing.expect(b.isFlower() and b.shape() == .plant);
     try std.testing.expect(!Block.glass.isOpaque() and Block.glass.isSolid());

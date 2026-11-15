@@ -524,13 +524,16 @@ pub const World = struct {
         while (i < w.blocks.len) {
             if (at + 2 > data.len) return error.Truncated;
             const n = @as(usize, data[at]) + 1;
-            const b = (@as(Block, @enumFromInt(data[at + 1]))).current();
-            if (!b.isValid() or i + n > w.blocks.len) return error.Corrupt;
+            // As saved: removed kinds are read as others after (an old
+            // world's trees need its leaves).
+            const b: Block = @enumFromInt(data[at + 1]);
+            if (!b.current().isValid() or i + n > w.blocks.len) return error.Corrupt;
             @memset(w.blocks[i..][0..n], b);
             i += n;
             at += 2;
         }
         if (from < 2) w.fromTrees();
+        for (w.blocks) |*b| b.* = b.current();
         try w.computeLight();
         w.dirty = .full;
         return at;
@@ -765,18 +768,23 @@ test "a world from before palms: trees' trunks are palms, without their leaves; 
     const back = try World.create(testing.allocator);
     defer back.destroy();
     _ = try back.decode(out.items);
-    var leaves: usize = 0;
+    var hedge: usize = 0;
     var palms: usize = 0;
     for (back.blocks) |b| {
-        if (b == .leaves) leaves += 1;
+        if (b == .green) hedge += 1;
         if (b == .palm) palms += 1;
     }
-    try testing.expectEqual(@as(usize, 5), leaves);
+    // Leaves are gone since: the hedge is green paint.
+    try testing.expectEqual(@as(usize, 5), hedge);
     try testing.expectEqual(@as(usize, 5), palms);
-    // Read as it is now, nothing is taken.
+    // Read as it is now, no leaves are taken (all are paint).
     out.items[4] = World.version;
     _ = try back.decode(out.items);
-    try testing.expect(std.mem.eql(Block, w.blocks, back.blocks));
+    var green: usize = 0;
+    for (back.blocks) |b| {
+        if (b == .green) green += 1;
+    }
+    try testing.expect(green > 5);
 }
 
 test "removed kinds of block are read as the ones most like them" {

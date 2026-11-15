@@ -265,16 +265,6 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const c = mix(rgb(0x7a6a2a), rgb(0xa8a040), husk);
             break :blk tx(scale(c, 0.85 + hash(@intFromFloat(x), @intFromFloat(y), s) * 0.15), husk * 2);
         },
-        .leaves => blk: {
-            // Leaves in clumps, each domed, darker deeper in.
-            const c = cellsAt(u, v, 9, s);
-            const depth = noise(u, v, 4, s +% 3);
-            const tone = hash(@intCast(c.id), 1, s);
-            const base = mix(mix(rgb(0x1f4a18), rgb(0x4e9a36), depth), rgb(0x76b84e), tone * 0.35);
-            const gap = smoothstep(0.1, 0, c.d2 - c.d1);
-            const dome = @max(0, 1 - c.d1 / 0.7);
-            break :blk tx(scale(base, (1.05 - c.d1 * 0.35) * (1 - gap * 0.55)), 2.5 * @sqrt(dome) - gap * 1.5 + depth);
-        },
         .tall_grass => frond(u, v, rgb(0x3f8a2a), rgb(0xa8e06a), 1.0, 11, s),
         .red_flower => flowers(u, v, rgb(0xe0352c), rgb(0xffd23a), s),
         .yellow_flower => flowers(u, v, rgb(0xf8d42c), rgb(0xd07a10), s),
@@ -294,7 +284,6 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const dome = @max(0, 1 - (c.d1 / 0.62) * (c.d1 / 0.62));
             break :blk tx(scale(st.c, tone * (1.05 - 0.25 * c.d1) * (1 - gap * 0.7)), 5 * @sqrt(dome) * (1 - gap) + st.h * 0.3);
         },
-        .planks => planks(u, v, x, y, rgb(0xa9814c), s),
         .glass => blk: {
             const edge = @min(@min(x, y), @min(n - x, n - y));
             if (edge < 3) break :blk .{ .c = rgb(0xd8e8ee), .a = 0.95, .h = 1.5 };
@@ -325,16 +314,49 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk tx(scale(rgb(0xece6d6), 0.94 + body * 0.08 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.03), body * 1.2);
         },
         .lamp => blk: {
-            // A frame of four panes, glowing brightest in the middle.
-            const fx = @mod(x, 32);
-            const fy = @mod(y, 32);
-            if (fx < 4 or fy < 4) break :blk tx(rgb(0x5a4128), 2.5);
-            const dx = (fx - 18) / 14;
-            const dy = (fy - 18) / 14;
+            // A lantern's side: a frame of sticks round a pane of woven
+            // leaf, glowing from the flame inside, brightest low in the
+            // middle, with a cross of thin sticks over it.
+            if (x < 6 or x >= 58 or y < 5 or y >= 59) {
+                const across = if (x < 6 or x >= 58) (@mod(x, 6) - 3) / 3 else (@mod(y, 5) - 2.5) / 2.5;
+                break :blk tx(scale(rgb(0x7a5a34), 0.6 + 0.4 * @sqrt(@max(0, 1 - across * across))), 3);
+            }
+            if (@abs(x - 32) < 1.5 or @abs(y - 30) < 1.5) break :blk tx(rgb(0x5a4026), 2);
+            const dx = (x - 32) / 26;
+            const dy = (y - 38) / 30;
             const glow = 1 - @min(dx * dx + dy * dy, 1);
-            break :blk tx(mix(rgb(0xffbf5a), rgb(0xfff8e6), glow * 0.8 + noise(u, v, 8, s) * 0.2), 0);
+            const weave = 0.92 + 0.08 * @sin(x * 1.6) * @sin(y * 1.6);
+            break :blk tx(scale(mix(rgb(0xf0a040), rgb(0xfff4d0), glow), weave), 0);
         },
-        .bookshelf => bookshelf(u, v, x, y, s),
+        .bed_cover => blk: {
+            // Bark cloth: pale, with dark brown patterns in bands:
+            // triangles, zigzags and lines.
+            const base = scale(mix(rgb(0xe2cfa6), rgb(0xf0e2c2), fbm(u, v, 8, 2, s)), 0.95 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.06);
+            const ink = rgb(0x5a3018);
+            const band = @mod(y, 32);
+            const line = band < 2 or (band >= 14 and band < 16);
+            const tri = band >= 3 and band < 13 and @abs(@mod(x, 10) - 5) < (band - 3) * 0.5;
+            const zig = band >= 18 and band < 30 and @abs(@mod(x + @abs(band - 24) * 1.2, 8) - 4) < 1.2;
+            if (line or tri or zig) break :blk tx(scale(ink, 0.9 + fbm(u, v, 16, 1, s) * 0.2), 0);
+            break :blk tx(base, 0.3);
+        },
+        .chest_side => blk: {
+            // Dark boards, two bands of iron round them, and a gold lock.
+            if (@abs(x - 32) < 7 and y >= 18 and y < 34) {
+                const keyhole = @abs(x - 32) < 1.5 and y >= 23 and y < 30;
+                if (keyhole) break :blk tx(rgb(0x20140a), -1);
+                break :blk tx(scale(rgb(0xe8b83a), 0.85 + 0.25 * (1 - @abs(x - 32) / 7)), 2.5);
+            }
+            if (@abs(x - 12) < 3 or @abs(x - 52) < 3 or (y >= 22 and y < 26)) {
+                const rivet = @mod(y, 10) < 2 and (@abs(x - 12) < 1 or @abs(x - 52) < 1);
+                break :blk tx(scale(rgb(0x4a4a50), if (rivet) 1.4 else 0.9 + noise(u, v, 16, s) * 0.2), if (rivet) 3 else 1.8);
+            }
+            break :blk planks(u, v, x, y, rgb(0x6a4424), s);
+        },
+        .chest_top => blk: {
+            if (@abs(x - 12) < 3 or @abs(x - 52) < 3) break :blk tx(scale(rgb(0x4a4a50), 0.9 + noise(u, v, 16, s) * 0.2), 1.8);
+            break :blk planks(u, v, y, x, rgb(0x6a4424), s);
+        },
         .water => blk: {
             const ripple = fbm(u + noise(u, v, 4, s) * 0.1, v, 4, 3, s +% 1);
             break :blk .{ .c = mix(rgb(0x1f5fa8), rgb(0x6ab8ea), ripple * ripple * 1.5), .a = 0.85 };
@@ -472,38 +494,6 @@ fn flowers(u: f32, v: f32, petal: Rgb, centre: Rgb, s: u32) Texel {
     return if (v > 0.35) g else nothing;
 }
 
-fn bookshelf(u: f32, v: f32, x: f32, y: f32, s: u32) Texel {
-    // Two shelves of books between boards, the books set back.
-    const board = y < 4 or y >= 60 or (y >= 30 and y < 34);
-    if (board) {
-        var p = planks(u, v, x, y + 8, rgb(0xa9814c), 99);
-        p.h += 2;
-        return p;
-    }
-    const shelf: u32 = if (y < 32) 0 else 1;
-    const top: f32 = if (shelf == 0) 4 else 34;
-    // Books of different widths, colours and heights.
-    var bx: f32 = 1;
-    var i: u32 = 0;
-    while (bx < 64) : (i += 1) {
-        const w = 5 + @floor(hash(@intCast(i), @intCast(shelf), s) * 5);
-        if (x < bx + w) {
-            const colours = [_]u24{ 0x8c2f2a, 0x2f5a8c, 0x3c7a3a, 0xc4a43a, 0x6a3a7a, 0x7a4a2a, 0x2a6a6a };
-            const c = rgb(colours[@intFromFloat(hash(@intCast(i), @intCast(shelf + 7), s) * colours.len)]);
-            const height = 18 + hash(@intCast(i), @intCast(shelf + 3), s) * 8;
-            if (y < top + 26 - height) return tx(rgb(0x241a10), -2);
-            const lx = (x - bx) / w * 2 - 1;
-            // A band across the spine, and the round of it.
-            const band = @abs(y - (top + 26 - height * 0.3)) < 1.2;
-            return tx(scale(if (band) rgb(0xd8c070) else c, 0.9 + noise(u, v, 16, s) * 0.15), 1.5 * @sqrt(@max(0, 1 - lx * lx)) + @as(f32, if (band) 0.3 else 0));
-        }
-        bx += w;
-    }
-    return tx(rgb(0x241a10), -2);
-}
-
-/// The tile's normals (x across the tile, y down it, z out of the face),
-/// from its heights: for the shading baked into its colours.
 fn normals(t: Tile, out: *[tile_size * tile_size][3]f32, cols: *[tile_size * tile_size]Texel) void {
     for (0..tile_size) |y| for (0..tile_size) |x| {
         cols[y * tile_size + x] = texel(t, @intCast(x), @intCast(y));
@@ -583,6 +573,10 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             fan(out, &px[0], .{ 24, 44 }, &.{ -0.3, -0.9, -1.57, -2.25, -2.85 }, 26, 7);
             return;
         },
+        .table, .bed, .chest, .post, .lamp => {
+            furnitureIcon(b, out);
+            return;
+        },
         .tall_grass => {
             tilePixels(.tall_grass, &px[0]);
             fan(out, &px[0], .{ 24, 44 }, &.{ -0.6, -1.1, -1.57, -2.05, -2.55 }, 30, 6);
@@ -637,6 +631,83 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             break;
         }
     };
+}
+
+/// A box in an icon: its corners (in the block, 0 to 1), and the tiles
+/// on its top and sides, each stretched over the face.
+const IconBox = struct { lo: [3]f32, hi: [3]f32, top: Tile, side: Tile };
+
+/// Furniture's icon: its boxes, as an icon's cube is drawn (from above,
+/// at an angle), the furthest first.
+fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
+    const leg = struct {
+        fn at(x: f32, z: f32, w: f32, h: f32) IconBox {
+            return .{ .lo = .{ x, 0, z }, .hi = .{ x + w, h, z + w }, .top = .sticks_top, .side = .sticks_side };
+        }
+    }.at;
+    const boxes: []const IconBox = switch (b) {
+        .table => &.{
+            leg(0.04, 0.04, 0.1, 0.88), leg(0.86, 0.04, 0.1, 0.88), leg(0.04, 0.86, 0.1, 0.88), leg(0.86, 0.86, 0.1, 0.88),
+            .{ .lo = .{ 0, 0.88, 0 }, .hi = .{ 1, 1, 1 }, .top = .sticks_side, .side = .sticks_side },
+        },
+        .bed => &.{
+            leg(0.03, 0.03, 0.09, 0.14),                                                                  leg(0.88, 0.03, 0.09, 0.14),                                                                leg(0.03, 0.88, 0.09, 0.14), leg(0.88, 0.88, 0.09, 0.14),
+            .{ .lo = .{ 0.03, 0.14, 0.03 }, .hi = .{ 0.97, 0.28, 0.97 }, .top = .sticks_top, .side = .sticks_side }, .{ .lo = .{ 0.05, 0.28, 0.05 }, .hi = .{ 0.95, 0.44, 0.95 }, .top = .bed_cover, .side = .bed_cover },
+            .{ .lo = .{ 0.14, 0.44, 0.08 }, .hi = .{ 0.86, 0.54, 0.34 }, .top = .plaster, .side = .plaster },
+        },
+        .chest => &.{.{ .lo = .{ 0.08, 0, 0.14 }, .hi = .{ 0.92, 0.7, 0.86 }, .top = .chest_top, .side = .chest_side }},
+        .post => &.{leg(0.42, 0.42, 0.16, 1)},
+        .lamp => &.{
+            .{ .lo = .{ 0.24, 0, 0.24 }, .hi = .{ 0.76, 0.66, 0.76 }, .top = .lamp, .side = .lamp },
+            .{ .lo = .{ 0.18, 0.66, 0.18 }, .hi = .{ 0.82, 0.8, 0.82 }, .top = .thatch, .side = .thatch },
+        },
+        else => &.{},
+    };
+    const n: f32 = icon_size;
+    const top_y = n * 0.04;
+    const ex = [2]f32{ n / 2, n * 0.24 };
+    const ez = [2]f32{ -n / 2, n * 0.24 };
+    const down = [2]f32{ 0, n * 0.48 };
+    const proj = struct {
+        fn at(p: [3]f32, o: [2]f32, X: [2]f32, Z: [2]f32, D: [2]f32) [2]f32 {
+            return .{ o[0] + p[0] * X[0] + p[2] * Z[0] + (1 - p[1]) * D[0], o[1] + p[0] * X[1] + p[2] * Z[1] + (1 - p[1]) * D[1] };
+        }
+    }.at;
+    const o = [2]f32{ n / 2, top_y };
+    var top_px: [tile_size * tile_size]Pixel = undefined;
+    var side_px: [tile_size * tile_size]Pixel = undefined;
+    for (boxes) |bx| {
+        tilePixels(bx.top, &top_px);
+        tilePixels(bx.side, &side_px);
+        const lo = bx.lo;
+        const hi = bx.hi;
+        const w = hi[0] - lo[0];
+        const d = hi[2] - lo[2];
+        const h = hi[1] - lo[1];
+        // Top, left (facing +z), right (facing +x): origin, across, down.
+        const Fc = struct { a: [2]f32, e1: [2]f32, e2: [2]f32, px: *const [tile_size * tile_size]Pixel, light: f32 };
+        const faces = [3]Fc{
+            .{ .a = proj(.{ lo[0], hi[1], lo[2] }, o, ex, ez, down), .e1 = .{ ex[0] * w, ex[1] * w }, .e2 = .{ ez[0] * d, ez[1] * d }, .px = &top_px, .light = 1 },
+            .{ .a = proj(.{ lo[0], hi[1], hi[2] }, o, ex, ez, down), .e1 = .{ ex[0] * w, ex[1] * w }, .e2 = .{ down[0] * h, down[1] * h }, .px = &side_px, .light = 0.78 },
+            .{ .a = proj(.{ hi[0], hi[1], hi[2] }, o, ex, ez, down), .e1 = .{ -ez[0] * d, -ez[1] * d }, .e2 = .{ down[0] * h, down[1] * h }, .px = &side_px, .light = 0.6 },
+        };
+        for (0..icon_size) |y| for (0..icon_size) |x| {
+            const p = [2]f32{ @as(f32, @floatFromInt(x)) + 0.5, @as(f32, @floatFromInt(y)) + 0.5 };
+            for (faces) |f| {
+                const det = f.e1[0] * f.e2[1] - f.e1[1] * f.e2[0];
+                if (@abs(det) < 1e-6) continue;
+                const dx = p[0] - f.a[0];
+                const dy = p[1] - f.a[1];
+                const a = (dx * f.e2[1] - dy * f.e2[0]) / det;
+                const c = (f.e1[0] * dy - f.e1[1] * dx) / det;
+                if (a < 0 or a >= 1 or c < 0 or c >= 1) continue;
+                const t = f.px[@as(usize, @intFromFloat(c * tile_size)) * tile_size + @as(usize, @intFromFloat(a * tile_size))];
+                const col = Rgb{ @floatFromInt(t >> 16 & 0xff), @floatFromInt(t >> 8 & 0xff), @floatFromInt(t & 0xff) };
+                out[y * icon_size + x] = pack(scale(col, f.light), 1);
+                break;
+            }
+        };
+    }
 }
 
 /// Fronds drawn from `tile` (its base at its top) out from `from` at each

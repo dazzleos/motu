@@ -26,7 +26,7 @@ const Tile = blocks.Tile;
 const World = world_mod.World;
 const Anim = mesher.Anim;
 const Vertex = mesher.Vertex;
-const V = [3]f32;
+pub const V = [3]f32;
 
 fn add(a: V, b: V) V {
     return .{ a[0] + b[0], a[1] + b[1], a[2] + b[2] };
@@ -43,7 +43,7 @@ fn mul(a: V, k: f32) V {
 const up: V = .{ 0, 1, 0 };
 
 /// Where vertices go, and the light they have.
-const Out = struct {
+pub const Out = struct {
     gpa: std.mem.Allocator,
     mesh: *mesher.Mesh,
     sky: u4,
@@ -52,7 +52,7 @@ const Out = struct {
     /// the see-through ones.
     solid: bool = false,
 
-    fn quad(o: Out, tile: Tile, face: Face, c: [4]V, uv: [4][2]f32, anims: [4]Anim) !void {
+    pub fn quad(o: Out, tile: Tile, face: Face, c: [4]V, uv: [4][2]f32, anims: [4]Anim) !void {
         const list = o.mesh.list(if (o.solid) .solid(tile.strip()) else .clear(tile.strip()));
         for (c, uv, anims) |p, t, a| try list.append(o.gpa, .{
             .pos = p,

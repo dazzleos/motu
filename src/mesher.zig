@@ -31,6 +31,7 @@ const std = @import("std");
 const blocks = @import("blocks.zig");
 const world_mod = @import("world.zig");
 const plants = @import("plants.zig");
+const furniture = @import("furniture.zig");
 
 const Block = blocks.Block;
 const Face = blocks.Face;
@@ -45,7 +46,7 @@ pub const Vertex = extern struct {
 /// How a vertex moves (in the vertex shader).
 pub const Anim = enum(u2) {
     none,
-    /// Leaves: sways a little, as all leaves around do.
+    /// Sways a little (the middles of palms' fronds).
     sway,
     /// A plant's top: sways more.
     plant,
@@ -350,7 +351,7 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
                 if (!blk.isOpaque()) continue;
                 const q = add(p, n);
                 if (w.get(q[0], q[1], q[2]).isOpaque()) continue;
-                mask[j * nb + i] = faceLook(w, p, face, blk.tile(face), blk.sways());
+                mask[j * nb + i] = faceLook(w, p, face, blk.tile(face), false);
                 any = true;
             };
             if (!any) continue;
@@ -397,7 +398,8 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
     }
 }
 
-/// Solid things that are not cubes: palms' trunks, paving's stones.
+/// Solid things that are not cubes: palms' trunks, paving's stones,
+/// furniture.
 fn shapedSolids(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, mesh: *Mesh) !void {
     var y: i32 = 0;
     while (y < top_y) : (y += 1) {
@@ -409,7 +411,7 @@ fn shapedSolids(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, 
                 switch (blk) {
                     .palm => try plants.trunk(gpa, w, p, mesh),
                     .paving => if (!w.get(p[0], p[1] + 1, p[2]).isOpaque()) try plants.paving(gpa, w, p, mesh),
-                    else => {},
+                    else => if (blk.shape() == .furniture) try furniture.build(gpa, w, p, blk, mesh),
                 }
             }
         }
