@@ -562,8 +562,8 @@ pub const Game = struct {
         if (g.boat == null and g.world.get(t.cell[0], t.cell[1], t.cell[2]) == .canoe) return g.board(t.cell);
         const b = g.selected();
         if (b.isSolid() and player_mod.blocksPlayer(&g.player, t.before)) return false;
-        // Plants need ground.
-        if (b.shape() == .plant) {
+        // Plants and paving stones need ground.
+        if (b.onGround()) {
             const below = g.world.get(t.before[0], t.before[1] - 1, t.before[2]);
             if (!below.isOpaque()) return false;
         }
@@ -612,7 +612,7 @@ pub const Game = struct {
         if (!g.edit(c, .air)) return false;
         const above = g.world.get(c[0], c[1] + 1, c[2]);
         // What grew on it goes too (seagrass leaving its water).
-        if (above.shape() == .plant) _ = g.edit(.{ c[0], c[1] + 1, c[2] }, if (above == .seagrass) .water else .air);
+        if (above.onGround()) _ = g.edit(.{ c[0], c[1] + 1, c[2] }, if (above == .seagrass) .water else .air);
         return true;
     }
 

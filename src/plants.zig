@@ -10,7 +10,8 @@
 //! - Leafy plants: big arrow-shaped leaves held out on tall stalks.
 //! - Tall grass: blades on two planes crossing; flowers, a fan of blades
 //!   with flowers among them.
-//! - Paving: flat round stones on grass, which join up into paths.
+//! - Paving stones: flat and round on the ground, which join up into
+//!   paths.
 //! - A banana plant: a stem, big paddle leaves arching out and drooping,
 //!   a bunch of bananas under them.
 //! - A mangrove: roots arching down from a short trunk, leaves over them.
@@ -279,21 +280,21 @@ fn coconut(o: Out, at: V, r: f32) !void {
 
 // --- Paving -----------------------------------------------------------------------------
 
-/// Paving's stones, on the grass of block `p`: flat and round, two by two
-/// a block, set a little above the grass. They are spaced alike across
-/// the world, so the next paving's carry on from them; beside a block
-/// that is not paving they keep in from the edge, with grass round them.
-/// Solid (they are put with the solid faces that look up).
+/// Paving stones, on the ground at the bottom of block `p`: flat and
+/// round, two by two a block. They are spaced alike across the world, so
+/// the stones beside carry on from them; beside a block without them they
+/// keep in from the edge, with the ground round them. Solid (they are
+/// put with the solid faces that look up), though not in the way.
 pub fn paving(gpa: std.mem.Allocator, w: *const World, p: [3]i32, mesh: *mesher.Mesh) !void {
-    const l = w.lightAt(p[0], p[1] + 1, p[2]);
+    const l = w.lightAt(p[0], p[1], p[2]);
     const o: Out = .{ .gpa = gpa, .mesh = mesh, .sky = world_mod.skyOf(l), .lamp = world_mod.lampOf(l), .solid = true };
-    const y: f32 = @as(f32, @floatFromInt(p[1])) + 1;
-    // Which sides are paving too (-x, +x, -z, +z).
+    const y: f32 = @floatFromInt(p[1]);
+    // Which sides have stones too (-x, +x, -z, +z).
     const joined = [4]bool{
-        w.get(p[0] - 1, p[1], p[2]) == .paving,
-        w.get(p[0] + 1, p[1], p[2]) == .paving,
-        w.get(p[0], p[1], p[2] - 1) == .paving,
-        w.get(p[0], p[1], p[2] + 1) == .paving,
+        w.get(p[0] - 1, p[1], p[2]) == .stones,
+        w.get(p[0] + 1, p[1], p[2]) == .stones,
+        w.get(p[0], p[1], p[2] - 1) == .stones,
+        w.get(p[0], p[1], p[2] + 1) == .stones,
     };
     for (0..2) |j| for (0..2) |i| {
         // The stone's place in the world, for its own size and jitter.
@@ -302,7 +303,7 @@ pub fn paving(gpa: std.mem.Allocator, w: *const World, p: [3]i32, mesh: *mesher.
         var cx = @as(f32, @floatFromInt(gx)) * 0.5 + 0.25 + (hash(51, gx, gz) - 0.5) * 0.1;
         var cz = @as(f32, @floatFromInt(gz)) * 0.5 + 0.25 + (hash(52, gx, gz) - 0.5) * 0.1;
         var r = 0.19 + hash(53, gx, gz) * 0.05;
-        // Away from an edge with no paving beyond it.
+        // Away from an edge with no stones beyond it.
         const pull = 0.07;
         if (i == 0 and !joined[0]) cx += pull;
         if (i == 1 and !joined[1]) cx -= pull;
@@ -377,13 +378,13 @@ pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
     }
 }
 
-test "paving's stones keep in from grass, and carry on into the next paving" {
+test "paving stones keep in from the edge, and carry on into the next" {
     const testing = std.testing;
     const w = try World.create(testing.allocator);
     defer w.destroy();
-    _ = w.set(4, 20, 4, .paving);
-    _ = w.set(9, 20, 4, .paving);
-    _ = w.set(10, 20, 4, .paving);
+    _ = w.set(4, 21, 4, .stones);
+    _ = w.set(9, 21, 4, .stones);
+    _ = w.set(10, 21, 4, .stones);
     var m: mesher.Mesh = .{};
     defer m.deinit(testing.allocator);
     // The stones' middles, along x: each stone is 8 sides and 3 quads on
@@ -405,11 +406,11 @@ test "paving's stones keep in from grass, and carry on into the next paving" {
         }
     }.of;
     // Alone: well in from both sides.
-    const lone = try centres(testing.allocator, w, .{ 4, 20, 4 }, &m);
+    const lone = try centres(testing.allocator, w, .{ 4, 21, 4 }, &m);
     for (lone) |x| try testing.expect(x > 4.25 and x < 4.75);
     // Joined: the stones beside the joint are as far apart as any.
-    const a = try centres(testing.allocator, w, .{ 9, 20, 4 }, &m);
-    const b = try centres(testing.allocator, w, .{ 10, 20, 4 }, &m);
+    const a = try centres(testing.allocator, w, .{ 9, 21, 4 }, &m);
+    const b = try centres(testing.allocator, w, .{ 10, 21, 4 }, &m);
     try testing.expect(b[0] - a[1] > 0.38 and b[0] - a[1] < 0.62);
     try testing.expect(a[0] > 9.25);
 }

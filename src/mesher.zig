@@ -393,8 +393,8 @@ fn solidFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
                 }
             }
         }
-        // Palms' trunks look every way, and paving's stones sit on the
-        // grass: with the faces looking up, which are drawn from nearly
+        // Palms' trunks look every way, and paving stones lie on the
+        // ground: with the faces looking up, which are drawn from nearly
         // anywhere.
         if (face == .up) try shapedSolids(gpa, w, origin, top_y, mesh);
     }
@@ -412,7 +412,7 @@ fn shapedSolids(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, 
                 const p = P{ origin[0] + @as(i32, @intCast(lx)), y, origin[2] + lz };
                 switch (blk) {
                     .palm => try plants.trunk(gpa, w, p, mesh),
-                    .paving => if (!w.get(p[0], p[1] + 1, p[2]).isOpaque()) try plants.paving(gpa, w, p, mesh),
+                    .stones => try plants.paving(gpa, w, p, mesh),
                     .leafy_plant, .banana, .mangrove => try plants.plant(gpa, w, p, blk, mesh),
                     else => if (blk.shape() == .furniture) try furniture.build(gpa, w, p, blk, mesh),
                 }

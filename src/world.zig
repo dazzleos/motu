@@ -739,6 +739,16 @@ pub const World = struct {
     /// fronds are drawn. The leaves taken are those around the top of a
     /// trunk with leaves on it, as far out as a tree's reached: leaves
     /// built elsewhere stay.
+    /// Paving was a block of grass, stones on it: now the stones are put
+    /// on the grass (where there is room above it).
+    fn fromPaving(w: *World) void {
+        for (w.blocks, 0..) |b, i| {
+            if (b != .paving) continue;
+            const above = i + size_x * size_z;
+            if (above < w.blocks.len and w.blocks[above] == .air) w.blocks[above] = .stones;
+        }
+    }
+
     fn fromTrees(w: *World) void {
         var y: i32 = 0;
         while (y < size_y - 1) : (y += 1) {
@@ -798,6 +808,7 @@ pub const World = struct {
             @memcpy(w.blocks[dst..][0..128], old[src..][0..128]);
         };
         if (from < 2) w.fromTrees();
+        w.fromPaving();
         for (w.blocks) |*b| b.* = b.current();
         w.settle();
         try w.computeLight();
@@ -834,6 +845,7 @@ pub const World = struct {
             at += 2;
         }
         if (from < 2) w.fromTrees();
+        w.fromPaving();
         for (w.blocks) |*b| b.* = b.current();
         w.settle();
         try w.computeLight();
@@ -1277,4 +1289,23 @@ test "water: a world saved while it flowed is flooded when read" {
     defer r.destroy();
     _ = try r.decode(out.items);
     try testing.expectEqual(Block.water, r.get(19, sea_level - 1, 50));
+}
+
+test "paving from before: grass, with the stones on it" {
+    // As saved before: paving blocks (one with something on it).
+    const r = try World.create(testing.allocator);
+    defer r.destroy();
+    r.blocks[World.index(5, 30, 5)] = .paving;
+    r.blocks[World.index(6, 30, 5)] = .paving;
+    r.blocks[World.index(6, 31, 5)] = .lamp;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try r.encode(&out, testing.allocator);
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    _ = try w.decode(out.items);
+    try testing.expectEqual(Block.grass, w.get(5, 30, 5));
+    try testing.expectEqual(Block.stones, w.get(5, 31, 5));
+    try testing.expectEqual(Block.grass, w.get(6, 30, 5));
+    try testing.expectEqual(Block.lamp, w.get(6, 31, 5));
 }

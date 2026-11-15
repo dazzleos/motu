@@ -69,8 +69,7 @@ pub const Block = enum(u8) {
     blue_flower,
     white_flower,
     orange_flower,
-    /// Grass with flat round stones set in it, for paths: the stones join
-    /// up with the next paving's.
+    /// Removed: read as grass, with paving stones on it.
     paving,
     /// Removed: read as sandstone.
     coral_stone,
@@ -134,6 +133,9 @@ pub const Block = enum(u8) {
     canoe,
     /// Removed: read as a stick.
     statue,
+    /// Flat round stones on the ground (put on grass, as flowers are), for
+    /// paths: they join up with the stones beside them.
+    stones,
     _,
 
     pub const Shape = enum {
@@ -154,8 +156,8 @@ pub const Block = enum(u8) {
 
     pub fn shape(b: Block) Shape {
         return switch (b) {
-            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, .thatch => .none,
-            .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo, .hibiscus, .lattice, .mat, .curtain, .hammock, .canoe => .furniture,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, .thatch, .paving => .none,
+            .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo, .hibiscus, .lattice, .mat, .curtain, .hammock, .canoe, .stones => .furniture,
             .water => .water,
             .palm => .pole,
             .tall_grass, .seagrass, .leafy_plant, .banana, .mangrove, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
@@ -181,7 +183,7 @@ pub const Block = enum(u8) {
         return switch (b) {
             .sandstone_slab, .rock_slab, .thatch_slab, .hammock, .canoe => 0.5,
             .mat => 0.0625,
-            .ladder, .campfire, .curtain => 0,
+            .ladder, .campfire, .curtain, .stones => 0,
             else => switch (b.shape()) {
                 .cube, .pole, .furniture => 1,
                 else => 0,
@@ -223,7 +225,7 @@ pub const Block = enum(u8) {
         const top = face == .up;
         const bottom = face == .down;
         return switch (b) {
-            .grass, .paving => if (top) .grass_top else if (bottom) .dirt else .grass_side,
+            .grass => if (top) .grass_top else if (bottom) .dirt else .grass_side,
             .dirt => .dirt,
             .volcanic_rock => .volcanic_rock,
             .volcanic_wall => .volcanic_wall,
@@ -246,6 +248,7 @@ pub const Block = enum(u8) {
             .mangrove => .mangrove_leaf,
             .bed => .bed_cover,
             .black_sand => .black_sand,
+            .stones => .sandstone_top,
             .shells => if (top) .shells else .sand,
             .lava => .lava,
             .lattice, .canoe => if (top or bottom) .sticks_top else .sticks_side,
@@ -273,7 +276,7 @@ pub const Block = enum(u8) {
             .white_flower => .white_flower,
             .orange_flower => .orange_flower,
             .water => .water,
-            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, .thatch, _ => .volcanic_rock,
+            .air, .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, .thatch, .paving, _ => .volcanic_rock,
         };
     }
 
@@ -312,6 +315,7 @@ pub const Block = enum(u8) {
             .curtain => "Bead curtain",
             .hammock => "Hammock",
             .canoe => "Canoe",
+            .stones => "Paving stones",
             .white => "White",
             .black => "Black",
             .red => "Red",
@@ -331,16 +335,15 @@ pub const Block = enum(u8) {
             .blue_flower => "Blue flowers",
             .white_flower => "White flowers",
             .orange_flower => "Orange flowers",
-            .paving => "Paving stones",
             .sticks => "Stick wall",
             .coral => "Coral",
-            .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, .thatch, _ => "?",
+            .iron, .gold, .gravel, .clay, .snow, .planks, .dark_planks, .sandstone_bricks, .volcanic_bricks, .coral_stone, .leaves, .plaster, .bookshelf, .glass, .pot, .statue, .thatch, .paving, _ => "?",
         };
     }
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.statue) and b.current() == b;
+        return @intFromEnum(b) <= @intFromEnum(Block.stones) and b.current() == b;
     }
 
     /// What a block is now: a kind that was removed is read as the one
@@ -358,10 +361,16 @@ pub const Block = enum(u8) {
             .bookshelf => .table,
             .glass => .lattice,
             .thatch => .thatch_slab,
+            .paving => .grass,
             .pot => .air,
             .statue => .post,
             else => b,
         };
+    }
+
+    /// Put on the ground (and gone with it): plants, and paving stones.
+    pub fn onGround(b: Block) bool {
+        return b.shape() == .plant or b == .stones;
     }
 
     /// Flowers: grass with flowers among it.
@@ -384,7 +393,7 @@ pub const Section = struct {
 
 pub const sections = [_]Section{
     .{ .name = "Nature", .blocks = &.{ .grass, .dirt, .volcanic_rock, .sand, .black_sand, .shells, .sandstone, .water, .coral, .lava } },
-    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .paving, .sticks, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .lattice, .mat, .curtain } },
+    .{ .name = "Building", .blocks = &.{ .volcanic_wall, .stones, .sticks, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .lattice, .mat, .curtain } },
     // Made of sticks.
     .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp, .campfire, .hammock, .canoe } },
     .{ .name = "Plants", .blocks = &.{ .palm, .bamboo, .banana, .mangrove, .hibiscus, .leafy_plant, .tall_grass, .seagrass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },

@@ -785,7 +785,7 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             fan(out, &px[0], .{ 24, 46 }, &.{ -0.55, -1.2, -1.95, -2.6 }, 26, 10);
             return;
         },
-        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo, .hibiscus, .mangrove, .lattice, .mat, .curtain, .hammock, .canoe => {
+        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo, .hibiscus, .mangrove, .lattice, .mat, .curtain, .hammock, .canoe, .stones => {
             furnitureIcon(b, out);
             return;
         },
@@ -935,6 +935,12 @@ fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             .{ .lo = .{ 0.3, 0.08, 0.82 }, .hi = .{ 0.7, 0.18, 0.92 }, .top = .canoe, .side = .canoe },
             .{ .lo = .{ 0.47, 0.44, 0.2 }, .hi = .{ 0.53, 0.5, 0.9 }, .top = .sticks_side, .side = .sticks_side },
             .{ .lo = .{ 0, 0.1, 0.2 }, .hi = .{ 1, 0.45, 0.56 }, .top = .canoe, .side = .canoe },
+        },
+        .stones => &.{
+            .{ .lo = .{ 0.06, 0, 0.08 }, .hi = .{ 0.44, 0.06, 0.44 }, .top = .sandstone_top, .side = .sandstone_side },
+            .{ .lo = .{ 0.55, 0, 0.05 }, .hi = .{ 0.94, 0.06, 0.42 }, .top = .sandstone_top, .side = .sandstone_side },
+            .{ .lo = .{ 0.08, 0, 0.56 }, .hi = .{ 0.45, 0.06, 0.95 }, .top = .sandstone_top, .side = .sandstone_side },
+            .{ .lo = .{ 0.56, 0, 0.55 }, .hi = .{ 0.93, 0.06, 0.92 }, .top = .sandstone_top, .side = .sandstone_side },
         },
         .post => &.{.{ .lo = .{ 0.42, 0, 0.42 }, .hi = .{ 0.58, 1, 0.58 }, .top = .bamboo, .side = .bamboo }},
         .lamp => &.{
