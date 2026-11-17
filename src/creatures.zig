@@ -1,5 +1,6 @@
-//! Birds in the air over the island, fish in the sea around it, and,
-//! much rarer, turtles in the shallows and sharks in deeper water: how
+//! Birds in the air over the island, fish in the sea around it, turtles
+//! in the shallows, sharks in deeper water, and dolphins in threes that
+//! now and then leap out of it: how
 //! they move (flocking, circling, turning from the shore and rising over
 //! hills and trees) and how they are turned into quads of `mesher.Vertex`
 //! drawn from the colour strip (strip 2).
@@ -19,11 +20,19 @@ const V3 = math.V3;
 
 pub const bird_count = 24;
 pub const fish_count = 40;
-pub const turtle_count = 3;
-pub const shark_count = 2;
+/// Turtles and sharks: enough that one is found in the water each keeps
+/// to (some 14000 and 26000 blocks of the atoll's 256 by 256) within a
+/// few dozen blocks.
+pub const turtle_count = 10;
+pub const shark_count = 8;
+/// Dolphins swim in pods of three: one in the lagoon, two outside the
+/// reef.
+pub const pod_count = 3;
+pub const pod_size = 3;
+pub const dolphin_count = pod_count * pod_size;
 /// Enough for every creature in view at once (each is under 40 quads),
 /// and the seaplane.
-pub const max_quads = (bird_count + fish_count + turtle_count + shark_count) * 40 + 120;
+pub const max_quads = (bird_count + fish_count + turtle_count + shark_count + dolphin_count) * 40 + 120;
 
 pub const BirdKind = enum(u2) {
     /// White with grey-shaded wings, black wingtips and an orange beak;
@@ -107,10 +116,48 @@ pub const Swimmer = struct {
     }
 };
 
+/// A dolphin: one of a pod of three, the first leading (wandering in water
+/// deep enough, near its home), the others beside and behind it; near the
+/// surface, and now and then, the pod one after another, leaping out.
+pub const Dolphin = struct {
+    pos: V3,
+    yaw: f32,
+    pitch: f32 = 0,
+    speed: f32,
+    /// Tail-beat phase, in radians.
+    phase: f32 = 0,
+    home: [2]f32,
+    pod: u8,
+    /// Its place in the pod: 0 leads.
+    member: u8,
+    /// How far into a leap it is (seconds), if it is leaping; a leap
+    /// waiting to start is negative.
+    leap: ?f32 = null,
+
+    /// How long a leap takes, and how high it goes (over the surface).
+    pub const leap_time: f32 = 1.2;
+    pub const leap_height: f32 = 1.6;
+    /// How deep the water it keeps to is, at least.
+    const depth = 3;
+};
+
+/// How many of a pod leader's places are kept, and how often.
+const trail_len = 64;
+const trail_every: f32 = 0.15;
+
 pub const Creatures = struct {
     birds: [bird_count]Bird = undefined,
     fish: [fish_count]Fish = undefined,
     swimmers: [turtle_count + shark_count]Swimmer = undefined,
+    dolphins: [dolphin_count]Dolphin = undefined,
+    /// Each pod's time till it next leaps.
+    next_leap: [pod_count]f32 = @splat(0),
+    /// Where each pod's leader has been lately (every `trail_every`
+    /// seconds, the newest at `trail_at`): the others follow it, so they
+    /// keep to water it found deep enough.
+    trails: [pod_count][trail_len]V3 = undefined,
+    trail_at: [pod_count]u8 = @splat(0),
+    trail_clock: f32 = 0,
     spawned: bool = false,
     seed: u32 = 0,
     time: f32 = 0,
@@ -231,6 +278,31 @@ pub const Creatures = struct {
                 .kind = kind,
             };
         }
+
+        // The pods: the first in the lagoon off the starting beach, the
+        // others out past the reef, either side.
+        for (0..pod_count) |pod| {
+            const s = seed +% @as(u32, @intCast(pod)) *% 3266489917 +% 991;
+            const home = findDolphinWater(w, s, pod);
+            const yaw = rand01(s +% 1) * std.math.pi * 2;
+            c.next_leap[pod] = 4 + 8 * rand01(s +% 2);
+            for (0..pod_size) |m| {
+                const off = podOffset(@intCast(m));
+                const x = home[0] + @cos(yaw) * off[0] - @sin(yaw) * off[1];
+                const z = home[1] + @sin(yaw) * off[0] + @cos(yaw) * off[1];
+                const at: [2]f32 = if (waterForDolphin(w, x, z)) .{ x, z } else home;
+                if (m == 0) c.trails[pod] = @splat(.{ at[0], dolphinCruiseY(), at[1] });
+                c.dolphins[pod * pod_size + m] = .{
+                    .pos = .{ at[0], dolphinCruiseY(), at[1] },
+                    .yaw = yaw,
+                    .speed = 3,
+                    .phase = rand01(s +% 3 +% @as(u32, @intCast(m))) * std.math.pi * 2,
+                    .home = home,
+                    .pod = @intCast(pod),
+                    .member = @intCast(m),
+                };
+            }
+        }
     }
 
     /// Advances the simulation to `time` (spawning first if needed).
@@ -260,6 +332,135 @@ pub const Creatures = struct {
         c.tickBirds(w, dt);
         c.tickFish(w, dt);
         c.tickSwimmers(w, dt);
+        c.tickDolphins(w, dt);
+    }
+
+    /// Where pod `pod`'s member `m` is to be, and the way it faces: on
+    /// the leader's way (so in water it found deep enough) a little
+    /// behind it, and beside that if the water there is deep enough too.
+    fn placeIn(c: *const Creatures, w: *const World, pod: usize, m: u8) struct { pos: V3, yaw: f32 } {
+        const lead = c.dolphins[pod * pod_size];
+        const back = podOffset(m)[1];
+        // Back along the way from the leader, point by point.
+        var at = lead.pos;
+        var gone: f32 = 0;
+        var dir = V3{ @sin(lead.yaw), 0, -@cos(lead.yaw) };
+        for (0..trail_len - 1) |k| {
+            const p = c.trails[pod][(c.trail_at[pod] + trail_len - k) % trail_len];
+            const step = V3{ at[0] - p[0], 0, at[2] - p[2] };
+            const len = @sqrt(step[0] * step[0] + step[2] * step[2]);
+            if (len < 1e-4) continue;
+            if (gone + len >= back) {
+                at -= step * math.splat((back - gone) / len);
+                dir = step / math.splat(len);
+                gone = back;
+                break;
+            }
+            gone += len;
+            at = .{ p[0], at[1], p[2] };
+            dir = step / math.splat(len);
+        }
+        const yaw = std.math.atan2(dir[0], -dir[2]);
+        const side = podOffset(m)[0];
+        const beside = at + V3{ @cos(yaw) * side, 0, @sin(yaw) * side };
+        return .{ .pos = if (waterForDolphin(w, beside[0], beside[2])) beside else at, .yaw = yaw };
+    }
+
+    fn tickDolphins(c: *Creatures, w: *const World, dt: f32) void {
+        c.trail_clock += dt;
+        if (c.trail_clock >= trail_every) {
+            c.trail_clock -= trail_every;
+            for (0..pod_count) |pod| {
+                c.trail_at[pod] = (c.trail_at[pod] + 1) % trail_len;
+                c.trails[pod][c.trail_at[pod]] = c.dolphins[pod * pod_size].pos;
+            }
+        }
+        for (0..pod_count) |pod| {
+            // Time to leap: one after another, if there is water to come
+            // down in ahead of each.
+            c.next_leap[pod] -= dt;
+            if (c.next_leap[pod] <= 0) {
+                const s = c.seed +% @as(u32, @intFromFloat(c.time * 7)) +% @as(u32, @intCast(pod)) *% 77;
+                c.next_leap[pod] = 9 + 12 * rand01(s);
+                for (c.dolphins[pod * pod_size ..][0..pod_size]) |*d| {
+                    if (d.leap == null and leapClear(w, d)) d.leap = -0.35 * @as(f32, @floatFromInt(d.member));
+                }
+            }
+            c.tickLeader(w, pod, dt);
+            for (c.dolphins[pod * pod_size + 1 ..][0 .. pod_size - 1]) |*d| {
+                // To its place (the leader's way being water), facing as
+                // the leader went; in the air, on as it leapt.
+                if (d.leap == null or d.leap.? < 0) {
+                    const place = c.placeIn(w, pod, d.member);
+                    const to = V3{ place.pos[0] - d.pos[0], 0, place.pos[2] - d.pos[2] };
+                    const step = to * math.splat(@min(1, 3 * dt));
+                    // Not over land on its way (and if it is somehow far
+                    // from its place, there).
+                    if (@sqrt(to[0] * to[0] + to[2] * to[2]) > 6) {
+                        d.pos = .{ place.pos[0], d.pos[1], place.pos[2] };
+                    } else if (waterDepth(w, d.pos[0] + step[0], d.pos[2] + step[2]) >= 1) d.pos += step;
+                    d.speed = @sqrt(step[0] * step[0] + step[2] * step[2]) / dt;
+                    d.yaw = wrapAngle(d.yaw + std.math.clamp(angleDiff(place.yaw, d.yaw), -3 * dt, 3 * dt));
+                } else {
+                    d.pos[0] += @sin(d.yaw) * d.speed * dt;
+                    d.pos[2] -= @cos(d.yaw) * d.speed * dt;
+                }
+                tickRise(w, d, dt);
+            }
+        }
+    }
+
+    /// A pod's leader: wandering near its home, turning from water too
+    /// shallow, waiting for the others when they fall behind.
+    fn tickLeader(c: *Creatures, w: *const World, pod: usize, dt: f32) void {
+        const d = &c.dolphins[pod * pod_size];
+        var straggle: f32 = 0;
+        for (c.dolphins[pod * pod_size + 1 ..][0 .. pod_size - 1]) |o| {
+            const p = c.placeIn(w, pod, o.member).pos - o.pos;
+            straggle = @max(straggle, @sqrt(p[0] * p[0] + p[2] * p[2]));
+        }
+        if (d.leap == null or d.leap.? < 0) {
+            var wish_x = @sin(d.yaw);
+            var wish_z = -@cos(d.yaw);
+            const hx = d.home[0] - d.pos[0];
+            const hz = d.home[1] - d.pos[2];
+            const hd = @sqrt(hx * hx + hz * hz);
+            if (hd > 24) {
+                wish_x += (hx / hd) * 0.8;
+                wish_z += (hz / hd) * 0.8;
+            }
+            const wander = @sin(d.phase * 0.04 + @as(f32, @floatFromInt(pod)) * 2.1) * 0.5;
+            wish_x += @cos(d.yaw) * wander;
+            wish_z += @sin(d.yaw) * wander;
+            if (!waterForDolphin(w, d.pos[0] + @sin(d.yaw) * 3, d.pos[2] - @cos(d.yaw) * 3)) {
+                var best = d.yaw + std.math.pi;
+                for (1..8) |step| {
+                    const cand = d.yaw + @as(f32, @floatFromInt((step + 1) / 2)) * (std.math.pi / 4.0) * (if (step % 2 == 0) @as(f32, -1) else 1);
+                    if (waterForDolphin(w, d.pos[0] + @sin(cand) * 3, d.pos[2] - @cos(cand) * 3)) {
+                        best = cand;
+                        break;
+                    }
+                }
+                wish_x = @sin(best) * 3;
+                wish_z = -@cos(best) * 3;
+            }
+            const diff = angleDiff(std.math.atan2(wish_x, -wish_z), d.yaw);
+            d.yaw = wrapAngle(d.yaw + std.math.clamp(diff, -1.4 * dt, 1.4 * dt));
+            const speed: f32 = if (straggle > 1.5) 1.5 else 3;
+            d.speed += (speed - d.speed) * @min(1, 3 * dt);
+        }
+        const nx = d.pos[0] + @sin(d.yaw) * d.speed * dt;
+        const nz = d.pos[2] - @cos(d.yaw) * d.speed * dt;
+        // In the air it goes on where it leapt for; in the water, only
+        // into water deep enough (or, in water too shallow somehow, out of
+        // it through any).
+        const flying = d.leap != null and d.leap.? >= 0;
+        const stranded = !waterForDolphin(w, d.pos[0], d.pos[2]);
+        if (flying or waterForDolphin(w, nx, nz) or (stranded and waterDepth(w, nx, nz) >= 1)) {
+            d.pos[0] = nx;
+            d.pos[2] = nz;
+        } else d.yaw = wrapAngle(d.yaw + std.math.pi * 0.5);
+        tickRise(w, d, dt);
     }
 
     fn tickSwimmers(c: *Creatures, w: *const World, dt: f32) void {
@@ -496,6 +697,13 @@ pub const Creatures = struct {
             emitFish(&builder, f, light);
         }
 
+        for (&c.dolphins) |*dl| {
+            const d = dl.pos - eye;
+            if (math.dot(d, d) > max_d2) continue;
+            if (!frustum.sees(dl.pos - V3{ 1.5, 1, 1.5 }, dl.pos + V3{ 1.5, 1, 1.5 })) continue;
+            emitDolphin(&builder, dl, lightAtPos(w, dl.pos));
+        }
+
         for (&c.swimmers) |*s| {
             const d = s.pos - eye;
             if (math.dot(d, d) > max_d2) continue;
@@ -665,14 +873,19 @@ fn swimBand(kind: Swimmer.Kind, floor: f32) [2]f32 {
 }
 
 /// Water a turtle or shark keeps to, round the island (the `i`th of
-/// them, spread round it).
+/// them, spread round it, and nearer and further out).
 fn findWaterFor(w: *const World, kind: Swimmer.Kind, seed: u32, i: usize) [2]f32 {
     const base_a = @as(f32, @floatFromInt(i)) * 2.4 + rand01(seed) * 0.5;
+    // Turtles in the lagoon; sharks outside the reef.
+    const r0: f32 = if (kind == .turtle) 30 else world_mod.atoll_radius + 24;
+    const r1: f32 = if (kind == .turtle) world_mod.atoll_radius else world_mod.atoll_radius + 60;
+    const first = r0 + (r1 - r0) * rand01(seed +% 9);
     for (0..48) |attempt| {
         const a = base_a + @as(f32, @floatFromInt(attempt)) * 0.37;
-        // Turtles in the lagoon; sharks outside the reef.
-        var r: f32 = if (kind == .turtle) 30 else world_mod.atoll_radius + 24;
-        while (r <= (if (kind == .turtle) world_mod.atoll_radius else world_mod.atoll_radius + 60)) : (r += 2) {
+        // From somewhere between, outwards, then from the nearest.
+        var k: f32 = 0;
+        while (k <= r1 - r0) : (k += 2) {
+            const r = r0 + @mod(first - r0 + k, r1 - r0);
             const x = world_mod.size_x * 0.5 + @cos(a) * r;
             const z = world_mod.size_z * 0.5 + @sin(a) * r;
             if (waterFor(kind, w, x, z)) return .{ x, z };
@@ -680,6 +893,98 @@ fn findWaterFor(w: *const World, kind: Swimmer.Kind, seed: u32, i: usize) [2]f32
     }
     return .{ -10, -10 };
 }
+
+/// Where a pod lives: the first in the lagoon off the starting beach
+/// (where the player sees them first), the others outside the reef.
+fn findDolphinWater(w: *const World, seed: u32, pod: usize) [2]f32 {
+    if (pod == 0) {
+        // `spawn_yaw` looks out over the lagoon.
+        var dist: f32 = 14;
+        while (dist <= 60) : (dist += 2) {
+            const x = w.spawn[0] + @sin(w.spawn_yaw) * dist;
+            const z = w.spawn[2] - @cos(w.spawn_yaw) * dist;
+            if (waterForDolphin(w, x, z) and waterForDolphin(w, x + 3, z) and waterForDolphin(w, x, z + 3)) return .{ x, z };
+        }
+    }
+    const base_a = @as(f32, @floatFromInt(pod)) * 2.1 + rand01(seed) * 0.6;
+    for (0..48) |attempt| {
+        const a = base_a + @as(f32, @floatFromInt(attempt)) * 0.29;
+        var r: f32 = world_mod.atoll_radius + 16;
+        while (r <= world_mod.atoll_radius + 40) : (r += 2) {
+            const x = world_mod.size_x * 0.5 + @cos(a) * r;
+            const z = world_mod.size_z * 0.5 + @sin(a) * r;
+            if (waterForDolphin(w, x, z)) return .{ x, z };
+        }
+    }
+    return .{ -10, -10 };
+}
+
+/// A dolphin's height: just under the surface, or on a leap's arc
+/// (which it starts only if it will come down in water deep enough).
+fn tickRise(w: *const World, d: *Dolphin, dt: f32) void {
+    if (d.leap) |*t| {
+        const was = t.*;
+        t.* += dt;
+        if (was < 0 and t.* >= 0 and !leapClear(w, d)) {
+            d.leap = null;
+        } else if (t.* >= Dolphin.leap_time) {
+            d.leap = null;
+        } else if (t.* >= 0) {
+            const k = t.* / Dolphin.leap_time;
+            const start = dolphinCruiseY();
+            const top = surfaceY() + Dolphin.leap_height;
+            // A parabola from where it swims, over the top, and back.
+            d.pos[1] = start + (top - start) * 4 * k * (1 - k);
+            const rise = (top - start) * 4 * (1 - 2 * k) / Dolphin.leap_time;
+            d.pitch = std.math.atan2(rise, @max(d.speed, 1));
+        }
+    }
+    if (d.leap == null or d.leap.? < 0) {
+        const target = dolphinCruiseY() + @sin(d.phase * 0.08 + @as(f32, @floatFromInt(d.member))) * 0.25;
+        const dy = target - d.pos[1];
+        d.pitch += (std.math.clamp(dy * 0.4, -0.25, 0.25) - d.pitch) * @min(1, 4 * dt);
+        d.pos[1] += dy * @min(1, 2 * dt);
+    }
+    d.phase = @mod(d.phase + (4 + d.speed) * dt, std.math.pi * 200);
+}
+
+/// Whether a leap now would be over water deep enough all the way (and
+/// come down in it).
+fn leapClear(w: *const World, d: *const Dolphin) bool {
+    const reach = d.speed * Dolphin.leap_time + 1.5;
+    var k: f32 = 0;
+    while (k <= reach) : (k += 0.5) {
+        if (!waterForDolphin(w, d.pos[0] + @sin(d.yaw) * k, d.pos[2] - @cos(d.yaw) * k)) return false;
+    }
+    return true;
+}
+
+/// Water deep enough for dolphins.
+fn waterForDolphin(w: *const World, x: f32, z: f32) bool {
+    if (x < -18 or x >= world_mod.size_x + 18 or z < -18 or z >= world_mod.size_z + 18) return false;
+    return waterDepth(w, x, z) >= Dolphin.depth;
+}
+
+/// The water's surface.
+fn surfaceY() f32 {
+    return world_mod.sea_level - 1 + mesher.water_top;
+}
+
+/// Where dolphins swim: just under the surface.
+fn dolphinCruiseY() f32 {
+    return surfaceY() - 0.7;
+}
+
+/// Where pod member `m` swims, from the leader: right of it (or left),
+/// and behind (in its frame: x right, z back).
+fn podOffset(m: u8) [2]f32 {
+    return switch (m) {
+        0 => .{ 0, 0 },
+        1 => .{ 1.3, 1.6 },
+        else => .{ -1.3, 2.2 },
+    };
+}
+
 
 /// Finds a coastal water spot with good depth for school `school`.
 fn findSchoolWater(w: *const World, seed: u32, school: usize) [2]f32 {
@@ -1047,6 +1352,32 @@ fn emitShark(b: *Builder, s: *const Swimmer, light: u8) void {
     b.box(f_tail.pitchBy(0.6), f_rear.point(rear, .{ 0, -0.06, 0.26 }), .{ 0.015, 0.11, 0.06 }, .{ 1, 1 }, .{ 1, 0.4 }, BoxLook.uniform(.grey), light);
 }
 
+fn emitDolphin(b: *Builder, d: *const Dolphin, light: u8) void {
+    const look = BoxLook.twoTone(.grey, .white);
+    // Its tail beats up and down (not side to side, as a shark's).
+    const s0 = @sin(d.phase);
+    const s1 = @sin(d.phase - 1.0);
+    const base = Frame.fromAngles(d.yaw, d.pitch, 0);
+    // The beak, the head with its melon, the body, the tail stock and the
+    // flukes, flat.
+    const head = base.point(d.pos, .{ 0, 0.02, -0.55 });
+    b.box(base, head, .{ 0.15, 0.15, 0.22 }, .{ 0.7, 0.65 }, .{ 1, 1 }, look, light);
+    b.box(base, base.point(d.pos, .{ 0, -0.03, -0.88 }), .{ 0.05, 0.04, 0.13 }, .{ 0.7, 0.7 }, .{ 1, 1 }, look, light);
+    const body = base.point(d.pos, .{ 0, 0, -0.05 });
+    b.box(base, body, .{ 0.19, 0.19, 0.3 }, .{ 0.8, 0.8 }, .{ 0.85, 0.85 }, look, light);
+    // The dorsal fin, curved back; the flippers, down and out.
+    b.box(base.pitchBy(-0.5), base.point(d.pos, .{ 0, 0.25, 0.02 }), .{ 0.02, 0.1, 0.11 }, .{ 1, 0.5 }, .{ 1, 1 }, BoxLook.uniform(.grey), light);
+    for ([2]f32{ -1, 1 }) |side| {
+        const ff = base.yawBy(side * 0.5).rollBy(side * -0.5);
+        b.box(ff, base.point(d.pos, .{ side * 0.22, -0.13, -0.25 }), .{ 0.12, 0.015, 0.06 }, .{ 1, 1 }, .{ 0.5, 1 }, BoxLook.uniform(.grey), light);
+    }
+    const f_rear = base.pitchBy(s0 * 0.12);
+    const rear = base.point(d.pos, .{ 0, 0.01, 0.42 });
+    b.box(f_rear, rear, .{ 0.12, 0.12, 0.2 }, .{ 1, 1 }, .{ 0.45, 0.55 }, look, light);
+    const f_tail = f_rear.pitchBy(s1 * 0.35);
+    b.box(f_tail, f_rear.point(rear, .{ 0, 0, 0.3 }), .{ 0.26, 0.015, 0.09 }, .{ 0.35, 1 }, .{ 1, 1 }, BoxLook.uniform(.grey), light);
+}
+
 // --- Tests ---------------------------------------------------------------------------------
 
 const testing = std.testing;
@@ -1080,7 +1411,7 @@ test "birds fly in the air above the island and fish swim in the sea around it" 
         const iz: i32 = @intFromFloat(@floor(s.pos[2]));
         try testing.expectEqual(Block.water, w.get(ix, iy, iz));
     }
-    try testing.expect(c.swimmers.len < c.fish.len / 4);
+    try testing.expect(c.swimmers.len < c.fish.len);
 
     for (c.fish) |f| {
         try testing.expect(f.pos[1] < world_mod.sea_level - 0.5);
@@ -1149,4 +1480,50 @@ test "the seaplane flies past once a day, for a while, high over the sea by the 
         };
         try testing.expect(nearest > world_mod.atoll_radius - 15 and nearest < world_mod.atoll_radius + 15);
     }
+}
+
+
+test "dolphins swim in threes in deep water, and now and then leap out of it" {
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    try w.generate(world_mod.default_seed);
+    var c: Creatures = .{};
+    c.sync(w, 0);
+    // The first pod in the lagoon, in sight of the starting beach.
+    const first = c.dolphins[0].pos - w.spawn;
+    try testing.expect(@sqrt(first[0] * first[0] + first[2] * first[2]) < 70);
+    var highest: f32 = -1;
+    var t: f32 = 0;
+    while (t < 60) : (t += 0.05) {
+        c.tick(w, 0.05);
+        for (c.dolphins) |d| {
+            const lead = c.dolphins[@as(usize, d.pod) * pod_size];
+            const apart = d.pos - lead.pos;
+            try testing.expect(@sqrt(apart[0] * apart[0] + apart[2] * apart[2]) < 8);
+            highest = @max(highest, d.pos[1] - surfaceY());
+            // Never over land: in water (the leader in deep water; the
+            // others keeping up with it may cut across shallower), or in
+            // the air on its way to more.
+            if (d.leap == null or d.leap.? < 0) try testing.expect(waterDepth(w, d.pos[0], d.pos[2]) >= 1);
+            try testing.expect(d.pos[1] < surfaceY() + Dolphin.leap_height + 0.01);
+        }
+    }
+    // Some leapt clear of the water.
+    try testing.expect(highest > 1);
+}
+
+test "turtles and sharks are spread round the atoll, nearer and further out" {
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    try w.generate(world_mod.default_seed);
+    var c: Creatures = .{};
+    c.sync(w, 0);
+    var radii: [turtle_count + shark_count]f32 = undefined;
+    for (c.swimmers, &radii) |s, *r| {
+        try testing.expect(waterFor(s.kind, w, s.home[0], s.home[1]));
+        r.* = @sqrt((s.home[0] - 128) * (s.home[0] - 128) + (s.home[1] - 128) * (s.home[1] - 128));
+    }
+    // The turtles not all at one distance from the middle.
+    const turtles = radii[0..turtle_count];
+    try testing.expect(std.mem.max(f32, turtles) - std.mem.min(f32, turtles) > 15);
 }
