@@ -692,6 +692,8 @@ fn run(init: std.process.Init) !void {
         if (now - log_since >= 10 * std.time.ns_per_s) {
             const s = renderer.stats;
             print("motu: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
+            const vm = renderer.videoMemory();
+            print("motu: video memory: meshes {d} MB ({d} regions of {d}), tiles {d} MB, the rest {d} MB\n", .{ vm.meshes >> 20, vm.regions, renderer_mod.region_count, vm.tiles >> 20, vm.other >> 20 });
             timing.report(host.dev.fd, now - log_since, game.quality, scene.reach.k * game.seeing());
             timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
             log_since = now;

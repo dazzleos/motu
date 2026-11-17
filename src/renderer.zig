@@ -515,6 +515,25 @@ pub fn Renderer(comptime Device: type) type {
             r.gpa.destroy(r);
         }
 
+        /// The video memory it holds: the regions' meshes (and how many
+        /// regions have one), the tiles, and the rest; in bytes.
+        pub fn videoMemory(r: *const Self) struct { meshes: usize, regions: usize, tiles: usize, other: usize } {
+            var meshes: usize = 0;
+            var regions: usize = 0;
+            for (r.regions) |g| if (g.bo) |bo| {
+                meshes += bo.map.len;
+                regions += 1;
+            };
+            var tiles: usize = 0;
+            for (r.strips) |bo| tiles += bo.map.len;
+            var other: usize = 0;
+            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.creatures_bo[0], r.creatures_bo[1] }) |bo| other += bo.map.len;
+            for (r.boat_meshes) |m| if (m) |bm| {
+                other += bm.bo.map.len;
+            };
+            return .{ .meshes = meshes, .regions = regions, .tiles = tiles, .other = other };
+        }
+
         /// Meshes chunks the world marked as changed: at most `limit`, the
         /// nearest to `near` first (so what is close catches up first).
         /// Returns how many are left.
