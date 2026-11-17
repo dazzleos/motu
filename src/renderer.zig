@@ -48,7 +48,7 @@ pub const max_quads = 16384;
 const mip_levels = textures.mip_levels;
 
 /// The strips of tiles, with their mipmaps, as the GPU takes them (made by
-/// tools/mktiles.zig at build time).
+/// tools/mktiles.zig at build time), deflated.
 const tile_strips = [blocks.Tile.strips][]const u8{ @embedFile("tiles-0.bin"), @embedFile("tiles-1.bin"), @embedFile("tiles-2.bin"), @embedFile("tiles-3.bin") };
 
 /// How the strips are sampled: smoothly (bilinear) up close; further off,
@@ -407,9 +407,17 @@ pub fn Renderer(comptime Device: type) type {
                 made += 1;
             }
             // Drawn at build time, as the GPU takes them.
+            // Inflated here (not in the GPU's memory, slow to read back
+            // from), then copied in.
+            const px = try gpa.alloc(u8, layout.size);
+            defer gpa.free(px);
+            const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
+            defer gpa.free(window);
             for (bos, tile_strips) |bo, strip| {
-                std.debug.assert(strip.len == layout.size);
-                @memcpy(bo.map[0..strip.len], strip);
+                var in: std.Io.Reader = .fixed(strip);
+                var d: std.compress.flate.Decompress = .init(&in, .raw, window);
+                d.reader.readSliceAll(px) catch return error.BadTiles;
+                @memcpy(bo.map[0..layout.size], px);
             }
 
             // Every quad's triangles.

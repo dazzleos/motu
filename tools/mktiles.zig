@@ -1,8 +1,9 @@
 //! Makes Motu's tiles and icons at build time, so the game does not spend
 //! its start drawing them (see src/apps/motu/textures.zig): each strip of
 //! tiles as the GPU takes it, mipmaps and all (vc4.texture.uploadMipmaps's
-//! layout), and the palette's icons, one after another (0xAARRGGBB, little
-//! endian).
+//! layout), deflated (raw), as a quarter as much is quicker to read from
+//! an SD card than to inflate; and the palette's icons, one after another
+//! (0xAARRGGBB, little endian).
 //!
 //!     mktiles <strip-0.bin> <strip-1.bin> <strip-2.bin> <strip-3.bin> <icons.bin>
 
@@ -25,11 +26,20 @@ pub fn main(init: std.process.Init) !void {
         textures.strips(@intCast(i), px[0 .. textures.strip_width * textures.strip_height]);
         @memset(out, 0);
         try texture.uploadMipmaps(arena, out, px, textures.strip_width, textures.strip_height, textures.mip_levels, .colour);
-        try write(init.io, cwd, args[1 + i], out);
+        try write(init.io, cwd, args[1 + i], try deflate(arena, out));
     }
     const icons = try arena.alloc(u32, textures.palette.len * textures.icon_size * textures.icon_size);
     for (textures.palette, 0..) |b, i| textures.icon(b, icons[i * textures.icon_size * textures.icon_size ..][0 .. textures.icon_size * textures.icon_size]);
     try write(init.io, cwd, args[1 + textures.strip_count], std.mem.sliceAsBytes(icons));
+}
+
+fn deflate(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const window = try arena.alloc(u8, std.compress.flate.max_window_len);
+    var c: std.compress.flate.Compress = try .init(&out.writer, window, .raw, .best);
+    try c.writer.writeAll(bytes);
+    try c.finish();
+    return out.written();
 }
 
 fn write(io: std.Io, dir: std.Io.Dir, path: []const u8, bytes: []const u8) !void {
