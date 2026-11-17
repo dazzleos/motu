@@ -65,18 +65,9 @@ pub const Info = struct {
     sky: u4,
     lamp: u4,
     anim: Anim = .none,
-    /// A solid face's corner, which the vertex shader moves a fraction of
-    /// a pixel out across the face (see `Grow`); none for the rest.
-    grow: Grow = .{},
-
-    /// Which way a corner is moved: further along the face's first and
-    /// second axes across it (`rectCorners`' b and c), or back.
-    pub const Grow = packed struct(u3) { b: bool = false, c: bool = false, on: bool = false };
-
     pub fn pack(i: Info) f32 {
         const v: u32 = @as(u32, i.tile) | @as(u32, i.ao) << 6 | @as(u32, @intFromEnum(i.face)) << 8 |
-            @as(u32, i.sky) << 11 | @as(u32, i.lamp) << 15 | @as(u32, @intFromEnum(i.anim)) << 19 |
-            @as(u32, @as(u3, @bitCast(i.grow))) << 21;
+            @as(u32, i.sky) << 11 | @as(u32, i.lamp) << 15 | @as(u32, @intFromEnum(i.anim)) << 19;
         return @floatFromInt(v);
     }
 
@@ -89,7 +80,6 @@ pub const Info = struct {
             .sky = @truncate(v >> 11),
             .lamp = @truncate(v >> 15),
             .anim = @enumFromInt(@as(u2, @truncate(v >> 19))),
-            .grow = @bitCast(@as(u3, @truncate(v >> 21))),
         };
     }
 };
@@ -263,42 +253,15 @@ fn emitQuad(list: *std.ArrayList(Vertex), gpa: std.mem.Allocator, face: Face, co
     var top: f32 = std.math.inf(f32);
     for (corners) |c| top = @min(top, uvOf(face, c[0], c[1], c[2])[1]);
     const tile: blocks.Tile = @enumFromInt(look.tile);
-    const grow = growOf(face, corners);
     for (order) |k| {
         const c = corners[k];
         const uv = uvOf(face, c[0], c[1], c[2]);
         try list.append(gpa, .{
             .pos = c,
             .uv = .{ uv[0], stripT(tile, uv[1] - top) },
-            .info = (Info{ .tile = look.tile, .ao = look.ao[k], .face = face, .sky = look.sky[k], .lamp = look.lamp[k], .anim = anims[k], .grow = grow[k] }).pack(),
+            .info = (Info{ .tile = look.tile, .ao = look.ao[k], .face = face, .sky = look.sky[k], .lamp = look.lamp[k], .anim = anims[k] }).pack(),
         });
     }
-}
-
-/// Which way each corner of a solid face is moved out (see `Info.Grow`).
-///
-/// Faces side by side that look the same are merged (see the top of the
-/// file), so a merged face's edge can meet the corners of several smaller
-/// faces beside it: a corner part way along another face's edge. The GPU
-/// works out where corners are on the screen only so exactly (to a
-/// sixteenth of a pixel, from an approximate 1/w), so such a corner can
-/// land a little off that edge, leaving a crack a pixel across here and
-/// there, with the sky (or what is behind) showing through. The vertex
-/// shader moves each solid face's corners out an eighth of a pixel across
-/// the face, so faces overlap a little and leave no crack (too little to
-/// see, at any distance, unlike moving them a fixed part of a block, which
-/// showed as a lip along edges up close).
-fn growOf(face: Face, corners: [4][3]f32) [4]Info.Grow {
-    const a: usize = @intFromEnum(face) / 2;
-    const b = (a + 1) % 3;
-    const c = (a + 2) % 3;
-    var mid: [3]f32 = @splat(0);
-    for (corners) |p| for (0..3) |i| {
-        mid[i] += p[i] / 4;
-    };
-    var out: [4]Info.Grow = undefined;
-    for (corners, &out) |p, *g| g.* = .{ .b = p[b] > mid[b], .c = p[c] > mid[c], .on = true };
-    return out;
 }
 
 /// The corners of a rectangle of faces on the plane `plane` across axis
@@ -624,8 +587,6 @@ test "faces between blocks are hidden, and level faces alike are merged" {
         }
         try testing.expect(v.uv[1] == lo or v.uv[1] == hi);
         if (i.face == .south) try testing.expectEqual(if (v.pos[1] == 31) lo else hi, v.uv[1]);
-        // Each corner moved out from the face's middle, by the shader.
-        try testing.expect(i.grow.on);
     }
     try testing.expect(lo > @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.volcanic_rock))) / 16 and hi < @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.volcanic_rock) + 1)) / 16);
 }
@@ -804,17 +765,4 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
     try testing.expect(most < 16384);
     // The atoll: a quarter of a million at most.
     try testing.expect(solid < 250000);
-}
-
-test "solid faces' corners are moved out from their middles, each way" {
-    const corners = rectCorners(.south, 5, 2, 30, 3, 1);
-    const g = growOf(.south, corners);
-    // A face looking south: its axes across are x (b) and y (c).
-    for (corners, g) |c, o| {
-        try testing.expect(o.on);
-        try testing.expectEqual(c[0] > 3.5, o.b);
-        try testing.expectEqual(c[1] > 30.5, o.c);
-    }
-    const i: Info = .{ .tile = 63, .ao = 3, .face = .north, .sky = 15, .lamp = 15, .anim = .plant, .grow = .{ .b = true, .c = false, .on = true } };
-    try testing.expectEqual(i, Info.unpack(i.pack()));
 }

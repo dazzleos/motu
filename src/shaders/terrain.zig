@@ -35,20 +35,6 @@ export fn vertex() callconv(.spirv_vertex) void {
     const phase = t * 0.4 + p[0] * 0.31 + p[2] * 0.23;
     p[0] += common.wave(phase) * sway;
     p[2] += common.wave(phase * 0.8 + 0.35) * sway * 0.7;
-    // A solid face's corner, out a fraction of a pixel across the face
-    // (the further away, the more), so faces overlap and leave no cracks
-    // (see mesher.zig's `growOf`). Its axes across: for a face across x,
-    // y and z; across y, z and x; across z, x and y.
-    const fn_ = common.faceNormal(info.face);
-    const ax = Vec3{ @abs(fn_[0]), @abs(fn_[1]), @abs(fn_[2]) };
-    const across_b = Vec3{ ax[2], ax[0], ax[1] };
-    const across_c = Vec3{ ax[1], ax[2], ax[0] };
-    const cam0 = u.camera;
-    const away = gpu.length(Vec3{ p[0] - cam0[0], p[1] - cam0[1], p[2] - cam0[2] });
-    const grow = info.grow * away * u.zenith[3];
-    const gb = (info.grow_b * 2 - 1) * grow;
-    const gc = (info.grow_c * 2 - 1) * grow;
-    p = Vec3{ p[0] + across_b[0] * gb + across_c[0] * gc, p[1] + across_b[1] * gb + across_c[1] * gc, p[2] + across_b[2] * gb + across_c[2] * gc };
     gpu.position.* = common.project(u, p);
 
     const n = common.faceNormal(info.face);

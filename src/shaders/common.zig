@@ -26,9 +26,7 @@ pub const Scene = extern struct {
     /// waves are; w: how high the ocean's swell is (half from trough to
     /// crest).
     misc: Vec4,
-    /// rgb: the sky's colour overhead, which water reflects; w: how far a
-    /// solid face's corners are moved out, for each block away (see
-    /// mesher.zig's `growOf`).
+    /// The sky's colour overhead, which water reflects.
     zenith: Vec4,
 };
 
@@ -39,11 +37,6 @@ pub const Info = struct {
     sky: f32,
     lamp: f32,
     anim: f32,
-    /// A solid face's corner moved out (1) or not (0), and which way
-    /// across it: along its first axis (1) or back (0), and its second.
-    grow: f32,
-    grow_b: f32,
-    grow_c: f32,
 };
 
 /// The packed float, taken apart (each field is a power of two wide, so
@@ -55,8 +48,6 @@ pub fn unpack(info: f32) Info {
     const d = @floor(c * 0.0625);
     const e = @floor(d * 0.0625);
     const f = @floor(e * 0.25);
-    const g = @floor(f * 0.5);
-    const h = @floor(g * 0.5);
     return .{
         .tile = info - a * 64,
         .ao = a - b * 4,
@@ -64,9 +55,6 @@ pub fn unpack(info: f32) Info {
         .sky = c - d * 16,
         .lamp = d - e * 16,
         .anim = e - f * 4,
-        .grow_b = f - g * 2,
-        .grow_c = g - h * 2,
-        .grow = h,
     };
 }
 
