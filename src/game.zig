@@ -48,6 +48,7 @@ const player_mod = @import("player.zig");
 const boat_mod = @import("boat.zig");
 const furniture = @import("furniture.zig");
 const math = @import("math.zig");
+const avatar = @import("avatar.zig");
 
 const Block = blocks.Block;
 const World = world_mod.World;
@@ -216,6 +217,11 @@ pub const Game = struct {
     unsaved: bool = false,
     /// Playing together.
     net: Net = .{},
+    /// How the player looks, and the name they chose ("" for the
+    /// computer's), as the others see them (and the Player tab shows).
+    look: avatar.Look = .{},
+    name_buf: [max_name]u8 = undefined,
+    name_len: u8 = 0,
 
     pub fn init(gpa: std.mem.Allocator, w: *World) Game {
         return .{ .gpa = gpa, .world = w, .player = .{ .pos = w.spawn, .yaw = w.spawn_yaw } };
@@ -431,6 +437,54 @@ pub const Game = struct {
         std.mem.copyForwards(f32, g.fps_history[0 .. fps_seconds - 1], g.fps_history[1..]);
         g.fps_history[fps_seconds - 1] = fps;
         g.fps_count = @min(g.fps_count + 1, fps_seconds);
+    }
+
+    pub fn playerName(g: *const Game) []const u8 {
+        return g.name_buf[0..g.name_len];
+    }
+
+    /// A name typed (as much of it as fits, without what cannot be sent).
+    pub fn setPlayerName(g: *Game, name: []const u8) void {
+        var n: u8 = 0;
+        for (name) |c| {
+            if (n == max_name) break;
+            if (c < 0x20) continue;
+            g.name_buf[n] = c;
+            n += 1;
+        }
+        // Not ending in the middle of a character.
+        while (n > 0 and !std.unicode.utf8ValidateSlice(g.name_buf[0..n])) n -= 1;
+        g.name_len = n;
+    }
+
+    pub fn setSkin(g: *Game, i: usize) void {
+        if (std.enums.fromInt(avatar.Skin, i)) |v| g.look.skin = v;
+    }
+
+    pub fn setHeadwear(g: *Game, i: usize) void {
+        if (std.enums.fromInt(avatar.Headwear, i)) |v| g.look.headwear = v;
+    }
+
+    pub fn setTop(g: *Game, i: usize) void {
+        if (std.enums.fromInt(avatar.Top, i)) |v| g.look.top = v;
+    }
+
+    pub fn setTopColour(g: *Game, i: usize) void {
+        if (std.enums.fromInt(avatar.Colour, i)) |v| g.look.top_colour = v;
+    }
+
+    pub fn setBottom(g: *Game, i: usize) void {
+        if (std.enums.fromInt(avatar.Bottom, i)) |v| g.look.bottom = v;
+    }
+
+    pub fn setBottomColour(g: *Game, i: usize) void {
+        if (std.enums.fromInt(avatar.Colour, i)) |v| g.look.bottom_colour = v;
+    }
+
+    /// Typing (the name, in the Player tab): keys go to it, but Esc and
+    /// Tab.
+    pub fn typing(g: *const Game) bool {
+        return g.menu_open and g.menu_tab == .player;
     }
 
     pub fn showMenuTab(g: *Game, i: usize) void {
@@ -796,7 +850,10 @@ pub const Game = struct {
 };
 
 /// The menu's tabs.
-pub const MenuTab = enum(u2) { islands, play, settings };
+pub const MenuTab = enum(u2) { islands, player, play, settings };
+
+/// The longest name a player can have (in bytes).
+pub const max_name = 24;
 
 /// How many seconds the menu's frame rate graph shows.
 pub const fps_seconds = 30;

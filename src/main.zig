@@ -470,6 +470,8 @@ const Input = struct {
         const game = in.game;
         switch (e) {
             .key => |k| {
+                // Typing a name: the keys are its, but Esc and Tab.
+                if (game.typing() and k.key != .escape and k.key != .tab) return false;
                 game.key(k.key, k.pressed);
                 return true;
             },
@@ -522,8 +524,11 @@ fn run(init: std.process.Init) !void {
     _ = findIslands(&game, cur.name());
     // The options as chosen, or as suit the GPU (the Pi 4's and 5's draws
     // them fast enough; the older one's does not).
-    var kept = options.effective(options.load(), host.dev.is_v3d);
+    var opts = options.load();
+    var kept = options.effective(opts, host.dev.is_v3d);
     game.quality = kept;
+    game.look = opts.look;
+    game.setPlayerName(opts.name());
     const renderer = try Renderer.init(gpa, host.dev);
     var trouble: Trouble = .{};
     {
@@ -642,9 +647,12 @@ fn run(init: std.process.Init) !void {
             last_save = now;
         }
         // Changed in the menu: kept.
-        if (game.quality != kept) {
+        if (game.quality != kept or !std.meta.eql(game.look, opts.look) or !std.mem.eql(u8, game.playerName(), opts.name())) {
+            if (game.quality != kept) opts.quality = game.quality;
             kept = game.quality;
-            options.save(.{ .quality = kept });
+            opts.look = game.look;
+            opts.setName(game.playerName());
+            options.save(&opts);
         }
         // The world drawn as big as the quality chosen. Playing on the
         // whole screen, the window's buffer is drawn that much smaller

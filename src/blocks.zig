@@ -503,6 +503,12 @@ pub const Tile = enum(u6) {
     beads,
     /// A canoe's hull, carved.
     canoe,
+    // Players' skin (see avatar.zig).
+    skin_pale,
+    skin_light,
+    skin_tan,
+    skin_brown,
+    skin_dark,
 
     pub const per_strip = 16;
     pub const strips = 4;

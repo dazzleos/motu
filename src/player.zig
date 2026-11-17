@@ -8,6 +8,7 @@ const std = @import("std");
 const blocks = @import("blocks.zig");
 const world_mod = @import("world.zig");
 const math = @import("math.zig");
+const avatar = @import("avatar.zig");
 
 const World = world_mod.World;
 const V3 = math.V3;
@@ -38,15 +39,15 @@ pub const Controls = struct {
     sprint: bool = false,
 };
 
-/// Colours players are told apart by (one for each in a game).
-pub const colours = 8;
+/// The most players in a game.
+pub const most = 8;
 
 /// Another player (on the network), as drawn: their feet, the way they
-/// face (as `Player.yaw`) and their colour.
+/// face (as `Player.yaw`) and how they look.
 pub const Other = struct {
     pos: V3,
     yaw: f32,
-    colour: u3,
+    look: avatar.Look = .{},
     /// The canoe they are in (its length; 0 for none), and its way.
     boat: u8 = 0,
     boat_yaw: f32 = 0,

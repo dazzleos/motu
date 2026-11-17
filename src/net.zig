@@ -25,6 +25,7 @@ const furniture = @import("furniture.zig");
 const blocks = @import("blocks.zig");
 const math = @import("math.zig");
 const player_mod = @import("player.zig");
+const avatar = @import("avatar.zig");
 
 const Game = game_mod.Game;
 const Nearby = game_mod.Nearby;
@@ -33,14 +34,14 @@ const V3 = math.V3;
 /// Where games are heard and joined (UDP and TCP).
 pub const port: u16 = 47153;
 /// Players in a game, the host's included: one colour each.
-pub const max_players = player_mod.colours;
+pub const max_players = player_mod.most;
 /// Games remembered as nearby.
 pub const max_nearby = 8;
 
 const beacon_magic = "DZBN";
 /// 2: palms and new plants (a world sent is the new kind). 3: the day,
-/// for the weather. 4: the atoll (worlds 256 across).
-const protocol_version: u8 = 5;
+/// for the weather. 4: the atoll (worlds 256 across). 6: how players look.
+const protocol_version: u8 = 6;
 const beacon_every = std.time.ns_per_s;
 /// A game not heard for this long has gone.
 const nearby_for = 4 * std.time.ns_per_s;
@@ -64,8 +65,9 @@ const Kind = enum(u8) {
     denied,
     /// A change: x, y, z (i16 each) and the block (u8).
     edit,
-    /// A player: their id (u8), x, y, z and yaw, and the canoe they are
-    /// in: its length (u8, 0 for none) and yaw.
+    /// A player: their id (u8), x, y, z and yaw, the canoe they are in:
+    /// its length (u8, 0 for none) and yaw, and how they look (see
+    /// avatar.Look.encode).
     player,
     /// A player (id) left.
     leave,
@@ -88,7 +90,8 @@ pub const Event = union(enum) {
 };
 
 pub const Options = struct {
-    /// This computer's name, as the others list it.
+    /// This computer's name, as the others list it (unless the player
+    /// chose one: `Game.playerName`).
     name: []const u8,
     /// Where beacons are heard (0: any port, for tests).
     udp_port: u16 = port,
@@ -245,18 +248,20 @@ const Remote = struct {
     target_yaw: f32 = 0,
     boat: u8 = 0,
     boat_yaw: f32 = 0,
+    look: avatar.Look = .{},
 };
 
-/// Where a player is, as sent.
+/// Where a player is, and how they look, as sent.
 const Whereabouts = struct {
     pos: V3,
     yaw: f32,
     boat: u8 = 0,
     boat_yaw: f32 = 0,
+    look: avatar.Look = .{},
 
     fn of(g: *const Game) Whereabouts {
-        const b = g.boat orelse return .{ .pos = g.player.pos, .yaw = g.player.yaw };
-        return .{ .pos = g.player.pos, .yaw = g.player.yaw, .boat = b.len, .boat_yaw = b.yaw };
+        const b = g.boat orelse return .{ .pos = g.player.pos, .yaw = g.player.yaw, .look = g.look };
+        return .{ .pos = g.player.pos, .yaw = g.player.yaw, .boat = b.len, .boat_yaw = b.yaw, .look = g.look };
     }
 };
 
@@ -331,8 +336,10 @@ pub const Session = struct {
         s.world.deinit(s.gpa);
     }
 
-    fn name(s: *const Session) []const u8 {
-        return s.name_buf[0..s.name_len];
+    /// The name the others see: the player's, or the computer's.
+    fn nameFor(s: *const Session, g: *const Game) []const u8 {
+        const chosen = g.playerName();
+        return if (chosen.len > 0) chosen else s.name_buf[0..s.name_len];
     }
 
     /// The port beacons are heard on.
@@ -370,7 +377,7 @@ pub const Session = struct {
         if (s.host == null and now -| s.last_beacon >= beacon_every) {
             s.last_beacon = now;
             var buf: [128]u8 = undefined;
-            const beacon = encodeBeacon(&buf, s.id, s.tcp_port, s.name());
+            const beacon = encodeBeacon(&buf, s.id, s.tcp_port, s.nameFor(g));
             var to = inAddr(s.opts.beacon_addr, s.opts.beacon_port);
             // No network: no one to hear it.
             _ = linux.sendto(s.udp, beacon.ptr, beacon.len, 0, @ptrCast(&to), @sizeOf(linux.sockaddr.in));
@@ -545,7 +552,7 @@ pub const Session = struct {
         // Where the others are.
         for (s.peers, 0..) |other, j| if (other != null and j != k and other.?.state == .playing) {
             const r = s.remotes[other.?.id];
-            p.send(s.gpa, .player, &.{&encodePlayer(other.?.id, .{ .pos = r.target, .yaw = r.target_yaw, .boat = r.boat, .boat_yaw = r.boat_yaw })});
+            p.send(s.gpa, .player, &.{&encodePlayer(other.?.id, .{ .pos = r.target, .yaw = r.target_yaw, .boat = r.boat, .boat_yaw = r.boat_yaw, .look = r.look })});
         };
     }
 
@@ -582,7 +589,7 @@ pub const Session = struct {
         for (&s.remotes) |*r| r.active = false;
         var h: Peer = .{ .fd = fd, .state = .hello, .since = now };
         h.setName(n.name());
-        h.send(s.gpa, .hello, &.{s.name()});
+        h.send(s.gpa, .hello, &.{s.nameFor(g)});
         s.host = h;
         g.net.status = .{ .asking = s.host.?.name() };
     }
@@ -665,6 +672,7 @@ pub const Session = struct {
         r.target_yaw = st.yaw;
         r.boat = st.boat;
         r.boat_yaw = st.boat_yaw;
+        r.look = st.look;
     }
 
     /// Eases each player shown towards where they were last said to be (ten
@@ -672,12 +680,12 @@ pub const Session = struct {
     fn showOthers(s: *Session, g: *Game, dt: f32) void {
         const t = @min(dt * 12, 1);
         var n: usize = 0;
-        for (&s.remotes, 0..) |*r, id| if (r.active) {
+        for (&s.remotes) |*r| if (r.active) {
             r.shown += (r.target - r.shown) * math.splat(t);
             // The short way round.
             const turn = std.math.atan2(@sin(r.target_yaw - r.shown_yaw), @cos(r.target_yaw - r.shown_yaw));
             r.shown_yaw += turn * t;
-            s.others[n] = .{ .pos = r.shown, .yaw = r.shown_yaw, .colour = @intCast(id % max_players), .boat = r.boat, .boat_yaw = r.boat_yaw };
+            s.others[n] = .{ .pos = r.shown, .yaw = r.shown_yaw, .look = r.look, .boat = r.boat, .boat_yaw = r.boat_yaw };
             n += 1;
         };
         g.net.others = s.others[0..n];
@@ -722,17 +730,20 @@ fn decodeEdit(b: []const u8) ?game_mod.Edit {
     return .{ .cell = cell, .block = block };
 }
 
-fn encodePlayer(id: u8, st: Whereabouts) [22]u8 {
-    var b: [22]u8 = undefined;
+const player_bytes = 22 + avatar.Look.bytes;
+
+fn encodePlayer(id: u8, st: Whereabouts) [player_bytes]u8 {
+    var b: [player_bytes]u8 = undefined;
     b[0] = id;
     for ([_]f32{ st.pos[0], st.pos[1], st.pos[2], st.yaw }, 0..) |v, i| std.mem.writeInt(u32, b[1 + i * 4 ..][0..4], @bitCast(v), .little);
     b[17] = st.boat;
     std.mem.writeInt(u32, b[18..22], @bitCast(st.boat_yaw), .little);
+    b[22..][0..avatar.Look.bytes].* = st.look.encode();
     return b;
 }
 
 fn decodePlayer(b: []const u8) ?struct { id: u8, state: Whereabouts } {
-    if (b.len != 22) return null;
+    if (b.len != player_bytes) return null;
     var v: [5]f32 = undefined;
     for (&v, 0..) |*x, i| {
         const at = if (i < 4) 1 + i * 4 else 18;
@@ -740,7 +751,8 @@ fn decodePlayer(b: []const u8) ?struct { id: u8, state: Whereabouts } {
         if (!std.math.isFinite(x.*)) return null;
     }
     if (b[17] > furniture.most_canoe) return null;
-    return .{ .id = b[0], .state = .{ .pos = .{ v[0], v[1], v[2] }, .yaw = v[3], .boat = b[17], .boat_yaw = v[4] } };
+    const look = avatar.Look.decode(b[22..][0..avatar.Look.bytes].*) orelse return null;
+    return .{ .id = b[0], .state = .{ .pos = .{ v[0], v[1], v[2] }, .yaw = v[3], .boat = b[17], .boat_yaw = v[4], .look = look } };
 }
 
 // --- Sockets ---------------------------------------------------------------------------
@@ -782,7 +794,9 @@ test "beacons, changes and players, there and back" {
     bad[6] = 255;
     try testing.expect(decodeEdit(&bad) == null);
 
-    const p = decodePlayer(&encodePlayer(3, .{ .pos = .{ 1.5, 31, -2 }, .yaw = 0.25, .boat = 3, .boat_yaw = 1.5 })).?;
+    const look: avatar.Look = .{ .skin = .brown, .headwear = .cap, .top_colour = .green };
+    const p = decodePlayer(&encodePlayer(3, .{ .pos = .{ 1.5, 31, -2 }, .yaw = 0.25, .boat = 3, .boat_yaw = 1.5, .look = look })).?;
+    try testing.expectEqual(look, p.state.look);
     try testing.expectEqual(@as(u8, 3), p.id);
     try testing.expectEqual(V3{ 1.5, 31, -2 }, p.state.pos);
     try testing.expectEqual(@as(f32, 0.25), p.state.yaw);
@@ -865,6 +879,14 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
     try testing.expectEqualStrings("host-pi", pair.gb.net.nearby[0].name());
     try testing.expectEqualStrings("guest-pi", pair.ga.net.nearby[0].name());
 
+    // A name chosen is the one the others see.
+    pair.ga.setPlayerName("Moana");
+    _ = try pair.until(struct {
+        fn f(p: *Pair) bool {
+            return p.gb.net.nearby.len == 1 and std.mem.eql(u8, p.gb.net.nearby[0].name(), "Moana");
+        }
+    }.f);
+
     // Asked: the host's player is asked.
     pair.gb.joinNearby(pair.gb.net.nearby[0]);
     _ = try pair.until(struct {
@@ -873,7 +895,7 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
         }
     }.f);
     try testing.expectEqualStrings("guest-pi", pair.ga.net.request.?);
-    try testing.expectEqualStrings("host-pi", pair.gb.net.status.asking);
+    try testing.expectEqualStrings("Moana", pair.gb.net.status.asking);
 
     // Y: let in, with the host's world.
     pair.ga.key(.y, true);
@@ -904,6 +926,14 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
     _ = try pair.until(struct {
         fn f(p: *Pair) bool {
             return p.gb.net.others.len == 1 and math.length(p.gb.net.others[0].pos - V3{ 50, 31, 50 }) < 0.1;
+        }
+    }.f);
+
+    // And how they look, as they change it.
+    pair.ga.look = .{ .skin = .dark, .headwear = .straw_hat, .top_colour = .yellow };
+    _ = try pair.until(struct {
+        fn f(p: *Pair) bool {
+            return p.gb.net.others.len == 1 and p.gb.net.others[0].look.headwear == .straw_hat and p.gb.net.others[0].look.skin == .dark;
         }
     }.f);
 

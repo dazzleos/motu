@@ -12,6 +12,7 @@ const blocks = @import("blocks.zig");
 const textures = @import("textures.zig");
 const game_mod = @import("game.zig");
 const renderer = @import("renderer.zig");
+const avatar = @import("avatar.zig");
 
 const Block = blocks.Block;
 const Game = game_mod.Game;
@@ -230,7 +231,7 @@ pub const Motu = struct {
     }
 
     /// The menu's tabs.
-    const menu_tabs = [_]kete.Tab{ .{ .label = "Islands" }, .{ .label = "Play together" }, .{ .label = "Settings" } };
+    const menu_tabs = [_]kete.Tab{ .{ .label = "Islands" }, .{ .label = "Player" }, .{ .label = "Play together" }, .{ .label = "Settings" } };
     const menu_width = 520;
 
     /// The menu, over the game (which goes on): tabs for the islands,
@@ -241,6 +242,7 @@ pub const Motu = struct {
         const a = cx.arena;
         const content = switch (g.menu_tab) {
             .islands => islandsTab(cx, g),
+            .player => playerTab(cx, g),
             .play => playTogether(cx, g),
             .settings => settingsTab(cx, g),
         };
@@ -256,7 +258,7 @@ pub const Motu = struct {
                 }) catch &.{} }) }),
                 cx.make(kete.SizedBox{ .width = menu_width, .child = cx.make(kete.TabBar{ .tabs = &menu_tabs, .selected = @intFromEnum(g.menu_tab), .on_select = .of(g, Game.showMenuTab) }) }),
                 // As tall whichever tab is shown.
-                cx.make(kete.SizedBox{ .width = menu_width, .height = 210, .child = content }),
+                cx.make(kete.SizedBox{ .width = menu_width, .height = 230, .child = content }),
             }) catch &.{},
         }) }) });
     }
@@ -293,6 +295,119 @@ fn settingsTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
         cx.make(FpsGraph{ .history = g.fps_history[game_mod.fps_seconds - n ..] }),
     }) catch &.{} });
 }
+
+/// The player: how they look (as the others see them), and their name
+/// (the computer's if none is given), to change.
+fn playerTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
+    const a = cx.arena;
+    const look = g.look;
+    var skins: std.ArrayList(kete.Widget) = .empty;
+    for (std.enums.values(avatar.Skin)) |sk| skins.append(a, swatch(cx, g, Game.setSkin, @intFromEnum(sk), sk.tile(), look.skin == sk)) catch {};
+    const choices = struct {
+        fn of(c: *kete.BuildContext, comptime E: type) []const kete.MenuItem {
+            const vals = std.enums.values(E);
+            const out = c.arena.alloc(kete.MenuItem, vals.len) catch return &.{};
+            for (vals, out) |v, *item| item.* = .{ .label = v.label() };
+            return out;
+        }
+    };
+    const clothes = struct {
+        fn row(c: *kete.BuildContext, game: *Game, comptime E: type, kind: E, colour: avatar.Colour, comptime set_kind: fn (*Game, usize) void, set_colour: *const fn (*Game, usize) void) kete.Widget {
+            var items: std.ArrayList(kete.Widget) = .empty;
+            items.append(c.arena, c.make(kete.DropdownMenu{ .options = of(c, E), .selected = @intFromEnum(kind), .on_selected = .of(game, set_kind), .width = 130 })) catch {};
+            for (std.enums.values(avatar.Colour)) |col| items.append(c.arena, swatch(c, game, set_colour, @intFromEnum(col), col.tile(), col == colour)) catch {};
+            return c.make(kete.Row{ .fill = false, .spacing = 2, .cross_axis_alignment = .center, .children = items.items });
+        }
+        const of = choices.of;
+    };
+    return cx.make(kete.Row{ .spacing = 12, .cross_axis_alignment = .start, .children = a.dupe(kete.Widget, &.{
+        cx.make(AvatarPicture{ .look = look }),
+        cx.make(kete.Expanded{ .child = cx.make(kete.Column{ .fill = false, .spacing = 8, .cross_axis_alignment = .start, .children = a.dupe(kete.Widget, &.{
+            cx.make(kete.TextField{ .placeholder = "Your name", .initial = g.playerName(), .max_len = game_mod.max_name, .emoji = false, .on_changed = .of(g, Game.setPlayerName), .width = std.math.inf(f32) }),
+            cx.make(kete.Row{ .fill = false, .spacing = 3, .children = skins.items }),
+            cx.make(kete.DropdownMenu{ .options = choices.of(cx, avatar.Headwear), .selected = @intFromEnum(look.headwear), .on_selected = .of(g, Game.setHeadwear), .width = 130 }),
+            clothes.row(cx, g, avatar.Top, look.top, look.top_colour, Game.setTop, Game.setTopColour),
+            clothes.row(cx, g, avatar.Bottom, look.bottom, look.bottom_colour, Game.setBottom, Game.setBottomColour),
+        }) catch &.{} }) }),
+    }) catch &.{} });
+}
+
+/// A colour to choose (ringed if it is chosen).
+fn swatch(cx: *kete.BuildContext, g: *Game, set: *const fn (*Game, usize) void, index: usize, tile: blocks.Tile, chosen: bool) kete.Widget {
+    const t = cx.theme();
+    const pick = cx.arena.create(LookPick) catch return cx.make(kete.SizedBox.empty);
+    pick.* = .{ .game = g, .index = index, .set = set };
+    return cx.make(kete.Pressable{ .on_press = .of(pick, LookPick.press), .focus_radius = 13, .child = cx.make(kete.RoundedBox{
+        .color = tileColour(tile),
+        .radius = .all(13),
+        .border_width = if (chosen) 3 else 1,
+        .border_color = if (chosen) t.primary else gfx.Color.argb(0x60ffffff),
+        .child = cx.make(kete.SizedBox{ .width = 24, .height = 24 }),
+    }) });
+}
+
+const LookPick = struct {
+    game: *Game,
+    index: usize,
+    set: *const fn (*Game, usize) void,
+
+    fn press(p: *LookPick) void {
+        p.set(p.game, p.index);
+    }
+};
+
+/// A tile's colour, as a swatch or the picture shows it.
+fn tileColour(tile: blocks.Tile) gfx.Color {
+    const hex: u24 = textures.plainColour(tile) orelse switch (tile) {
+        .thatch => 0xc8a464,
+        .hibiscus => 0xd83048,
+        else => 0x808080,
+    };
+    return gfx.Color.argb(0xff000000 | @as(u32, hex));
+}
+
+/// The player as the others see them, from the front: each box of the
+/// figure (the furthest back first), lit a little from above.
+const AvatarPicture = struct {
+    look: avatar.Look,
+
+    const width = 110;
+    const height = 220;
+
+    pub fn layout(_: *const AvatarPicture, _: *kete.WidgetNode, c: kete.Constraints) kete.Size {
+        return c.constrain(.{ .w = width, .h = height });
+    }
+
+    pub fn paint(self: *const AvatarPicture, n: *kete.WidgetNode, p: *kete.Painter) void {
+        const c = p.canvas();
+        const w = n.size.w;
+        const h = n.size.h;
+        c.fillRoundedRect(.{ .x = 0, .y = 0, .w = w, .h = h }, .all(12), gfx.Color.argb(0x22ffffff));
+        var buf: [avatar.max_boxes]avatar.Box = undefined;
+        const bs = avatar.boxes(self.look, &buf);
+        // The furthest back drawn first, so the nearer cover them.
+        var order: [avatar.max_boxes]usize = undefined;
+        for (order[0..bs.len], 0..) |*o, i| o.* = i;
+        std.mem.sort(usize, order[0..bs.len], bs, struct {
+            fn back(boxes: []const avatar.Box, x: usize, y: usize) bool {
+                return boxes[x].min[2] > boxes[y].min[2];
+            }
+        }.back);
+        // 2.1 blocks tall, on the ground near the bottom.
+        const k = (h - 24) / 2.1;
+        const ground = h - 14;
+        c.fillRoundedRect(.{ .x = w / 2 - 0.3 * k, .y = ground - 4, .w = 0.6 * k, .h = 8 }, .all(4), gfx.Color.argb(0x40000000));
+        for (order[0..bs.len]) |i| {
+            const b = bs[i];
+            const r: kete.Rect = .{ .x = w / 2 + b.min[0] * k, .y = ground - b.max[1] * k, .w = (b.max[0] - b.min[0]) * k, .h = (b.max[1] - b.min[1]) * k };
+            const col = tileColour(b.tile);
+            c.fillRect(r, col);
+            // Lit from above: the top lighter, the bottom darker.
+            c.fillRect(.{ .x = r.x, .y = r.y, .w = r.w, .h = @min(2, r.h) }, gfx.Color.argb(0x30ffffff));
+            c.fillRect(.{ .x = r.x, .y = r.y + r.h - @min(2, r.h), .w = r.w, .h = @min(2, r.h) }, gfx.Color.argb(0x30000000));
+        }
+    }
+};
 
 /// The islands kept: play one, delete one (asked twice), or make a new
 /// one.
@@ -643,11 +758,31 @@ test "the menu fits from the smallest window up, and its switches set the option
         try testing.expect(!overflows(u.root.?));
     }
     try testing.expect(findText(u.root.?, "Menu") != null);
-    // Its tabs: the islands first; the settings the last (Tab, Tab).
+    // Its tabs: the islands first; the player; the settings the last
+    // (Tab, Tab, Tab).
     try testing.expect(findText(u.root.?, "New island") != null);
     g.key(.tab, true);
     g.key(.tab, false);
+    try testing.expectEqual(game_mod.MenuTab.player, g.menu_tab);
+    try testing.expect(g.typing());
+    for ([_][2]u32{ min_size, .{ 1920, 1036 } }) |size| {
+        u.frame(size[0], size[1], 0, view);
+        try testing.expect(!overflows(u.root.?));
+    }
+    try testing.expect(findText(u.root.?, "T-shirt") != null);
+    try testing.expect(findText(u.root.?, "Shorts") != null);
+    g.setHeadwear(@intFromEnum(avatar.Headwear.straw_hat));
+    g.setTopColour(@intFromEnum(avatar.Colour.green));
+    g.setPlayerName("Sina\x01 Tui, who has a name far too long to keep");
+    try testing.expectEqual(avatar.Headwear.straw_hat, g.look.headwear);
+    try testing.expectEqual(avatar.Colour.green, g.look.top_colour);
+    try testing.expectEqualStrings("Sina Tui, who has a name", g.playerName());
+    u.frame(1920, 1036, 0, view);
+    try testing.expect(findText(u.root.?, "Straw hat") != null);
+    g.key(.tab, true);
+    g.key(.tab, false);
     try testing.expectEqual(game_mod.MenuTab.play, g.menu_tab);
+    try testing.expect(!g.typing());
     g.key(.tab, true);
     g.key(.tab, false);
     for ([_][2]u32{ min_size, .{ 1920, 1036 } }) |size| {

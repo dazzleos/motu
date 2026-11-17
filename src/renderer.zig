@@ -29,6 +29,7 @@ const mesher = @import("mesher.zig");
 const math = @import("math.zig");
 const textures = @import("textures.zig");
 const player_mod = @import("player.zig");
+const avatar = @import("avatar.zig");
 const creatures = @import("creatures.zig");
 const boat_mod = @import("boat.zig");
 const furniture = @import("furniture.zig");
@@ -353,8 +354,10 @@ pub fn Renderer(comptime Device: type) type {
         dome: vc4.Bo,
         dome_quads: u32,
         cube_lines: vc4.Bo,
-        /// The other players' figures, one for each colour.
+        /// The other players' figures, as they look (one for each shown,
+        /// made again when how they look changes).
         avatars: vc4.Bo,
+        avatar_meshes: [player_mod.most]?AvatarMesh = @splat(null),
         /// Double-buffered vertices for birds and fish (so a pipelined
         /// frame in flight on the GPU is not overwritten).
         creatures_bo: [2]vc4.Bo,
@@ -433,9 +436,7 @@ pub fn Renderer(comptime Device: type) type {
             errdefer dev.destroyBo(cube_lines);
             @memcpy(cube_lines.map[0 .. edges.len * 12], std.mem.sliceAsBytes(&edges));
 
-            const figures = avatarMeshes();
-            const avatars = try dev.createBo(@sizeOf(@TypeOf(figures)));
-            @memcpy(avatars.map[0..@sizeOf(@TypeOf(figures))], std.mem.asBytes(&figures));
+            const avatars = try dev.createBo(player_mod.most * avatar_quads * 4 * @sizeOf(Vertex));
             // The creatures, then the clouds and rain.
             const creatures_bytes: u32 = (creatures.max_quads + weather_mod.max_quads) * 4 * @sizeOf(Vertex);
             const creatures_bo0 = try dev.createBo(creatures_bytes);
@@ -613,6 +614,15 @@ pub fn Renderer(comptime Device: type) type {
 
         /// Records the scene into `sink` (a `FrameSink`, or the preview's),
         /// filling `viewport`.
+        /// The figure shown in `slot`, made again if it looked otherwise.
+        fn avatarMesh(r: *Self, slot: usize, look: avatar.Look) AvatarMesh {
+            if (r.avatar_meshes[slot]) |m| if (std.meta.eql(m.look, look)) return m;
+            const at = r.avatars.map[slot * avatar_quads * 4 * @sizeOf(Vertex) ..][0 .. avatar_quads * 4 * @sizeOf(Vertex)];
+            const m = avatarMeshOf(look, @ptrCast(@alignCast(at)));
+            r.avatar_meshes[slot] = m;
+            return m;
+        }
+
         pub fn draw(r: *Self, sink: anytype, viewport: vc4.render.Viewport, scissor: ?vc4.render.Viewport, v: View) !void {
             r.stats = .{};
             const cam = v.camera;
@@ -681,8 +691,7 @@ pub fn Renderer(comptime Device: type) type {
             // The other players: each its figure, turned and moved to them
             // (with the eye and the sun turned into its frame, for the fog
             // and the light).
-            const figure_strip = blocks.Tile.red.strip();
-            for (v.avatars) |o_in| {
+            for (v.avatars[0..@min(v.avatars.len, player_mod.most)], 0..) |o_in, slot| {
                 // In a canoe: standing in it (see boat.zig).
                 var o = o_in;
                 if (o.boat > 0) o.pos[1] += boat_mod.seat_drop + 0.12;
@@ -696,8 +705,11 @@ pub fn Renderer(comptime Device: type) type {
                 const sun = math.transform(turn, light);
                 at.sun = .{ sun[0], sun[1], sun[2], scene.sun[3] };
                 r.terrain.setUniforms(std.mem.asBytes(&at));
-                const offset = @as(u32, o.colour) * avatar_quads * 4 * @sizeOf(Vertex);
-                try target.quads(&r.terrain, r.avatars.handle, offset, avatar_quads, .{ tex[figure_strip], null, null });
+                const m = r.avatarMesh(slot, o.look);
+                for (0..blocks.Tile.strips) |k| if (m.quads[k] > 0) {
+                    const offset = (@as(u32, @intCast(slot)) * avatar_quads + m.first[k]) * 4 * @sizeOf(Vertex);
+                    try target.quads(&r.terrain, r.avatars.handle, offset, m.quads[k], .{ tex[k], null, null });
+                };
             }
             // Canoes, as the figures are.
             for (v.boats) |b| {
@@ -861,9 +873,16 @@ fn Target(comptime Sink: type) type {
 
 // --- The other players ----------------------------------------------------------------
 
-/// The colours players are told apart by (their bodies'), by id.
-const avatar_colours = [player_mod.colours]blocks.Tile{ .red, .green, .yellow, .purple, .orange, .cyan, .pink, .black };
-/// Quads in a figure: legs, body and head, six faces each.
+/// The most quads in a figure: six faces of each of its boxes.
+const avatar_quads = avatar.max_boxes * 6;
+
+/// A figure's quads, a strip's after another's (each strip one draw).
+const AvatarMesh = struct {
+    look: avatar.Look,
+    first: [blocks.Tile.strips]u32,
+    quads: [blocks.Tile.strips]u32,
+};
+
 /// A canoe's quads, a strip's after another's.
 const BoatMesh = struct {
     bo: vc4.Bo,
@@ -871,36 +890,28 @@ const BoatMesh = struct {
     quads: [blocks.Tile.strips]u32,
 };
 
-const avatar_quads = 18;
-
-const AvatarMeshes = [player_mod.colours][avatar_quads * 4]Vertex;
-
-/// The figures, one for each colour: standing on the origin, facing north
-/// (-z) as a player with no yaw does; legs, the body in the colour, and a
-/// head with a face on its front. Their tiles are all in one strip, so each
-/// is one draw; lit as in the open.
-fn avatarMeshes() AvatarMeshes {
-    var out: AvatarMeshes = undefined;
-    for (&out, avatar_colours) |*mesh, colour| {
-        var n: usize = 0;
-        const boxes = [_]struct { min: V3, max: V3, tile: blocks.Tile, front: blocks.Tile }{
-            .{ .min = .{ -0.2, 0, -0.12 }, .max = .{ 0.2, 0.75, 0.12 }, .tile = .blue, .front = .blue },
-            .{ .min = .{ -0.26, 0.75, -0.15 }, .max = .{ 0.26, 1.4, 0.15 }, .tile = colour, .front = colour },
-            .{ .min = .{ -0.22, 1.4, -0.22 }, .max = .{ 0.22, 1.84, 0.22 }, .tile = .white, .front = .black },
-        };
-        for (boxes) |b| for (blocks.Face.all) |face| {
-            const tile = if (face == .north) b.front else b.tile;
-            for (boxFace(face, b.min, b.max)) |c| {
-                mesh[n] = .{
+/// A figure as `look` is: its boxes' faces, a strip's after another's,
+/// in `out`, lit as in the open.
+fn avatarMeshOf(look: avatar.Look, out: *[avatar_quads * 4]Vertex) AvatarMesh {
+    var bs_buf: [avatar.max_boxes]avatar.Box = undefined;
+    const bs = avatar.boxes(look, &bs_buf);
+    var m: AvatarMesh = .{ .look = look, .first = @splat(0), .quads = @splat(0) };
+    var n: u32 = 0;
+    for (0..blocks.Tile.strips) |k| {
+        m.first[k] = n;
+        for (bs) |b| if (b.tile.strip() == k) for (blocks.Face.all) |face| {
+            for (boxFace(face, b.min, b.max), 0..) |c, i| {
+                out[n * 4 + i] = .{
                     .pos = c,
-                    .uv = boxUv(face, b.min, b.max, c, tile),
-                    .info = (mesher.Info{ .tile = @intFromEnum(tile), .face = face, .sky = 15, .lamp = 0 }).pack(),
+                    .uv = boxUv(face, b.min, b.max, c, b.tile),
+                    .info = (mesher.Info{ .tile = @intFromEnum(b.tile), .face = face, .sky = 15, .lamp = 0 }).pack(),
                 };
-                n += 1;
             }
+            n += 1;
         };
+        m.quads[k] = n - m.first[k];
     }
-    return out;
+    return m;
 }
 
 /// A box's face `face`: its corners, wound counter-clockwise seen from
@@ -925,14 +936,14 @@ fn boxFace(face: blocks.Face, min_v: V3, max_v: V3) [4][3]f32 {
     return out;
 }
 
-/// Where corner `c` of a box's face is on its tile: across in blocks, and
-/// down the tile from the face's top (or, on top and below, its north edge)
-/// to its bottom.
+/// Where corner `c` of a box's face is on its tile: the whole tile on
+/// each face, across, and down from the face's top (or, on top and below,
+/// its north edge) to its bottom.
 fn boxUv(face: blocks.Face, min: V3, max: V3, c: [3]f32, tile: blocks.Tile) [2]f32 {
     return switch (face) {
-        .up, .down => .{ c[0] - min[0], mesher.stripT(tile, (c[2] - min[2]) / (max[2] - min[2])) },
-        .east, .west => .{ c[2] - min[2], mesher.stripT(tile, (max[1] - c[1]) / (max[1] - min[1])) },
-        .south, .north => .{ c[0] - min[0], mesher.stripT(tile, (max[1] - c[1]) / (max[1] - min[1])) },
+        .up, .down => .{ (c[0] - min[0]) / (max[0] - min[0]), mesher.stripT(tile, (c[2] - min[2]) / (max[2] - min[2])) },
+        .east, .west => .{ (c[2] - min[2]) / (max[2] - min[2]), mesher.stripT(tile, (max[1] - c[1]) / (max[1] - min[1])) },
+        .south, .north => .{ (c[0] - min[0]) / (max[0] - min[0]), mesher.stripT(tile, (max[1] - c[1]) / (max[1] - min[1])) },
     };
 }
 
@@ -1163,22 +1174,24 @@ pub const FakeDevice = struct {
     }
 };
 
-test "the other players' figures face outwards, each in one strip, standing on the origin" {
-    const figures = avatarMeshes();
-    for (figures, avatar_colours) |mesh, colour| {
+test "the other players' figures face outwards, a strip's faces together, standing on the origin" {
+    var verts: [avatar_quads * 4]Vertex = undefined;
+    const looks = [_]avatar.Look{ .{}, .{ .skin = .dark, .headwear = .straw_hat, .top = .singlet, .bottom = .lavalava }, .{ .headwear = .flower, .top = .long_sleeves, .bottom = .trousers } };
+    for (looks) |look| {
+        const m = avatarMeshOf(look, &verts);
         var lowest: f32 = std.math.inf(f32);
-        for (0..avatar_quads) |q| {
-            const v = mesh[q * 4 ..][0..4];
+        for (0..blocks.Tile.strips) |k| for (m.first[k]..m.first[k] + m.quads[k]) |q| {
+            const v = verts[q * 4 ..][0..4];
             const info = mesher.Info.unpack(v[0].info);
             const tile: blocks.Tile = @enumFromInt(info.tile);
-            try std.testing.expectEqual(colour.strip(), tile.strip());
+            try std.testing.expectEqual(@as(usize, k), tile.strip());
             // Counter-clockwise from outside: the winding's normal is the face's.
             const p0: V3 = v[0].pos;
             const n = math.cross(@as(V3, v[1].pos) - p0, @as(V3, v[2].pos) - p0);
             const want = info.face.normal();
             try std.testing.expect(math.dot(n, .{ @floatFromInt(want[0]), @floatFromInt(want[1]), @floatFromInt(want[2]) }) > 0);
             for (v) |c| lowest = @min(lowest, c.pos[1]);
-        }
+        };
         try std.testing.expectEqual(@as(f32, 0), lowest);
     }
 }

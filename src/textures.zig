@@ -413,17 +413,13 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const ripple = fbm(u + noise(u, v, 4, s) * 0.1, v, 4, 3, s +% 1);
             break :blk .{ .c = mix(rgb(0x1f5fa8), rgb(0x6ab8ea), ripple * ripple * 1.5), .a = 0.85 };
         },
-        .white => fabric(u, v, x, y, rgb(0xefefef), s),
-        .black => fabric(u, v, x, y, rgb(0x27272b), s),
-        .red => fabric(u, v, x, y, rgb(0xb52e2b), s),
-        .orange => fabric(u, v, x, y, rgb(0xe8802a), s),
-        .yellow => fabric(u, v, x, y, rgb(0xf2cc33), s),
-        .green => fabric(u, v, x, y, rgb(0x5a9a30), s),
-        .blue => fabric(u, v, x, y, rgb(0x334ea6), s),
-        .purple => fabric(u, v, x, y, rgb(0x7d3db0), s),
-        .pink => fabric(u, v, x, y, rgb(0xee8ab2), s),
-        .cyan => fabric(u, v, x, y, rgb(0x27969c), s),
-        .grey => fabric(u, v, x, y, rgb(0x7a8590), s),
+        .white, .black, .red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .grey => fabric(u, v, x, y, rgb(plainColour(t).?), s),
+        .skin_pale, .skin_light, .skin_tan, .skin_brown, .skin_dark => blk: {
+            // Smooth, a little warmer and cooler here and there.
+            const base = rgb(plainColour(t).?);
+            const tone = fbm(u, v, 4, 2, s);
+            break :blk tx(scale(base, 0.95 + tone * 0.08 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.02), tone * 0.3);
+        },
         .black_sand => blk: {
             // Sand ground from lava: near black, grey grains, glints.
             const ripple = noise(u + v * 0.25, v * 0.25, 8, s) * 0.5 + 0.5 * noise(u, v, 16, s +% 1);
@@ -594,6 +590,29 @@ fn planks(u: f32, v: f32, x: f32, y: f32, base: Rgb, s: u32) Texel {
     const nd = @sqrt(@min((ex - 5) * (ex - 5), (ex - 58) * (ex - 58)) + (by - 8) * (by - 8));
     if (nd < 1.6) return tx(rgb(0x45403a), h + 0.8 * (1 - nd / 1.6));
     return tx(scale(base, tone * (0.88 + streak * 0.16)), h);
+}
+
+/// A tile's colour, for those of one colour: cloth, and skin.
+pub fn plainColour(t: Tile) ?u24 {
+    return switch (t) {
+        .white => 0xefefef,
+        .black => 0x27272b,
+        .red => 0xb52e2b,
+        .orange => 0xe8802a,
+        .yellow => 0xf2cc33,
+        .green => 0x5a9a30,
+        .blue => 0x334ea6,
+        .purple => 0x7d3db0,
+        .pink => 0xee8ab2,
+        .cyan => 0x27969c,
+        .grey => 0x7a8590,
+        .skin_pale => 0xf2d3bd,
+        .skin_light => 0xdcab84,
+        .skin_tan => 0xbf8558,
+        .skin_brown => 0x8c5a38,
+        .skin_dark => 0x553423,
+        else => null,
+    };
 }
 
 fn fabric(u: f32, v: f32, x: f32, y: f32, base: Rgb, s: u32) Texel {
