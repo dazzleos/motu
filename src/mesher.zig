@@ -253,15 +253,50 @@ fn emitQuad(list: *std.ArrayList(Vertex), gpa: std.mem.Allocator, face: Face, co
     var top: f32 = std.math.inf(f32);
     for (corners) |c| top = @min(top, uvOf(face, c[0], c[1], c[2])[1]);
     const tile: blocks.Tile = @enumFromInt(look.tile);
+    const at = nudged(face, corners);
     for (order) |k| {
         const c = corners[k];
         const uv = uvOf(face, c[0], c[1], c[2]);
         try list.append(gpa, .{
-            .pos = c,
+            .pos = at[k],
             .uv = .{ uv[0], stripT(tile, uv[1] - top) },
             .info = (Info{ .tile = look.tile, .ao = look.ao[k], .face = face, .sky = look.sky[k], .lamp = look.lamp[k], .anim = anims[k] }).pack(),
         });
     }
+}
+
+/// How far a solid face's corner is nudged out across the face, in blocks:
+/// too little to see, but enough for the vertex shader to know which way
+/// to move it on (see `nudged`).
+pub const nudge: f32 = 1.0 / 4096.0;
+
+/// `corners` (a rectangle on its face's plane, at whole blocks) each
+/// nudged out from its middle across the plane.
+///
+/// Faces side by side that look the same are merged (see the top of the
+/// file), so a merged face's edge can meet the corners of several smaller
+/// faces beside it: a corner part way along another face's edge (a
+/// T-junction). The GPU puts corners on the screen to a sixteenth of a
+/// pixel, so such a corner lands a little off that edge, and now and then
+/// a pixel beside it is left out: a crack, with the sky (or what is
+/// behind) showing through. The vertex shader moves each corner on, the
+/// way it was nudged, by an eighth of a pixel however far away it is, so
+/// faces overlap that little and leave no crack (see shaders/terrain.zig).
+/// Splitting merged faces where corners meet them instead would leave few
+/// merged, and moving them a fixed part of a block shows as a lip along
+/// edges up close.
+fn nudged(face: Face, corners: [4][3]f32) [4][3]f32 {
+    const a: usize = @intFromEnum(face) / 2;
+    var mid: [3]f32 = @splat(0);
+    for (corners) |p| for (0..3) |i| {
+        mid[i] += p[i] / 4;
+    };
+    var out = corners;
+    for (&out) |*p| for (0..3) |i| {
+        if (i == a) continue;
+        p[i] += if (p[i] > mid[i]) nudge else -nudge;
+    };
+    return out;
 }
 
 /// The corners of a rectangle of faces on the plane `plane` across axis
@@ -581,12 +616,13 @@ test "faces between blocks are hidden, and level faces alike are merged" {
     const hi = stripT(.volcanic_rock, 1);
     for (stone) |v| {
         const i = Info.unpack(v.info);
+        // (Corners nudged out: see `nudged`.)
         if (i.face == .up) {
-            try testing.expect(v.pos[0] == 4 or v.pos[0] == 8);
-            try testing.expectEqual(v.pos[0], v.uv[0]);
+            try testing.expect(@round(v.pos[0]) == 4 or @round(v.pos[0]) == 8);
+            try testing.expectEqual(@round(v.pos[0]), v.uv[0]);
         }
         try testing.expect(v.uv[1] == lo or v.uv[1] == hi);
-        if (i.face == .south) try testing.expectEqual(if (v.pos[1] == 31) lo else hi, v.uv[1]);
+        if (i.face == .south) try testing.expectEqual(if (@round(v.pos[1]) == 31) lo else hi, v.uv[1]);
     }
     try testing.expect(lo > @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.volcanic_rock))) / 16 and hi < @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.volcanic_rock) + 1)) / 16);
 }
@@ -610,7 +646,7 @@ test "corners in nooks are shaded" {
     for (solid) |v| {
         const i = Info.unpack(v.info);
         // The floor's corners at the block's foot.
-        if (i.face == .up and v.pos[1] == 31 and v.pos[0] == 8 and v.pos[2] == 8 and i.ao > 0) shaded += 1;
+        if (i.face == .up and v.pos[1] == 31 and @round(v.pos[0]) == 8 and @round(v.pos[2]) == 8 and i.ao > 0) shaded += 1;
     }
     try testing.expect(shaded > 0);
     // The floor's top is still merged where it is open: far fewer quads
@@ -724,7 +760,7 @@ test "furniture: wound to face out, in its blocks, each way round" {
         try build(testing.allocator, w, 0, 0, &m);
         inline for (.{ Section.solid0, Section.solid1, Section.solid2, Section.solid3 }) |sec| {
             try expectWound(m.items(sec));
-            for (m.items(sec)) |v| try testing.expect(v.pos[1] >= 29 and v.pos[1] <= 31.01 and v.pos[0] >= 2.99 and v.pos[0] <= 8.01 and v.pos[2] >= 2.99 and v.pos[2] <= 8.01);
+            for (m.items(sec)) |v| try testing.expect(v.pos[1] >= 29 - nudge and v.pos[1] <= 31.01 and v.pos[0] >= 2.99 and v.pos[0] <= 8.01 and v.pos[2] >= 2.99 and v.pos[2] <= 8.01);
         }
         try testing.expect(m.solidCount() > 0);
         k = -1;
@@ -765,4 +801,19 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
     try testing.expect(most < 16384);
     // The atoll: a quarter of a million at most.
     try testing.expect(solid < 250000);
+}
+
+test "solid faces' corners are nudged out across them, each way, exactly" {
+    const corners = rectCorners(.south, 5, 2, 30, 3, 1);
+    const n = nudged(.south, corners);
+    for (corners, n) |c, o| {
+        // In the face's plane (z, for a face looking south)...
+        try testing.expectEqual(c[2], o[2]);
+        // ...out from its middle across it, by exactly `nudge`, so the
+        // shader finds which way from how far it is from whole blocks.
+        for ([_]usize{ 0, 1 }) |i| {
+            try testing.expectEqual(nudge, @abs(o[i] - c[i]));
+            try testing.expectEqual(o[i] > c[i], c[i] > (if (i == 0) @as(f32, 3.5) else 30.5));
+        }
+    }
 }

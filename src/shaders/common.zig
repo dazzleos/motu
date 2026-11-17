@@ -26,7 +26,9 @@ pub const Scene = extern struct {
     /// waves are; w: how high the ocean's swell is (half from trough to
     /// crest).
     misc: Vec4,
-    /// The sky's colour overhead, which water reflects.
+    /// rgb: the sky's colour overhead, which water reflects; w: how far a
+    /// solid face's corners are moved on, for each block away (see
+    /// terrain.zig).
     zenith: Vec4,
 };
 

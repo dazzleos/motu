@@ -16,6 +16,9 @@ const Vec3 = gpu.Vec3;
 
 const u = gpu.uniforms(common.Scene);
 
+/// mesher.zig's `nudge`.
+const mesher_nudge: f32 = 1.0 / 4096.0;
+
 const in_pos = gpu.vertexInput(Vec3, 0);
 const in_uv = gpu.vertexInput(Vec2, 1);
 const in_info = gpu.vertexInput(f32, 2);
@@ -35,6 +38,25 @@ export fn vertex() callconv(.spirv_vertex) void {
     const phase = t * 0.4 + p[0] * 0.31 + p[2] * 0.23;
     p[0] += common.wave(phase) * sway;
     p[2] += common.wave(phase * 0.8 + 0.35) * sway * 0.7;
+    // A solid face's corner, nudged out across it from whole blocks (see
+    // mesher.zig's `nudged`), moved on that way by an eighth of a pixel
+    // however far away (the further, the more), so faces overlap and leave
+    // no cracks. Kept cheap, as the GPU runs it for every corner twice:
+    // the way from the distance to the nearest whole block (positions are
+    // never below zero, so that is a truncation); how far away, roughly
+    // (along the axes, added up). Anything else (a plant's leaf, say) is
+    // moved no more than that eighth of a pixel.
+    const whole = Vec3{ @trunc(p[0] + 0.5), @trunc(p[1] + 0.5), @trunc(p[2] + 0.5) };
+    const scale: f32 = 1.0 / mesher_nudge;
+    const way = Vec3{
+        gpu.clamp((p[0] - whole[0]) * scale, -1, 1),
+        gpu.clamp((p[1] - whole[1]) * scale, -1, 1),
+        gpu.clamp((p[2] - whole[2]) * scale, -1, 1),
+    };
+    const cam0 = u.camera;
+    const away = @abs(p[0] - cam0[0]) + @abs(p[1] - cam0[1]) + @abs(p[2] - cam0[2]);
+    const grow = away * u.zenith[3];
+    p = Vec3{ p[0] + way[0] * grow, p[1] + way[1] * grow, p[2] + way[2] * grow };
     gpu.position.* = common.project(u, p);
 
     const n = common.faceNormal(info.face);

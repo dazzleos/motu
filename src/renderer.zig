@@ -671,7 +671,9 @@ pub fn Renderer(comptime Device: type) type {
                 .ambient = .{ env.ambient[0], env.ambient[1], env.ambient[2], env.lamps },
                 .fog = .{ fog[0], fog[1], fog[2], 1 / depth },
                 .misc = .{ start, 1, 0.09, swell_height },
-                .zenith = .{ env.zenith[0], env.zenith[1], env.zenith[2], 0 },
+                // An eighth of a pixel, for each block away (see
+                // shaders/terrain.zig).
+                .zenith = .{ env.zenith[0], env.zenith[1], env.zenith[2], 0.125 * 2 * @tan(cam.fov / 2) / @as(f32, @floatFromInt(@max(viewport.height, 1))) },
             };
             const bytes = std.mem.asBytes(&scene);
             r.terrain.setUniforms(bytes);
@@ -1394,3 +1396,4 @@ test "faces turned away are not drawn, and none that can be seen are left out" {
     try testing.expect(drawn * 10 < all * 7);
     std.log.info("faces turned to the eye: {d} of {d} quads drawn", .{ drawn, all });
 }
+
