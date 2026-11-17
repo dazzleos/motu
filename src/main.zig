@@ -1,7 +1,7 @@
-//! Blocks: a voxel building game on an island (see game.zig for how it is
+//! Motu: a voxel building game on an island (see game.zig for how it is
 //! played, world.zig for the world, renderer.zig for how it is drawn).
 //!
-//!     dazzle-blocks
+//!     motu
 //!
 //! Islands are kept in the user's files, each a file named for it (`Island
 //! 2.blocks`): the one played last is loaded when the game starts (or, the
@@ -33,9 +33,46 @@ const boat_mod = @import("boat.zig");
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(vc4.Device);
 
-/// Where the islands are kept, and how their files end.
+/// Where the islands are kept, and how their files end (as they did when
+/// Motu was Blocks, to be renamed).
 const islands_dir = sys.system.user_dir;
-const island_ext = ".blocks";
+const island_ext = ".motu";
+const old_island_ext = ".blocks";
+
+/// Islands and options kept by Blocks (as Motu was) renamed as Motu's.
+fn renameOldFiles() void {
+    _ = linux.rename(options.old_file, options.file);
+    var buf: [4096]u8 align(8) = undefined;
+    // Renaming while reading can skip some: until none are left.
+    for (0..4) |_| {
+        var renamed = false;
+        const dir = sys.open(islands_dir, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }) catch return;
+        defer sys.close(dir);
+        while (true) {
+            const len = sys.check(linux.getdents64(dir, &buf, buf.len)) catch break;
+            if (len == 0) break;
+            var at: usize = 0;
+            while (at < len) {
+                const reclen = std.mem.readInt(u16, buf[at + 16 ..][0..2], .little);
+                const file = std.mem.sliceTo(buf[at + 19 .. at + reclen], 0);
+                at += reclen;
+                if (!std.mem.endsWith(u8, file, old_island_ext) or file.len == old_island_ext.len) continue;
+                const n = file[0 .. file.len - old_island_ext.len];
+                var from_buf: [256]u8 = undefined;
+                var to_buf: [256]u8 = undefined;
+                const from = std.fmt.bufPrintSentinel(&from_buf, "{s}/{s}", .{ islands_dir, file }, 0) catch continue;
+                const to = pathOf(n, &to_buf);
+                // Not over one Motu has already.
+                if (linux.errno(linux.access(to, linux.F_OK)) == .SUCCESS) continue;
+                if (linux.errno(linux.rename(from, to)) == .SUCCESS) {
+                    print("motu: {s} is now {s}\n", .{ from, to });
+                    renamed = true;
+                }
+            }
+        }
+        if (!renamed) break;
+    }
+}
 
 /// The island played now: its name (its file's, less the ending).
 const Current = struct {
@@ -147,15 +184,16 @@ fn makeIsland(g: *game_mod.Game, seed: u32) !void {
     g.time_of_day = 0.34;
     g.day = 0;
     g.target = null;
-    print("dazzle-blocks: made an island in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
+    print("motu: made an island in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
 }
 /// How often a changed world is saved, in seconds.
 const save_every = 60;
 
 pub fn main(init: std.process.Init) u8 {
     sys.logToKmsgIfStderr();
+    renameOldFiles();
     run(init) catch |err| {
-        print(sys.log_error ++ "dazzle-blocks: error: {s}\n", .{@errorName(err)});
+        print(sys.log_error ++ "motu: error: {s}\n", .{@errorName(err)});
         return 1;
     };
     return 0;
@@ -220,12 +258,12 @@ fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !void {
     var pbuf: [256]u8 = undefined;
     const save_path = cur.path(&pbuf);
     const data = sys.readFileAlloc(gpa, save_path, 64 * 1024 * 1024) catch |err| {
-        if (err != error.FileNotFound) print(sys.log_warning ++ "dazzle-blocks: cannot read {s} ({s})\n", .{ save_path, @errorName(err) });
+        if (err != error.FileNotFound) print(sys.log_warning ++ "motu: cannot read {s} ({s})\n", .{ save_path, @errorName(err) });
         return error.NoSave;
     };
     defer gpa.free(data);
     g.decode(data) catch |err| {
-        print("dazzle-blocks: {s} is not a world this can read ({s})\n", .{ save_path, @errorName(err) });
+        print("motu: {s} is not a world this can read ({s})\n", .{ save_path, @errorName(err) });
         return error.NoSave;
     };
 }
@@ -250,7 +288,7 @@ fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, action
             var nbuf: [48]u8 = undefined;
             cur.set(newName(g, &nbuf));
             makeIsland(g, @truncate(sys.nowNs() *% 0x9e3779b97f4a7c15 >> 32)) catch |err| {
-                print(sys.log_warning ++ "dazzle-blocks: cannot make an island ({s})\n", .{@errorName(err)});
+                print(sys.log_warning ++ "motu: cannot make an island ({s})\n", .{@errorName(err)});
                 return;
             };
             save(gpa, g, cur);
@@ -270,7 +308,7 @@ fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, action
             if (i >= g.islands.count or i == g.islands.current) return;
             var pbuf: [256]u8 = undefined;
             _ = linux.unlink(pathOf(g.islands.name(i), &pbuf));
-            print("dazzle-blocks: deleted {s}\n", .{g.islands.name(i)});
+            print("motu: deleted {s}\n", .{g.islands.name(i)});
         },
     }
     _ = findIslands(g, cur.name());
@@ -286,7 +324,7 @@ fn save(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     g.encode(&out) catch |err| {
-        print(sys.log_warning ++ "dazzle-blocks: cannot save: {s}\n", .{@errorName(err)});
+        print(sys.log_warning ++ "motu: cannot save: {s}\n", .{@errorName(err)});
         return;
     };
     // Written whole, then put in place of the old.
@@ -294,12 +332,12 @@ fn save(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
     const tmp = std.fmt.bufPrintSentinel(&tbuf, "{s}.new", .{save_path}, 0) catch return;
     _ = linux.unlink(tmp);
     sys.files.writeNew(tmp, out.items) catch |err| {
-        print(sys.log_warning ++ "dazzle-blocks: cannot save {s}: {s}\n", .{ save_path, @errorName(err) });
+        print(sys.log_warning ++ "motu: cannot save {s}: {s}\n", .{ save_path, @errorName(err) });
         return;
     };
     _ = linux.rename(tmp, save_path);
     g.unsaved = false;
-    print("dazzle-blocks: saved {s} ({d} KB)\n", .{ cur.name(), out.items.len / 1024 });
+    print("motu: saved {s} ({d} KB)\n", .{ cur.name(), out.items.len / 1024 });
 }
 
 /// Where the frames' time goes, since it was last said: each part of
@@ -339,7 +377,7 @@ const Timing = struct {
             }) catch "GPU time not known"
         else
             "GPU time not known";
-        print("dazzle-blocks: per frame: {s}; {d:.2} Mpixels (drawn at {d:.0}%), seen {d:.0} blocks away; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
+        print("motu: per frame: {s}; {d:.2} Mpixels (drawn at {d:.0}%), seen {d:.0} blocks away; CPU: step {d:.1} ms (recording {d:.1} ms, waiting for the GPU {d:.1} ms), game {d:.1} ms, meshing {d:.1} ms\n", .{
             gpu_text,
             t.pixels / n / 1e6,
             quality * 100,
@@ -392,7 +430,7 @@ test "the GPU's time is read from the kernel's counters for its file" {
     try std.testing.expect(!GpuTime.parse("drm-driver:\tvc4\n").known);
 }
 
-/// Errors Blocks goes on from (the frame or the meshes are made again
+/// Errors Motu goes on from (the frame or the meshes are made again
 /// later), said in the log: each kind once, and then at most every few
 /// seconds, so one that keeps happening does not fill it.
 const Trouble = struct {
@@ -406,7 +444,7 @@ const Trouble = struct {
         const now = sys.nowNs();
         t.since_said += 1;
         if (t.last != null and t.last.? == err and now -| t.last_ns < quiet_ns) return;
-        print(sys.log_warning ++ "dazzle-blocks: {s} failed ({s}; {d} times since last said); going on\n", .{ what, @errorName(err), t.since_said });
+        print(sys.log_warning ++ "motu: {s} failed ({s}; {d} times since last said); going on\n", .{ what, @errorName(err), t.since_said });
         t.last = err;
         t.last_ns = now;
         t.since_said = 0;
@@ -432,7 +470,7 @@ const Root = struct {
     scene: *Scene,
 
     pub fn build(r: *const Root, cx: *kete.BuildContext) kete.Widget {
-        return cx.make(view.Blocks{
+        return cx.make(view.Motu{
             .game = r.game,
             .icons = r.icons,
             .draw = .{ .ctx = r.scene, .f = Scene.draw },
@@ -485,7 +523,7 @@ fn run(init: std.process.Init) !void {
     var host: kete_vc4.Host = undefined;
     // A frame in flight: the next is recorded while the GPU renders this
     // one (with a third buffer, while the GPU's memory allows).
-    try host.init(gpa, init.io, init.minimal.environ, .{ .app_id = "dazzle-blocks", .pipelined = true });
+    try host.init(gpa, init.io, init.minimal.environ, .{ .app_id = "motu", .pipelined = true });
     defer host.deinit();
 
     // The world: as it was left, or a new island.
@@ -512,7 +550,7 @@ fn run(init: std.process.Init) !void {
         // the nearest (they are further off, in the fog, at first).
         const started = sys.nowNs();
         mesh(renderer, world, game.player.eye(), 12, &trouble);
-        print("dazzle-blocks: meshed the nearest chunks in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
+        print("motu: meshed the nearest chunks in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
     }
     var upscaler = try upscale.Upscaler.init(gpa, host.dev);
     defer upscaler.deinit();
@@ -523,7 +561,7 @@ fn run(init: std.process.Init) !void {
     // Playing together: said to be here, and joinable, on the network.
     var name_buf: [64]u8 = undefined;
     var session: ?net.Session = net.Session.init(gpa, .{ .name = net.hostname(&name_buf) }) catch |err| blk: {
-        print(sys.log_warning ++ "dazzle-blocks: no playing together ({s})\n", .{@errorName(err)});
+        print(sys.log_warning ++ "motu: no playing together ({s})\n", .{@errorName(err)});
         break :blk null;
     };
     defer if (session) |*s| s.deinit();
@@ -532,7 +570,7 @@ fn run(init: std.process.Init) !void {
     const root: Root = .{ .game = &game, .icons = icons, .scene = &scene };
     var input: Input = .{ .game = &game };
     const window = try host.app.openWindow(.{
-        .title = "Blocks",
+        .title = "Motu",
         .root = .of(&root),
         .size = view.open_size,
         .min_size = view.min_size,
@@ -597,7 +635,7 @@ fn run(init: std.process.Init) !void {
                 // This island, kept for coming back to.
                 save(gpa, &game, &cur);
                 game.joinWorld(j.world, j.pos, j.yaw, j.time, j.day) catch |err| {
-                    print(sys.log_warning ++ "dazzle-blocks: cannot play in that world ({s})\n", .{@errorName(err)});
+                    print(sys.log_warning ++ "motu: cannot play in that world ({s})\n", .{@errorName(err)});
                     game.leaveGame();
                 };
                 mesh(renderer, world, game.player.eye(), 12, &trouble);
@@ -662,7 +700,7 @@ fn run(init: std.process.Init) !void {
         }
         if (now - log_since >= 10 * std.time.ns_per_s) {
             const s = renderer.stats;
-            print("dazzle-blocks: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
+            print("motu: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
             timing.report(host.dev.fd, now - log_since, game.quality, scene.reach.k);
             timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
             log_since = now;

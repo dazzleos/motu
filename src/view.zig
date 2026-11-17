@@ -51,7 +51,7 @@ pub const Draw = struct {
 };
 
 
-pub const Blocks = struct {
+pub const Motu = struct {
     game: *Game,
     icons: *const Icons,
     /// How to draw the world (none in tests).
@@ -59,7 +59,7 @@ pub const Blocks = struct {
     on_fullscreen: ?kete.Callback = null,
     fullscreen: bool = false,
 
-    pub fn build(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
+    pub fn build(self: *const Motu, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
         const a = cx.arena;
         const window = cx.window();
@@ -116,7 +116,7 @@ pub const Blocks = struct {
         w.setFullscreen(!w.isFullscreen());
     }
 
-    fn hotbar(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
+    fn hotbar(self: *const Motu, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
         const t = cx.theme();
         var slots: [9]kete.Widget = undefined;
@@ -145,7 +145,7 @@ pub const Blocks = struct {
     /// Ten blocks across.
     const palette_width = 56 * 10 - 4;
 
-    fn palette(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
+    fn palette(self: *const Motu, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
         const t = cx.theme();
         const a = cx.arena;
@@ -164,7 +164,7 @@ pub const Blocks = struct {
         }
         // The title, and a close button at the top right, as windows have.
         const title = cx.make(kete.SizedBox{ .width = palette_width + 8, .child = cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
-            cx.make(kete.Text{ .text = "Blocks", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
+            cx.make(kete.Text{ .text = "Motu", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
             cx.make(kete.Expanded{ .child = cx.make(kete.SizedBox.empty) }),
             cx.make(kete.IconButton{ .icon = .close, .size = 36, .on_press = .of(g, Game.closePalette) }),
         }) catch &.{} }) });
@@ -188,7 +188,7 @@ pub const Blocks = struct {
 
     /// The menu, over the game (which goes on): tabs for the islands,
     /// playing together and the settings, and a close button (as Esc).
-    fn menu(self: *const Blocks, cx: *kete.BuildContext) kete.Widget {
+    fn menu(self: *const Motu, cx: *kete.BuildContext) kete.Widget {
         const g = self.game;
         const t = cx.theme();
         const a = cx.arena;
@@ -569,7 +569,7 @@ test "the hotbar and palette fit from the smallest window up; clicking them choo
     const icons = try testing.allocator.create(Icons);
     defer testing.allocator.destroy(icons);
     icons.init();
-    const view: Blocks = .{ .game = &g, .icons = icons };
+    const view: Motu = .{ .game = &g, .icons = icons };
     for ([_][2]u32{ min_size, .{ 1280, 720 }, .{ 1920, 1036 } }) |size| {
         u.frame(size[0], size[1], 0, view);
         try testing.expect(!overflows(u.root.?));
@@ -590,7 +590,7 @@ test "the menu fits from the smallest window up, and its switches set the option
     const icons = try testing.allocator.create(Icons);
     defer testing.allocator.destroy(icons);
     icons.init();
-    const view: Blocks = .{ .game = &g, .icons = icons };
+    const view: Motu = .{ .game = &g, .icons = icons };
     for ([_][2]u32{ min_size, .{ 1280, 720 }, .{ 1920, 1036 } }) |size| {
         u.frame(size[0], size[1], 0, view);
         try testing.expect(!overflows(u.root.?));
@@ -661,7 +661,7 @@ test "playing together: games nearby to join, someone asking to join, and leavin
     g.net.status = .{ .hosting = 1 };
     g.net.request = "brave-otter";
     g.showMenuTab(@intFromEnum(game_mod.MenuTab.play));
-    const view: Blocks = .{ .game = &g, .icons = icons };
+    const view: Motu = .{ .game = &g, .icons = icons };
     for ([_][2]u32{ min_size, .{ 1280, 720 }, .{ 1920, 1036 } }) |size| {
         u.frame(size[0], size[1], 0, view);
         try testing.expect(!overflows(u.root.?));
@@ -715,7 +715,7 @@ test "the top-right fullscreen button toggles fullscreen, and shows only with th
         }
     };
     var toggle: Toggle = .{};
-    const view: Blocks = .{
+    const view: Motu = .{
         .game = &g,
         .icons = icons,
         .on_fullscreen = .of(&toggle, Toggle.call),
@@ -762,7 +762,7 @@ test "the menu's islands: listed, played, deleted only when asked twice, and a f
     const icons = try testing.allocator.create(Icons);
     defer testing.allocator.destroy(icons);
     icons.init();
-    const view: Blocks = .{ .game = &g, .icons = icons };
+    const view: Motu = .{ .game = &g, .icons = icons };
     for ([_][2]u32{ min_size, .{ 1920, 1036 } }) |size| {
         u.frame(size[0], size[1], 0, view);
         try testing.expect(!overflows(u.root.?));

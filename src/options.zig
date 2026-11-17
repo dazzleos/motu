@@ -7,7 +7,9 @@ const std = @import("std");
 const linux = std.os.linux;
 const sys = @import("sys");
 
-pub const file = sys.system.user_dir ++ "/.blocks-options";
+pub const file = sys.system.user_dir ++ "/.motu-options";
+/// Where they were kept when Motu was Blocks (renamed to `file`).
+pub const old_file = sys.system.user_dir ++ "/.blocks-options";
 
 /// The least quality: the window drawn half as big across and down.
 pub const min_quality: f32 = 0.5;
@@ -56,7 +58,7 @@ pub fn save(o: Options) void {
     var buf: [128]u8 = undefined;
     _ = linux.unlink(file);
     sys.files.writeNew(file, o.format(&buf)) catch |err| {
-        sys.print(sys.log_warning ++ "dazzle-blocks: cannot keep the options: {s}\n", .{@errorName(err)});
+        sys.print(sys.log_warning ++ "motu: cannot keep the options: {s}\n", .{@errorName(err)});
     };
 }
 

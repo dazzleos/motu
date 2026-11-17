@@ -103,9 +103,9 @@ pub const Options = struct {
 /// system was set up).
 pub fn hostname(buf: *[64]u8) []const u8 {
     var uts: linux.utsname = undefined;
-    if (linux.errno(linux.uname(&uts)) != .SUCCESS) return "Blocks";
+    if (linux.errno(linux.uname(&uts)) != .SUCCESS) return "Motu";
     const n = std.mem.indexOfScalar(u8, &uts.nodename, 0) orelse uts.nodename.len;
-    if (n == 0) return "Blocks";
+    if (n == 0) return "Motu";
     const len = @min(n, buf.len);
     @memcpy(buf[0..len], uts.nodename[0..len]);
     return buf[0..len];
