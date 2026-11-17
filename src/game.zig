@@ -64,6 +64,13 @@ pub const flow_step: f32 = 0.25;
 const look_speed: f32 = 0.006;
 /// Radians a second the arrow keys turn it.
 const turn_speed: f32 = 2.2;
+
+/// The telescope (T): the view this much narrower (magnified), turning as
+/// much slower, and seeing this much further, the fog further out: as far
+/// as it can at the same frame rate, its view drawing less of the world
+/// at each distance (measured on a Raspberry Pi 3 A+).
+pub const telescope_zoom: f32 = 4;
+pub const telescope_reach: f32 = 2.3;
 /// Pixels a press can move and still be a click.
 const click_slop: f32 = 8;
 /// Seconds between two presses of Space that fly (or walk), or of W that
@@ -158,6 +165,8 @@ pub const Game = struct {
     sprinting: bool = false,
     /// The hotbar and the cross in the middle hidden (F1).
     hud_hidden: bool = false,
+    /// Looking through the telescope (T).
+    telescope: bool = false,
     palette_open: bool = false,
     /// The palette's section shown (see blocks.sections): it opens at the
     /// chosen block's.
@@ -217,7 +226,22 @@ pub const Game = struct {
     }
 
     pub fn camera(g: *const Game) math.Camera {
-        return g.player.camera();
+        var c = g.player.camera();
+        if (g.telescope) {
+            c.fov = 2 * std.math.atan(@tan(c.fov / 2) / telescope_zoom);
+            c.far *= telescope_reach;
+        }
+        return c;
+    }
+
+    /// How much slower the view turns (through the telescope).
+    fn lookScale(g: *const Game) f32 {
+        return if (g.telescope) 1 / telescope_zoom else 1;
+    }
+
+    /// How far one sees, of the usual view distance.
+    pub fn seeing(g: *const Game) f32 {
+        return if (g.telescope) telescope_reach else 1;
     }
 
     pub fn say(g: *Game, text: []const u8) void {
@@ -289,6 +313,10 @@ pub const Game = struct {
                 g.w_at = g.clock;
             },
             .f1 => g.hud_hidden = !g.hud_hidden,
+            .t => {
+                g.telescope = !g.telescope;
+                g.say(if (g.telescope) "Telescope" else "Telescope away");
+            },
             .e => if (g.palette_open) g.closePalette() else {
                 g.palette_open = true;
                 g.palette_section = blocks.sectionOf(g.selected());
@@ -494,7 +522,7 @@ pub const Game = struct {
             const dx = p[0] - pr.last[0];
             const dy = p[1] - pr.last[1];
             if (!pr.dragging and @abs(p[0] - pr.at[0]) + @abs(p[1] - pr.at[1]) > click_slop) pr.dragging = true;
-            if (pr.dragging) g.player.look(dx * look_speed, -dy * look_speed);
+            if (pr.dragging) g.player.look(dx * look_speed * g.lookScale(), -dy * look_speed * g.lookScale());
             pr.last = p;
         }
     }
@@ -520,7 +548,7 @@ pub const Game = struct {
 
     /// The mouse moved by (`dx`, `dy`) pixels while taken: the view turns.
     pub fn mouseMoved(g: *Game, dx: f32, dy: f32) void {
-        g.player.look(dx * look_speed, -dy * look_speed);
+        g.player.look(dx * look_speed * g.lookScale(), -dy * look_speed * g.lookScale());
     }
 
     /// A button pressed while the mouse is taken: on the block in the
@@ -681,7 +709,7 @@ pub const Game = struct {
             if (g.held.contains(.left)) turn -= 1;
             if (g.held.contains(.right)) turn += 1;
         }
-        if (turn != 0) g.player.look(turn * turn_speed * dt, 0);
+        if (turn != 0) g.player.look(turn * turn_speed * dt * g.lookScale(), 0);
         const c: player_mod.Controls = if (g.menu_open) .{} else g.controls();
         if (g.boat) |*b| {
             b.update(g.world, c, dt);
@@ -869,6 +897,30 @@ test "with the mouse taken, it turns the view and builds on the middle of it" {
     try testing.expect(g.player.yaw > yaw);
     g.key(.escape, true);
     try testing.expectEqual(@as(?bool, false), g.capture_wanted);
+}
+
+test "T: the telescope, magnified and seeing further, turning slower" {
+    var g = try testGame();
+    defer g.world.destroy();
+    g.captured = true;
+    const usual = g.camera();
+    const yaw = g.player.yaw;
+    g.mouseMoved(100, 0);
+    const turned = g.player.yaw - yaw;
+    g.key(.t, true);
+    g.key(.t, false);
+    try testing.expect(g.telescope);
+    const tele = g.camera();
+    try testing.expectApproxEqAbs(@tan(usual.fov / 2) / telescope_zoom, @tan(tele.fov / 2), 0.0001);
+    try testing.expectApproxEqAbs(usual.far * telescope_reach, tele.far, 0.001);
+    try testing.expectEqual(telescope_reach, g.seeing());
+    g.player.yaw = yaw;
+    g.mouseMoved(100, 0);
+    try testing.expectApproxEqAbs(turned / telescope_zoom, g.player.yaw - yaw, 0.0001);
+    // Again: away.
+    g.key(.t, true);
+    try testing.expect(!g.telescope);
+    try testing.expectEqual(@as(f32, 1), g.seeing());
 }
 
 test "no block inside the player; plants only on the ground" {

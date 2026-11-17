@@ -240,19 +240,38 @@ const Scene = struct {
             .outline = if (g.target) |t| t.cell else null,
             .avatars = g.net.others,
             .boats = boats.items(g),
-            .reach = s.reach.k,
+            .reach = s.reach.k * g.seeing(),
         };
         if (s.stretch and s.quality < 1) {
             const size = upscale.sizeOf(.{ vp.width, vp.height }, s.quality);
             if (s.upscaler.begin(.{ vp.width, vp.height }, size)) |image| {
-                try s.renderer.draw(renderer_mod.FrameSink{ .frame = image }, .{ .x = 0, .y = 0, .width = size[0], .height = size[1] }, null, v);
-                return s.upscaler.finish(f, size, vp, scissor);
+                const all: vc4.render.Viewport = .{ .x = 0, .y = 0, .width = size[0], .height = size[1] };
+                try s.renderer.draw(renderer_mod.FrameSink{ .frame = image }, all, if (g.telescope) lens(all, null) else null, v);
+                return s.upscaler.finish(f, size, vp, if (g.telescope) lens(vp, scissor) else scissor);
             }
         }
         // Without memory for the image: as big as the view.
-        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, scissor, v);
+        try s.renderer.draw(renderer_mod.FrameSink{ .frame = f }, vp, if (g.telescope) lens(vp, scissor) else scissor, v);
     }
 };
+
+/// What the telescope shows of `vp`: the square its circle is in (the
+/// view's height, in the middle), within `scissor` if there is one; the
+/// rest is not drawn (it is black).
+fn lens(vp: vc4.render.Viewport, scissor: ?vc4.render.Viewport) vc4.render.Viewport {
+    const side = @min(vp.width, vp.height);
+    var x0: i32 = vp.x + @as(i32, @intCast((vp.width - side) / 2));
+    var y0: i32 = vp.y + @as(i32, @intCast((vp.height - side) / 2));
+    var x1: i32 = x0 + @as(i32, @intCast(side));
+    var y1: i32 = y0 + @as(i32, @intCast(side));
+    if (scissor) |sc| {
+        x0 = @max(x0, sc.x);
+        y0 = @max(y0, sc.y);
+        x1 = @min(x1, sc.x + @as(i32, @intCast(sc.width)));
+        y1 = @min(y1, sc.y + @as(i32, @intCast(sc.height)));
+    }
+    return .{ .x = x0, .y = y0, .width = @intCast(@max(x1 - x0, 0)), .height = @intCast(@max(y1 - y0, 0)) };
+}
 
 fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !void {
     var pbuf: [256]u8 = undefined;

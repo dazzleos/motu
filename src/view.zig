@@ -51,6 +51,51 @@ pub const Draw = struct {
 };
 
 
+/// The telescope's edge: black all round a circle as tall as the view (in
+/// its middle), softening into it.
+pub const Lens = struct {
+    /// How far (of the radius) the edge softens over.
+    const soft: f32 = 0.08;
+    /// The bands it softens in.
+    const bands = 12;
+
+    pub fn paint(_: *const Lens, n: *kete.WidgetNode, p: *kete.Painter) void {
+        const size = n.size;
+        const c: kete.Point = .{ size.w / 2, size.h / 2 };
+        const radius = @min(size.w, size.h) / 2;
+        const a = n.ui.arena();
+        var cv = p.canvas();
+        const black = gfx.Color.argb(0xff000000);
+        // The circle's edge, each band a little more see-through inwards.
+        const segments = 96;
+        const circle = struct {
+            fn at(alloc: std.mem.Allocator, center: kete.Point, r: f32) []kete.Point {
+                const pts = alloc.alloc(kete.Point, segments) catch return &.{};
+                for (pts, 0..) |*pt, i| {
+                    const t = @as(f32, @floatFromInt(i)) / segments * 2 * std.math.pi;
+                    pt.* = .{ center[0] + r * @cos(t), center[1] + r * @sin(t) };
+                }
+                return pts;
+            }
+        }.at;
+        const outer = radius;
+        const inner = radius * (1 - soft);
+        // Outside the circle: black (the view, and the circle as a hole).
+        const all = a.dupe(kete.Point, &.{ .{ 0, 0 }, .{ size.w, 0 }, .{ size.w, size.h }, .{ 0, size.h } }) catch return;
+        cv.fillPath(&.{ all, circle(a, c, outer) }, black);
+        for (0..bands) |i| {
+            const f0 = @as(f32, @floatFromInt(i)) / bands;
+            const f1 = @as(f32, @floatFromInt(i + 1)) / bands;
+            const r0 = inner + (outer - inner) * f0;
+            const r1 = inner + (outer - inner) * f1;
+            // Each band (a ring of its own) as dark as the edge is at its
+            // middle: smoothly from clear to black.
+            const want = (f0 + f1) / 2;
+            cv.fillPath(&.{ circle(a, c, r1), circle(a, c, r0) }, black.withAlpha(want * want * (3 - 2 * want)));
+        }
+    }
+};
+
 pub const Motu = struct {
     game: *Game,
     icons: *const Icons,
@@ -69,6 +114,8 @@ pub const Motu = struct {
 
         var layers: std.ArrayList(kete.Widget) = .empty;
         layers.append(a, cx.make(WorldView{ .game = g, .draw = self.draw })) catch {};
+        // Through the telescope: its round view, the rest black.
+        if (g.telescope) layers.append(a, cx.make(Lens{})) catch {};
         // The hotbar, at the bottom; what happened, above it.
         var bottom: std.ArrayList(kete.Widget) = .empty;
         if (g.messageShown()) |m| bottom.append(a, label(cx, m, 20)) catch {};
