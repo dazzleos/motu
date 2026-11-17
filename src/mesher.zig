@@ -254,15 +254,47 @@ fn emitQuad(list: *std.ArrayList(Vertex), gpa: std.mem.Allocator, face: Face, co
     var top: f32 = std.math.inf(f32);
     for (corners) |c| top = @min(top, uvOf(face, c[0], c[1], c[2])[1]);
     const tile: blocks.Tile = @enumFromInt(look.tile);
+    const at = grown(face, corners);
     for (order) |k| {
         const c = corners[k];
         const uv = uvOf(face, c[0], c[1], c[2]);
         try list.append(gpa, .{
-            .pos = c,
+            .pos = at[k],
             .uv = .{ uv[0], stripT(tile, uv[1] - top) },
             .info = (Info{ .tile = look.tile, .ao = look.ao[k], .face = face, .sky = look.sky[k], .lamp = look.lamp[k], .anim = anims[k] }).pack(),
         });
     }
+}
+
+/// How far each solid face reaches past its edges, in blocks.
+///
+/// Faces side by side that look the same are merged (see the top of the
+/// file), so a merged face's edge can meet the corners of several smaller
+/// faces beside it: a corner part way along another face's edge. The GPU
+/// works out where corners are on the screen only so exactly (to a
+/// sixteenth of a pixel, from an approximate 1/w), so such a corner can
+/// land a little off that edge, leaving a crack a pixel across here and
+/// there, with the sky (or what is behind) showing through. Reaching a
+/// little past their edges, faces overlap (in their own plane, looking the
+/// same, so it does not show) and leave no crack: 1/128 of a block is
+/// more than a sixteenth of a pixel to past where the world fades into
+/// the fog.
+pub const overlap: f32 = 1.0 / 128.0;
+
+/// `corners` (a rectangle on its face's plane), `overlap` further out
+/// across the plane each way.
+fn grown(face: Face, corners: [4][3]f32) [4][3]f32 {
+    const a: usize = @intFromEnum(face) / 2;
+    var mid: [3]f32 = @splat(0);
+    for (corners) |c| for (0..3) |i| {
+        mid[i] += c[i] / 4;
+    };
+    var out = corners;
+    for (&out) |*c| for (0..3) |i| {
+        if (i == a) continue;
+        c[i] += if (c[i] > mid[i]) overlap else -overlap;
+    };
+    return out;
 }
 
 /// The corners of a rectangle of faces on the plane `plane` across axis
@@ -582,12 +614,14 @@ test "faces between blocks are hidden, and level faces alike are merged" {
     const hi = stripT(.volcanic_rock, 1);
     for (stone) |v| {
         const i = Info.unpack(v.info);
+        // (Each face reaches `overlap` past its edges; its texture is
+        // the block's, from its edge.)
         if (i.face == .up) {
-            try testing.expect(v.pos[0] == 4 or v.pos[0] == 8);
-            try testing.expectEqual(v.pos[0], v.uv[0]);
+            try testing.expect(@abs(v.pos[0] - 4) <= overlap or @abs(v.pos[0] - 8) <= overlap);
+            try testing.expectEqual(@round(v.pos[0]), v.uv[0]);
         }
         try testing.expect(v.uv[1] == lo or v.uv[1] == hi);
-        if (i.face == .south) try testing.expectEqual(if (v.pos[1] == 31) lo else hi, v.uv[1]);
+        if (i.face == .south) try testing.expectEqual(if (@round(v.pos[1]) == 31) lo else hi, v.uv[1]);
     }
     try testing.expect(lo > @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.volcanic_rock))) / 16 and hi < @as(f32, @floatFromInt(@intFromEnum(blocks.Tile.volcanic_rock) + 1)) / 16);
 }
@@ -611,7 +645,7 @@ test "corners in nooks are shaded" {
     for (solid) |v| {
         const i = Info.unpack(v.info);
         // The floor's corners at the block's foot.
-        if (i.face == .up and v.pos[1] == 31 and v.pos[0] == 8 and v.pos[2] == 8 and i.ao > 0) shaded += 1;
+        if (i.face == .up and v.pos[1] == 31 and @round(v.pos[0]) == 8 and @round(v.pos[2]) == 8 and i.ao > 0) shaded += 1;
     }
     try testing.expect(shaded > 0);
     // The floor's top is still merged where it is open: far fewer quads
@@ -725,7 +759,7 @@ test "furniture: wound to face out, in its blocks, each way round" {
         try build(testing.allocator, w, 0, 0, &m);
         inline for (.{ Section.solid0, Section.solid1, Section.solid2, Section.solid3 }) |sec| {
             try expectWound(m.items(sec));
-            for (m.items(sec)) |v| try testing.expect(v.pos[1] >= 29 and v.pos[1] <= 31.01 and v.pos[0] >= 2.99 and v.pos[0] <= 8.01 and v.pos[2] >= 2.99 and v.pos[2] <= 8.01);
+            for (m.items(sec)) |v| try testing.expect(v.pos[1] >= 29 - overlap and v.pos[1] <= 31.01 and v.pos[0] >= 2.99 and v.pos[0] <= 8.01 and v.pos[2] >= 2.99 and v.pos[2] <= 8.01);
         }
         try testing.expect(m.solidCount() > 0);
         k = -1;
@@ -766,4 +800,16 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
     try testing.expect(most < 16384);
     // The atoll: a quarter of a million at most.
     try testing.expect(solid < 250000);
+}
+
+test "faces reach a little past their edges, so merged ones leave no cracks beside smaller ones" {
+    const corners = rectCorners(.south, 5, 2, 30, 3, 1);
+    const g = grown(.south, corners);
+    for (corners, g) |c, o| {
+        // In the face's plane (z, for a face looking south)...
+        try testing.expectEqual(c[2], o[2]);
+        // ...out from its middle, each way.
+        for ([_]usize{ 0, 1 }) |i| try testing.expectApproxEqAbs(overlap, @abs(o[i] - c[i]), 1e-6);
+        try testing.expect(o[0] < 2 or o[0] > 5);
+    }
 }

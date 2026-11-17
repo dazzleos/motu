@@ -253,20 +253,34 @@ fn triangle(tri: [3]*const Shaded, prog: *const shader.Program, cull: shader.pip
     for (1..np - 1) |i| try raster(.{ &poly[0], &poly[i], &poly[i + 1] }, prog, cull, vp, scissor, frags);
 }
 
+/// Where on the screen corners are, as the GPU has them: in sixteenths of
+/// a pixel.
+const subpixels = 16;
+
 fn raster(tri: [3]*const Shaded, prog: *const shader.Program, cull: shader.pipeline.Cull, vp: vc4.render.Viewport, scissor: ?vc4.render.Viewport, frags: *Fragments) !void {
     const img = frags.img;
     var sx: [3]f32 = undefined;
     var sy: [3]f32 = undefined;
     var sz: [3]f32 = undefined;
     var rw: [3]f32 = undefined;
+    // The corners in sixteenths of a pixel (as the GPU snaps them).
+    var fx: [3]i64 = undefined;
+    var fy: [3]i64 = undefined;
     for (tri, 0..) |v, i| {
         const w = v.clip[3];
         if (w <= 1e-6) return;
         rw[i] = 1 / w;
-        sx[i] = @as(f32, @floatFromInt(vp.x)) + (v.clip[0] * rw[i] * 0.5 + 0.5) * @as(f32, @floatFromInt(vp.width));
-        sy[i] = @as(f32, @floatFromInt(vp.y)) + (0.5 - v.clip[1] * rw[i] * 0.5) * @as(f32, @floatFromInt(vp.height));
+        const x = @as(f32, @floatFromInt(vp.x)) + (v.clip[0] * rw[i] * 0.5 + 0.5) * @as(f32, @floatFromInt(vp.width));
+        const y = @as(f32, @floatFromInt(vp.y)) + (0.5 - v.clip[1] * rw[i] * 0.5) * @as(f32, @floatFromInt(vp.height));
+        if (@abs(x) > 1 << 20 or @abs(y) > 1 << 20) return;
+        fx[i] = @intFromFloat(@round(x * subpixels));
+        fy[i] = @intFromFloat(@round(y * subpixels));
+        sx[i] = @as(f32, @floatFromInt(fx[i])) / subpixels;
+        sy[i] = @as(f32, @floatFromInt(fy[i])) / subpixels;
         sz[i] = v.clip[2] * rw[i] * 0.5 + 0.5;
     }
+    const twice = (fx[1] - fx[0]) * (fy[2] - fy[0]) - (fy[1] - fy[0]) * (fx[2] - fx[0]);
+    if (twice == 0) return;
     // Facing: counter-clockwise in clip space (y up) is the front; on the
     // screen (y down) that is a negative area.
     const area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sy[1] - sy[0]) * (sx[2] - sx[0]);
@@ -294,11 +308,25 @@ fn raster(tri: [3]*const Shaded, prog: *const shader.Program, cull: shader.pipel
             const py = @as(f32, @floatFromInt(y)) + 0.5;
             var b: [3]f32 = undefined;
             var inside = true;
+            // Inside each edge, exactly (in sixteenths); a pixel on an edge
+            // is drawn by one of the two triangles sharing it (the one it
+            // is a top or left edge of), as on the GPU.
+            const qx: i64 = @as(i64, x) * subpixels + subpixels / 2;
+            const qy: i64 = @as(i64, y) * subpixels + subpixels / 2;
             for (0..3) |k| {
                 const i = (k + 1) % 3;
                 const j = (k + 2) % 3;
+                var dx = fx[j] - fx[i];
+                var dy = fy[j] - fy[i];
+                var e = dx * (qy - fy[i]) - dy * (qx - fx[i]);
+                if (twice < 0) {
+                    e = -e;
+                    dx = -dx;
+                    dy = -dy;
+                }
+                const top_left = dy < 0 or (dy == 0 and dx > 0);
+                if (e < 0 or (e == 0 and !top_left)) inside = false;
                 b[k] = ((sx[j] - sx[i]) * (py - sy[i]) - (sy[j] - sy[i]) * (px - sx[i])) / area;
-                if (b[k] < 0) inside = false;
             }
             if (!inside) continue;
             const z = b[0] * sz[0] + b[1] * sz[1] + b[2] * sz[2];
@@ -380,3 +408,4 @@ test "the island from its beach, drawn with the real shaders: sky above, land an
     }
     try testing.expect(ground > width / 2);
 }
+
