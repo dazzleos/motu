@@ -606,9 +606,9 @@ pub fn Renderer(comptime Device: type) type {
                 }
             }
             g.bo = new;
-            // Room for swaying and waves.
-            g.min_y -= 0.5;
-            g.max_y += 0.5;
+            // Room for swaying and waves (the swell's too).
+            g.min_y -= 0.5 + swell_height;
+            g.max_y += 0.5 + swell_height;
             r.regions[ri] = g;
         }
 
@@ -640,7 +640,7 @@ pub fn Renderer(comptime Device: type) type {
                 .sun_color = .{ env.sun_color[0], env.sun_color[1], env.sun_color[2], 0 },
                 .ambient = .{ env.ambient[0], env.ambient[1], env.ambient[2], env.lamps },
                 .fog = .{ fog[0], fog[1], fog[2], 1 / depth },
-                .misc = .{ start, 1, 0.09, 0 },
+                .misc = .{ start, 1, 0.09, swell_height },
                 .zenith = .{ env.zenith[0], env.zenith[1], env.zenith[2], 0 },
             };
             const bytes = std.mem.asBytes(&scene);
@@ -776,7 +776,7 @@ pub fn Renderer(comptime Device: type) type {
                 const dx = @max(@max(sp.x0 - cam.eye[0], cam.eye[0] - (sp.x0 + sea_patch_size)), 0);
                 const dz = @max(@max(sp.z0 - cam.eye[2], cam.eye[2] - (sp.z0 + sea_patch_size)), 0);
                 const in_view = dx * dx + dz * dz <= max_sea_d * max_sea_d and
-                    frustum.sees(.{ sp.x0, sea_y - 0.5, sp.z0 }, .{ sp.x0 + sea_patch_size, sea_y + 0.5, sp.z0 + sea_patch_size });
+                    frustum.sees(.{ sp.x0, sea_y - 0.5 - swell_height, sp.z0 }, .{ sp.x0 + sea_patch_size, sea_y + 0.5 + swell_height, sp.z0 + sea_patch_size });
                 if (in_view) {
                     if (sea_run_count > 0 and sea_run_first + sea_run_count == sp.first_quad) {
                         sea_run_count += sp.quad_count;
@@ -1007,6 +1007,10 @@ const SeaPatch = struct {
     first_quad: u32,
     quad_count: u32,
 };
+
+/// How high the ocean's swell is outside the reef: half of its height from
+/// trough to crest, a block.
+pub const swell_height: f32 = 0.5;
 
 /// The sea around the world, grouped into 64x64 patches for culling: quads
 /// a block across for 4 blocks out (matching the island's edge), 2 across to

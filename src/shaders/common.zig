@@ -23,7 +23,8 @@ pub const Scene = extern struct {
     /// rgb: the fog's colour (the horizon's); w: 1 / its depth.
     fog: Vec4,
     /// x: where the fog starts; y: the wind's strength; z: how high
-    /// waves are; w: unused.
+    /// waves are; w: how high the ocean's swell is (half from trough to
+    /// crest).
     misc: Vec4,
     /// The sky's colour overhead, which water reflects.
     zenith: Vec4,
