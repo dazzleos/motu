@@ -265,6 +265,10 @@ const ChunkGpu = struct {
     max_y: f32 = 0,
     /// One of its chunks has changed since it was made.
     dirty: bool = false,
+    /// Out of sight: it has no buffer (its video memory is better used
+    /// for what can be seen), and is made from its chunks' meshes when it
+    /// comes near (see `keepInSight`).
+    far: bool = true,
 
     /// Where a mesh starts in its buffer.
     fn offset(c: ChunkGpu, s: mesher.Section) u32 {
@@ -562,7 +566,7 @@ pub fn Renderer(comptime Device: type) type {
             }
             // The regions of those meshed, made again (one without memory
             // for it is shown as it was, and made again later).
-            for (&r.regions, 0..) |*g, ri| if (g.dirty) try r.makeRegion(ri);
+            for (&r.regions, 0..) |*g, ri| if (g.dirty and !g.far) try r.makeRegion(ri);
             return w.dirty.count();
         }
 
@@ -589,6 +593,30 @@ pub fn Renderer(comptime Device: type) type {
             r.regions[regionOf(i)].dirty = true;
         }
 
+        /// Lets go of the buffers of regions well out of sight (`sight`
+        /// blocks from `eye`), and makes those of regions that have come
+        /// near it again, from their chunks' meshes (kept in memory): the
+        /// whole island's would be most of the GPU's memory. Made a little
+        /// before they can be seen, and let go of well after, so a region
+        /// at the edge is not made and let go of again and again.
+        fn keepInSight(r: *Self, eye: V3, sight: f32) void {
+            for (&r.regions, 0..) |*g, ri| {
+                const d = regionDistance(ri, eye);
+                if (!g.far and d > sight + let_go_past) {
+                    if (g.bo) |bo| r.dev.destroyBo(bo);
+                    g.* = .{ .far = true };
+                } else if (g.far and d <= sight + make_within) {
+                    // Without memory for it: out of sight a while longer.
+                    r.makeRegion(ri) catch {};
+                }
+            }
+        }
+
+        /// How far past what can be seen a region's buffer is made, and
+        /// how far past it is let go of.
+        const make_within = 16;
+        const let_go_past = 48;
+
         /// Makes region `ri`'s buffer from its chunks' meshes: a new one
         /// (the old one may still be in a frame the GPU is drawing: it keeps
         /// it until then), made before the old one goes, which stays if
@@ -600,7 +628,7 @@ pub fn Renderer(comptime Device: type) type {
             for (0..region_chunks) |dz| for (0..region_chunks) |dx| {
                 members[dz * region_chunks + dx] = &r.chunks[(rz * region_chunks + dz) * world_mod.chunks_x + rx * region_chunks + dx];
             };
-            var g: ChunkGpu = .{ .min_y = std.math.inf(f32), .max_y = -std.math.inf(f32) };
+            var g: ChunkGpu = .{ .min_y = std.math.inf(f32), .max_y = -std.math.inf(f32), .far = false };
             for (members) |c| {
                 for (&g.quads, c.quads) |*q, n| q.* += n;
                 for (&g.face_quads, c.face_quads) |*gs, cs| for (gs, cs) |*q, n| {
@@ -613,7 +641,7 @@ pub fn Renderer(comptime Device: type) type {
             for (g.quads) |q| total += q;
             const bo = if (total == 0) null else try r.dev.createBo(total * 4 * @sizeOf(Vertex));
             if (r.regions[ri].bo) |old| r.dev.destroyBo(old);
-            r.regions[ri] = .{};
+            r.regions[ri] = .{ .far = false };
             const new = bo orelse return;
             const out = std.mem.bytesAsSlice(Vertex, new.map[0 .. total * 4 * @sizeOf(Vertex)]);
             var at: usize = 0;
@@ -679,6 +707,8 @@ pub fn Renderer(comptime Device: type) type {
             r.terrain.setUniforms(bytes);
             r.terrain_blend.setUniforms(bytes);
             r.water.setUniforms(bytes);
+
+            r.keepInSight(cam.eye, depth + start + 12);
 
             // The regions in view, nearest first.
             const frustum = math.Frustum.of(vp);

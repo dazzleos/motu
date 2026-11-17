@@ -527,6 +527,8 @@ fn run(init: std.process.Init) !void {
     var opts = options.load();
     var kept = options.effective(opts, host.dev.is_v3d);
     game.quality = kept;
+    // The quality the window's buffer is drawn at (see below).
+    var shown_quality = kept;
     game.look = opts.look;
     game.setPlayerName(opts.name());
     const renderer_started = sys.nowNs();
@@ -656,16 +658,22 @@ fn run(init: std.process.Init) !void {
             opts.setName(game.playerName());
             options.save(&opts);
         }
-        // The world drawn as big as the quality chosen. Playing on the
-        // whole screen, the window's buffer is drawn that much smaller
-        // (the hotbar with it), and the display stretches it: one buffer,
-        // shown as it is. With the menu or the palette open, or in a
-        // window (its title bar), the buffer is the window's full size, so
-        // they are sharp, and the world is stretched into it by the GPU.
-        const whole_screen = win.win.fullscreen and !game.menu_open and !game.palette_open;
-        win.win.render_scale = if (whole_screen) game.quality else 1;
+        // The world drawn as big as the quality chosen. On the whole
+        // screen, the window's buffer is drawn that much smaller (the
+        // hotbar, menu and palette with it), and the display stretches it:
+        // one buffer, shown as it is. Its size stays the same as the menu
+        // and palette come and go: making buffers of another size each
+        // time (and an image to draw the world into, to keep the menu
+        // sharp), with the GPU's memory nearly all used, hung the GPU. A
+        // quality chosen in the menu applies when it closes, not at each
+        // step of the slider. In a window (its title bar), the buffer is
+        // the window's full size, and the world is stretched into it by
+        // the GPU.
+        if (!game.menu_open) shown_quality = game.quality;
+        const whole_screen = win.win.fullscreen;
+        win.win.render_scale = if (whole_screen) shown_quality else 1;
         scene.stretch = !whole_screen;
-        scene.quality = game.quality;
+        scene.quality = shown_quality;
         if (whole_screen) upscaler.release();
         // Asked for in the menu.
         if (game.island_action) |action| {
