@@ -1,0 +1,19 @@
+.{
+    .name = .motu,
+    .version = "0.0.0",
+    .fingerprint = 0xc0bf459e180e1588, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{
+        // Dazzle's modules (kete_vc4 and the rest) and tools, which Motu
+        // is built with. Beside it for now; pinned to a commit of
+        // dazzleos/dazzle once both are published.
+        .dazzle = .{ .path = "../dazzle" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "tools",
+        "LICENSE",
+    },
+}
