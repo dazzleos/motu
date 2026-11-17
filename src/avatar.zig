@@ -36,7 +36,7 @@ pub const Headwear = enum(u8) {
 
     pub fn label(h: Headwear) []const u8 {
         return switch (h) {
-            .none => "Nothing",
+            .none => "No headwear",
             .cap => "Cap",
             .straw_hat => "Straw hat",
             .flower => "Flower",
