@@ -5,9 +5,12 @@
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
         // Dazzle's modules (kete_vc4 and the rest) and tools, which Motu
-        // is built with. Beside it for now; pinned to a commit of
-        // dazzleos/dazzle once both are published.
-        .dazzle = .{ .path = "../dazzle" },
+        // is built with. To build with a Dazzle checkout beside Motu's
+        // instead: `zig build --fork=../dazzle`.
+        .dazzle = .{
+            .url = "git+https://github.com/dazzleos/dazzle#19a7c68fdcb65092918aa3816bcdb32e9b677147",
+            .hash = "dazzle-0.0.0-ze61ICld2wBTsb3dVM7_UhC1baQza0bRciK8CkwXfBaH",
+        },
     },
     .paths = .{
         "build.zig",
