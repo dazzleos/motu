@@ -33,10 +33,9 @@ pub const Icons = struct {
     images: [blocks.palette.len]gfx.Image = undefined,
 
     pub fn init(icons: *Icons) void {
-        for (blocks.palette, 0..) |b, i| {
-            textures.icon(b, &icons.pixels[i]);
-            icons.images[i] = .init(&icons.pixels[i], textures.icon_size, textures.icon_size);
-        }
+        // Drawn at build time (by tools/mktiles.zig).
+        @memcpy(std.mem.sliceAsBytes(&icons.pixels), @embedFile("icons.bin"));
+        for (0..blocks.palette.len) |i| icons.images[i] = .init(&icons.pixels[i], textures.icon_size, textures.icon_size);
     }
 
     pub fn of(icons: *const Icons, b: Block) ?*const gfx.Image {

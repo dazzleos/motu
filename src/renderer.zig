@@ -45,8 +45,11 @@ const Mat4 = math.Mat4;
 pub const max_quads = 16384;
 
 /// Mipmap levels after the first: down to a pixel a tile (64 to 1).
-/// Down to 2 by 2 pixels a tile.
-const mip_levels = std.math.log2_int(u32, textures.tile_size);
+const mip_levels = textures.mip_levels;
+
+/// The strips of tiles, with their mipmaps, as the GPU takes them (made by
+/// tools/mktiles.zig at build time).
+const tile_strips = [blocks.Tile.strips][]const u8{ @embedFile("tiles-0.bin"), @embedFile("tiles-1.bin"), @embedFile("tiles-2.bin"), @embedFile("tiles-3.bin") };
 
 /// How the strips are sampled: smoothly (bilinear) up close; further off,
 /// from the mipmap levels, the nearest texel of the two nearest levels
@@ -403,11 +406,10 @@ pub fn Renderer(comptime Device: type) type {
                 bo.* = try dev.createBo(layout.size);
                 made += 1;
             }
-            const px = try gpa.create([textures.strip_width * textures.strip_height]u32);
-            defer gpa.destroy(px);
-            for (bos, 0..) |bo, i| {
-                textures.strips(@intCast(i), px);
-                try vc4.texture.uploadMipmaps(gpa, bo.map, px, textures.strip_width, textures.strip_height, mip_levels, .colour);
+            // Drawn at build time, as the GPU takes them.
+            for (bos, tile_strips) |bo, strip| {
+                std.debug.assert(strip.len == layout.size);
+                @memcpy(bo.map[0..strip.len], strip);
             }
 
             // Every quad's triangles.

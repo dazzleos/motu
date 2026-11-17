@@ -21,6 +21,11 @@ const design = 64;
 const fine: f32 = @as(f32, tile_size) / design;
 pub const strip_width = tile_size;
 pub const strip_height = tile_size * Tile.per_strip;
+pub const strip_count = Tile.strips;
+/// Each strip's mipmaps: down to 2 by 2 pixels a tile.
+pub const mip_levels = std.math.log2_int(u32, tile_size);
+/// The blocks with icons (for tools/mktiles.zig).
+pub const palette = blocks.palette;
 
 /// 0xAARRGGBB.
 const Pixel = u32;
@@ -1107,3 +1112,13 @@ test "icons show the cube's three faces, or the plant" {
     try std.testing.expectEqual(@as(Pixel, 0), px[0]);
 }
 
+
+test "the icons drawn at build time are as drawn now" {
+    const S = struct {
+        var icon_px: [icon_size * icon_size]Pixel = undefined;
+    };
+    // (The strips are checked by the renderer, which takes them.) An
+    // icon, as drawn now.
+    icon(palette[0], &S.icon_px);
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&S.icon_px), @embedFile("icons.bin")[0 .. icon_size * icon_size * 4]);
+}
