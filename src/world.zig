@@ -636,6 +636,11 @@ pub const World = struct {
                     w.blocks[index(x, h + 1, z)] = .hibiscus;
                     continue;
                 }
+                // Frangipani trees, now and then, with room over them.
+                if (r > 0.989 and h + 4 < size_y) {
+                    w.blocks[index(x, h + 1, z)] = .frangipani;
+                    continue;
+                }
                 // Bamboo in clumps, here and there.
                 if (fbm(seed +% 35, fx / 9, fz / 9, 2) > 0.79 and r < 0.25 and h + 5 < size_y) {
                     const tall: i32 = 2 + @as(i32, @intFromFloat(hash(seed +% 36, x, z) * 3));
@@ -890,7 +895,7 @@ test "the atoll: a ring of islands round a lagoon, sea at the edges, beaches, tr
     // The lagoon in the middle.
     try testing.expectEqual(Block.water, w.get(size_x / 2, sea_level - 1, size_z / 2));
     try testing.expect(highest > sea_level + 16);
-    for ([_]Block{ .grass, .sand, .black_sand, .shells, .palm, .tall_grass, .leafy_plant, .volcanic_rock, .coral, .bamboo, .seagrass, .banana, .hibiscus, .mangrove }) |b| try testing.expect(counts.get(b) > 0);
+    for ([_]Block{ .grass, .sand, .black_sand, .shells, .palm, .tall_grass, .leafy_plant, .volcanic_rock, .coral, .bamboo, .seagrass, .banana, .hibiscus, .mangrove, .frangipani }) |b| try testing.expect(counts.get(b) > 0);
     var flowers: usize = 0;
     for (Block.flowers) |b| flowers += counts.get(b);
     try testing.expect(flowers > 0);

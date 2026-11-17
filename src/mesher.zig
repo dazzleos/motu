@@ -413,7 +413,7 @@ fn shapedSolids(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, 
                 switch (blk) {
                     .palm => try plants.trunk(gpa, w, p, mesh),
                     .stones => try plants.paving(gpa, w, p, mesh),
-                    .leafy_plant, .banana, .mangrove => try plants.plant(gpa, w, p, blk, mesh),
+                    .leafy_plant, .banana, .mangrove, .frangipani => try plants.plant(gpa, w, p, blk, mesh),
                     else => if (blk.shape() == .furniture) try furniture.build(gpa, w, p, blk, mesh),
                 }
             }
@@ -437,7 +437,7 @@ fn otherFaces(gpa: std.mem.Allocator, w: *const World, origin: P, top_y: i32, me
                     .plant => if (blk == .mangrove) {
                         // Its roots are solid; below the sea, in water.
                         if (p[1] < world_mod.sea_level) try waterFaces(gpa, w, p, mesh);
-                    } else if (blk != .leafy_plant and blk != .banana) {
+                    } else if (blk != .leafy_plant and blk != .banana and blk != .frangipani) {
                         // Seagrass is in water: the water's faces too.
                         if (blk == .seagrass) try waterFaces(gpa, w, p, mesh);
                         try plants.plant(gpa, w, p, blk, mesh);

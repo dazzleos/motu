@@ -136,6 +136,10 @@ pub const Block = enum(u8) {
     /// Flat round stones on the ground (put on grass, as flowers are), for
     /// paths: they join up with the stones beside them.
     stones,
+    /// A frangipani: a small tree, its pale trunk forking into stubby
+    /// branches, clusters of long leaves and white and yellow flowers at
+    /// their ends.
+    frangipani,
     _,
 
     pub const Shape = enum {
@@ -160,7 +164,7 @@ pub const Block = enum(u8) {
             .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .ladder, .fence, .campfire, .bamboo, .hibiscus, .lattice, .mat, .curtain, .hammock, .canoe, .stones => .furniture,
             .water => .water,
             .palm => .pole,
-            .tall_grass, .seagrass, .leafy_plant, .banana, .mangrove, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
+            .tall_grass, .seagrass, .leafy_plant, .banana, .mangrove, .frangipani, .red_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower, .orange_flower => .plant,
             _ => .none,
             else => .cube,
         };
@@ -246,6 +250,7 @@ pub const Block = enum(u8) {
             .banana => .leafy_plant,
             .hibiscus => .hibiscus,
             .mangrove => .mangrove_leaf,
+            .frangipani => .frangipani,
             .bed => .bed_cover,
             .black_sand => .black_sand,
             .stones => .sandstone_top,
@@ -307,6 +312,7 @@ pub const Block = enum(u8) {
             .banana => "Banana",
             .hibiscus => "Hibiscus",
             .mangrove => "Mangrove",
+            .frangipani => "Frangipani",
             .black_sand => "Black sand",
             .shells => "Shells",
             .lava => "Lava",
@@ -343,7 +349,7 @@ pub const Block = enum(u8) {
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.stones) and !b.retired();
+        return @intFromEnum(b) <= @intFromEnum(Block.frangipani) and !b.retired();
     }
 
     /// A kind no longer made (its number kept, for those after it).
@@ -382,7 +388,7 @@ pub const sections = [_]Section{
     .{ .name = "Building", .blocks = &.{ .volcanic_wall, .stones, .sticks, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .lattice, .mat, .curtain } },
     // Made of sticks.
     .{ .name = "Furniture", .blocks = &.{ .table, .bed, .chest, .post, .lamp, .campfire, .hammock, .canoe } },
-    .{ .name = "Plants", .blocks = &.{ .palm, .bamboo, .banana, .mangrove, .hibiscus, .leafy_plant, .tall_grass, .seagrass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
+    .{ .name = "Plants", .blocks = &.{ .palm, .bamboo, .banana, .mangrove, .hibiscus, .frangipani, .leafy_plant, .tall_grass, .seagrass, .red_flower, .orange_flower, .yellow_flower, .pink_flower, .purple_flower, .blue_flower, .white_flower } },
     // Colours to build with, not any material's.
     .{ .name = "Paint", .blocks = &.{ .white, .black, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink } },
 };
@@ -476,6 +482,8 @@ pub const Tile = enum(u6) {
     black_sand,
     /// Sand, shells on it.
     shells,
+    /// A frangipani's leaves, and its flowers among them.
+    frangipani,
     // Colours.
     white = 32,
     black,

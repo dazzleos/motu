@@ -41,7 +41,8 @@ pub const max_nearby = 8;
 const beacon_magic = "DZBN";
 /// 2: palms and new plants (a world sent is the new kind). 3: the day,
 /// for the weather. 4: the atoll (worlds 256 across). 6: how players look.
-const protocol_version: u8 = 6;
+/// 7: frangipani.
+const protocol_version: u8 = 7;
 const beacon_every = std.time.ns_per_s;
 /// A game not heard for this long has gone.
 const nearby_for = 4 * std.time.ns_per_s;

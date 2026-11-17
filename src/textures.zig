@@ -383,6 +383,24 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             break :blk leafCluster(u, v, rgb(0x1f5a1c), rgb(0x4e9a36), s);
         },
         .mangrove_leaf => leafCluster(u, v, rgb(0x2a5222), rgb(0x5f8c3a), s),
+        .frangipani => blk: {
+            // Long leaves, and among them flowers: five broad petals
+            // overlapping like a pinwheel, white, yellow at the heart.
+            const fl = cellsAt(u, v, 4, s +% 5);
+            if (hash(@intCast(fl.id), 4, s) < 0.85) {
+                const ang = std.math.atan2(fl.cy, fl.cx);
+                // Each petal's edge, swept round (the pinwheel).
+                const petal = @mod(ang * 5 / (2 * std.math.pi) + fl.d1 * 2.2, 1);
+                const edge = 0.42 * (0.62 + 0.38 * @sin(petal * std.math.pi));
+                if (fl.d1 < edge) {
+                    const heart = smoothstep(0.2, 0.04, fl.d1);
+                    const crease = smoothstep(0.12, 0, @min(petal, 1 - petal));
+                    const c = mix(rgb(0xfbf8ee), rgb(0xf6c83a), heart);
+                    break :blk tx(scale(c, 1 - crease * 0.14 - (fl.d1 / edge) * 0.08), 2.4 - fl.d1 * 2.5);
+                }
+            }
+            break :blk leafCluster(u, v, rgb(0x1d4f1e), rgb(0x52913a), s);
+        },
         .bamboo => blk: {
             // A stem of bamboo, lit across, a node part way up.
             const across = (u - 0.5) * 2;
@@ -821,7 +839,7 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             fan(out, &px[0], .{ 24, 46 }, &.{ -0.55, -1.2, -1.95, -2.6 }, 26, 10);
             return;
         },
-        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo, .hibiscus, .mangrove, .lattice, .mat, .curtain, .hammock, .canoe, .stones => {
+        .table, .bed, .chest, .post, .lamp, .sandstone_slab, .rock_slab, .thatch_slab, .fence, .ladder, .campfire, .bamboo, .hibiscus, .mangrove, .frangipani, .lattice, .mat, .curtain, .hammock, .canoe, .stones => {
             furnitureIcon(b, out);
             return;
         },
@@ -933,6 +951,12 @@ fn furnitureIcon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             .{ .lo = .{ 0.45, 0, 0.77 }, .hi = .{ 0.53, 0.6, 0.85 }, .top = .palm_bark, .side = .palm_bark },
             .{ .lo = .{ 0.42, 0.4, 0.42 }, .hi = .{ 0.58, 0.7, 0.58 }, .top = .palm_bark, .side = .palm_bark },
             .{ .lo = .{ 0, 0.65, 0 }, .hi = .{ 1, 1, 1 }, .top = .mangrove_leaf, .side = .mangrove_leaf },
+        },
+        .frangipani => &.{
+            .{ .lo = .{ 0.44, 0, 0.44 }, .hi = .{ 0.56, 0.45, 0.56 }, .top = .palm_bark, .side = .palm_bark },
+            .{ .lo = .{ 0.02, 0.4, 0.3 }, .hi = .{ 0.48, 0.7, 0.76 }, .top = .frangipani, .side = .frangipani },
+            .{ .lo = .{ 0.52, 0.48, 0.18 }, .hi = .{ 0.98, 0.8, 0.64 }, .top = .frangipani, .side = .frangipani },
+            .{ .lo = .{ 0.3, 0.62, 0.52 }, .hi = .{ 0.76, 0.98, 0.98 }, .top = .frangipani, .side = .frangipani },
         },
         .bamboo => &.{
             .{ .lo = .{ 0.25, 0, 0.3 }, .hi = .{ 0.37, 1, 0.42 }, .top = .bamboo, .side = .bamboo },

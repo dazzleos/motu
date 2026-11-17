@@ -346,6 +346,7 @@ pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mes
     if (blk == .leafy_plant) return leafyPlant(o, base, seed, turn);
     if (blk == .banana) return banana(o, base, seed, turn);
     if (blk == .mangrove) return mangrove(o, w, p, base, seed, turn);
+    if (blk == .frangipani) return frangipani(o, w, p, base, seed, turn);
     if (blk == .tall_grass or blk == .seagrass) {
         // Two planes crossing on the block's diagonals.
         const x = base[0] - 0.5;
@@ -659,6 +660,34 @@ fn banana(o_in: Out, base: V, seed: u32, turn: f32) !void {
     const bunch = add(top, .{ @cos(turn + 0.6) * 0.18, -0.35, @sin(turn + 0.6) * 0.18 });
     try leafBox(o, sub(bunch, .{ 0.09, 0.2, 0.09 }), add(bunch, .{ 0.09, 0.2, 0.09 }), .coconut, true, .sway);
     try beam(o, add(bunch, .{ 0, 0.18, 0 }), add(top, .{ 0, -0.05, 0 }), 0.025, .bamboo, 0.4, 0.6, .sway, .sway);
+}
+
+/// A frangipani: a short pale trunk forking into three or four stubby
+/// branches, rising and spreading, each ending in a cluster of leaves and
+/// flowers (with room above for them; otherwise a bush of them). Solid,
+/// as the leafy plant is.
+fn frangipani(o_in: Out, w: *const World, p: [3]i32, base: V, seed: u32, turn: f32) !void {
+    var o = o_in;
+    o.solid = true;
+    const room = w.get(p[0], p[1] + 1, p[2]) == .air and w.get(p[0], p[1] + 2, p[2]) == .air;
+    const fork = add(base, mul(up, if (room) @as(f32, 1.2) else 0.3));
+    try beam(o, base, fork, 0.11, .palm_bark, 0.3, 0.7, .none, .none);
+    const n: usize = 3 + @as(usize, @intFromFloat(hash(seed, 3, 3) * 2));
+    for (0..n) |k| {
+        const ki: i32 = @intCast(k);
+        const a = turn + @as(f32, @floatFromInt(k)) * 2 * std.math.pi / @as(f32, @floatFromInt(n)) + (hash(seed, ki, 1) - 0.5) * 0.6;
+        const dir: V = .{ @cos(a), 0, @sin(a) };
+        const reach = 0.55 + hash(seed, ki, 2) * 0.3;
+        const rise = if (room) 0.7 + hash(seed, ki, 4) * 0.5 else 0.25;
+        // Up and out, bending once on the way.
+        const knee = add(fork, add(mul(dir, reach * 0.4), mul(up, rise * 0.6)));
+        const tip = add(fork, add(mul(dir, reach), mul(up, rise)));
+        try beam(o, fork, knee, 0.07, .palm_bark, 0.35, 0.65, .none, .none);
+        try beam(o, knee, tip, 0.055, .palm_bark, 0.35, 0.65, .none, .sway);
+        // The leaves and flowers at its end.
+        const half: f32 = 0.36 + hash(seed, ki, 5) * 0.1;
+        try leafBox(o, .{ tip[0] - half, tip[1] - 0.1, tip[2] - half }, .{ tip[0] + half, tip[1] + 0.34, tip[2] + half }, .frangipani, true, .sway);
+    }
 }
 
 /// A mangrove: roots arching down from a short trunk to the ground (or
