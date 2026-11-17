@@ -1,5 +1,6 @@
-//! The blocks' looks, drawn here rather than loaded: each tile is 64 by 64
-//! pixels, made from noise that wraps at the tile's edges (so tiles join
+//! The blocks' looks, drawn here rather than loaded: each tile is 128 by
+//! 128 pixels (drawn as if 64 by 64, `design`, at twice the detail: the
+//! shapes' edges finer, and grain per pixel), made from noise that wraps at the tile's edges (so tiles join
 //! without seams), cells for stones and pebbles, bevels for bricks and
 //! boards, and a little light and shade drawn in. They are laid out in
 //! strips of 16 tiles, one tile across (see blocks.Tile), which the GPU
@@ -12,7 +13,12 @@ const blocks = @import("blocks.zig");
 const Block = blocks.Block;
 const Tile = blocks.Tile;
 
-pub const tile_size = 64;
+pub const tile_size = 128;
+/// The size the tiles are drawn as: their shapes are placed in pixels of
+/// this (0 to 63), whatever `tile_size` is.
+const design = 64;
+/// How many of a tile's pixels to one of `design`'s, across.
+const fine: f32 = @as(f32, tile_size) / design;
 pub const strip_width = tile_size;
 pub const strip_height = tile_size * Tile.per_strip;
 
@@ -145,11 +151,12 @@ fn tx(c: Rgb, h: f32) Texel {
 
 const nothing: Texel = .{ .c = .{ 0, 0, 0 }, .a = 0 };
 
-/// A texel of a tile, at (x, y) in pixels (0 to 63).
+/// A texel of a tile, at (x, y) in its pixels (0 to `tile_size` - 1).
 pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
-    const n: f32 = tile_size;
-    const x = @as(f32, @floatFromInt(xi)) + 0.5;
-    const y = @as(f32, @floatFromInt(yi)) + 0.5;
+    const n: f32 = design;
+    // Where it is in `design`'s pixels.
+    const x = (@as(f32, @floatFromInt(xi)) + 0.5) / fine;
+    const y = (@as(f32, @floatFromInt(yi)) + 0.5) / fine;
     const u = x / n;
     const v = y / n;
     const s: u32 = @as(u32, @intFromEnum(t)) *% 7919 +% 13;
@@ -172,12 +179,12 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
         .volcanic_rock => volcanic(u, v, s),
         .sand => blk: {
             const ripple = noise(u + v * 0.25, v * 0.25, 8, s) * 0.5 + 0.5 * noise(u, v, 16, s +% 1);
-            const grain = hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5;
+            const grain = hash(@intFromFloat(x * fine), @intFromFloat(y * fine), s) - 0.5;
             break :blk tx(scale(rgb(0xdccda0), 0.94 + ripple * 0.06 + grain * 0.08), ripple * 2.2 + grain * 0.3);
         },
         .sandstone_top => blk: {
             const body = fbm(u, v, 4, 3, s);
-            break :blk tx(scale(rgb(0xd8c48f), 0.9 + body * 0.18 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.04), body * 1.5);
+            break :blk tx(scale(rgb(0xd8c48f), 0.9 + body * 0.18 + (hash(@intFromFloat(x * fine), @intFromFloat(y * fine), s) - 0.5) * 0.04), body * 1.5);
         },
         .sandstone_side => blk: {
             // Layers of different thickness and tone, their edges soft
@@ -187,7 +194,7 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             const band = smoothstep(0.08, 0, @abs(@mod(v * 4 + wander * 6, 1) - 0.5)) * 0.5;
             const wear = fbm(u, v, 8, 3, s +% 4);
             const c = mix(rgb(0xc9ae78), rgb(0xe3cd98), layer);
-            break :blk tx(scale(c, 0.95 - band * 0.12 + (wear - 0.5) * 0.1 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.04), layer * 1.5 - band + wear);
+            break :blk tx(scale(c, 0.95 - band * 0.12 + (wear - 0.5) * 0.1 + (hash(@intFromFloat(x * fine), @intFromFloat(y * fine), s) - 0.5) * 0.04), layer * 1.5 - band + wear);
         },
         .sticks_side => blk: {
             // Straight poles standing side by side, eight a block, round
@@ -263,7 +270,7 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
         .coconut => blk: {
             const husk = fbm(u, v, 8, 3, s);
             const c = mix(rgb(0x7a6a2a), rgb(0xa8a040), husk);
-            break :blk tx(scale(c, 0.85 + hash(@intFromFloat(x), @intFromFloat(y), s) * 0.15), husk * 2);
+            break :blk tx(scale(c, 0.85 + hash(@intFromFloat(x * fine), @intFromFloat(y * fine), s) * 0.15), husk * 2);
         },
         .tall_grass => blades(u, v, s),
         .seagrass => blk: {
@@ -342,7 +349,7 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
         },
         .plaster => blk: {
             const body = fbm(u, v, 4, 3, s);
-            break :blk tx(scale(rgb(0xece6d6), 0.94 + body * 0.08 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.03), body * 1.2);
+            break :blk tx(scale(rgb(0xece6d6), 0.94 + body * 0.08 + (hash(@intFromFloat(x * fine), @intFromFloat(y * fine), s) - 0.5) * 0.03), body * 1.2);
         },
         .lamp => blk: {
             // A flame, from its point at the top: white-yellow at its
@@ -383,7 +390,7 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
         .bed_cover => blk: {
             // Bark cloth: pale, with dark brown patterns in bands:
             // triangles, zigzags and lines.
-            const base = scale(mix(rgb(0xe2cfa6), rgb(0xf0e2c2), fbm(u, v, 8, 2, s)), 0.95 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.06);
+            const base = scale(mix(rgb(0xe2cfa6), rgb(0xf0e2c2), fbm(u, v, 8, 2, s)), 0.95 + (hash(@intFromFloat(x * fine), @intFromFloat(y * fine), s) - 0.5) * 0.06);
             const ink = rgb(0x5a3018);
             const band = @mod(y, 32);
             const line = band < 2 or (band >= 14 and band < 16);
@@ -418,12 +425,12 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             // Smooth, a little warmer and cooler here and there.
             const base = rgb(plainColour(t).?);
             const tone = fbm(u, v, 4, 2, s);
-            break :blk tx(scale(base, 0.95 + tone * 0.08 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.02), tone * 0.3);
+            break :blk tx(scale(base, 0.95 + tone * 0.08 + (hash(@intFromFloat(x * fine), @intFromFloat(y * fine), s) - 0.5) * 0.02), tone * 0.3);
         },
         .black_sand => blk: {
             // Sand ground from lava: near black, grey grains, glints.
             const ripple = noise(u + v * 0.25, v * 0.25, 8, s) * 0.5 + 0.5 * noise(u, v, 16, s +% 1);
-            const grain = hash(@intFromFloat(x), @intFromFloat(y), s);
+            const grain = hash(@intFromFloat(x * fine), @intFromFloat(y * fine), s);
             const glint: f32 = if (grain > 0.94) 1.9 else 1;
             break :blk tx(scale(mix(rgb(0x3e3a37), rgb(0x5a5450), noise(u, v, 4, s +% 2)), (0.85 + ripple * 0.15 + (grain - 0.5) * 0.3) * glint), ripple * 2.2 + grain * 0.3);
         },
@@ -529,13 +536,15 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
             // Wood hollowed out, its grain along it, a band of zigzags
             // carved along the top: cut into the wood, darker in the cuts.
             const grain = noise(u * 0.25, v * 4, 16, s) * 0.5 + 0.5 * noise(u, v * 2, 8, s +% 1);
-            const wood = scale(mix(rgb(0x5a3a1e), rgb(0x8a5e34), grain), 0.9 + (hash(@intFromFloat(x), @intFromFloat(y), s) - 0.5) * 0.06);
+            // Fine lines in the grain, along the hull, as an adze leaves.
+            const lines = noise(u * 0.5, v * 2, 64, s +% 2);
+            const wood = scale(mix(rgb(0x5a3a1e), rgb(0x8a5e34), grain), 0.84 + lines * 0.16 + (hash(@intFromFloat(x * fine), @intFromFloat(y * fine), s) - 0.5) * 0.06);
             if (y >= 2 and y < 13) {
                 const zig = @abs(@mod(x, 10) - 5) * 1.6 + 2.5;
                 if (@abs(y - zig) < 1.2) break :blk tx(scale(wood, 0.55), -1.5);
             }
             if (y < 1.5 or (y >= 13 and y < 14.5)) break :blk tx(scale(wood, 0.6), -1);
-            break :blk tx(wood, grain * 2);
+            break :blk tx(wood, grain * 2 + lines * 0.8);
         },
     };
 }
@@ -543,7 +552,7 @@ pub fn texel(t: Tile, xi: u32, yi: u32) Texel {
 fn grass(u: f32, v: f32) Texel {
     const patch = fbm(u, v, 4, 3, 3);
     const streaks = noise(u * 1.0, v * 0.5, 32, 4);
-    const speck = hash(@intFromFloat(u * 64), @intFromFloat(v * 64), 5);
+    const speck = hash(@intFromFloat(u * tile_size), @intFromFloat(v * tile_size), 5);
     return tx(scale(mix(rgb(0x4f8f30), rgb(0x86c050), patch * 0.8 + streaks * 0.4), 0.88 + speck * 0.18), streaks * 1.6 + patch + speck * 0.4);
 }
 
@@ -553,7 +562,7 @@ fn dirt(u: f32, v: f32) Texel {
     const stone_here = smoothstep(0.32, 0.22, c.d1) * @as(f32, if (hash(@intCast(c.id), 0, 9) > 0.6) 1 else 0);
     const body = fbm(u, v, 4, 4, 6);
     const soil = mix(rgb(0x6b4a30), rgb(0x92683f), body);
-    const colour = scale(mix(soil, rgb(0x9a8c7a), stone_here), 0.94 + hash(@intFromFloat(u * 64), @intFromFloat(v * 64), 7) * 0.1);
+    const colour = scale(mix(soil, rgb(0x9a8c7a), stone_here), 0.94 + hash(@intFromFloat(u * tile_size), @intFromFloat(v * tile_size), 7) * 0.1);
     const dome = @max(0, 1 - c.d1 / 0.32);
     return tx(colour, body * 1.5 + stone_here * 2 * @sqrt(dome));
 }
@@ -569,7 +578,7 @@ fn volcanic(u: f32, v: f32, s: u32) Texel {
     const some = hash(@intCast(pit.id), 6, s) < 0.35;
     const r = 0.06 + 0.14 * hash(@intCast(pit.id), 5, s);
     const in_pit = if (some) smoothstep(r, r * 0.5, pit.d1) else 0;
-    const speck = hash(@intFromFloat(u * 64), @intFromFloat(v * 64), s) - 0.5;
+    const speck = hash(@intFromFloat(u * tile_size), @intFromFloat(v * tile_size), s) - 0.5;
     return tx(scale(base, (0.85 + speck * 0.12) * (1 - in_pit * 0.45)), body * 2.5 + speck * 0.4 - in_pit * 1.5);
 }
 
@@ -729,8 +738,11 @@ fn normals(t: Tile, out: *[tile_size * tile_size][3]f32, cols: *[tile_size * til
     for (0..tile_size) |yu| for (0..tile_size) |xu| {
         const x: i32 = @intCast(xu);
         const y: i32 = @intCast(yu);
-        const dx = (h(cols, x + 1, y) - h(cols, x - 1, y)) / 2;
-        const dy = (h(cols, x, y + 1) - h(cols, x, y - 1)) / 2;
+        // Across one of `design`'s pixels each way (heights are in its
+        // pixels): as steep as at that size, edges and all.
+        const k: i32 = @intFromFloat(fine);
+        const dx = (h(cols, x + k, y) - h(cols, x - k, y)) / 2;
+        const dy = (h(cols, x, y + k) - h(cols, x, y - k)) / 2;
         const l = @sqrt(dx * dx + dy * dy + 1);
         out[yu * tile_size + xu] = .{ -dx / l, -dy / l, 1 / l };
     };
@@ -784,7 +796,7 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
             // A trunk, and fronds out from its top.
             tilePixels(.palm_bark, &px[0]);
             for (12..icon_size) |y| for (20..28) |x| {
-                out[y * icon_size + x] = px[0][(y * tile_size / icon_size) * tile_size + (x - 20) * 8];
+                out[y * icon_size + x] = px[0][(y * tile_size / icon_size) * tile_size + (x - 20) * tile_size / 8];
             };
             tilePixels(.frond, &px[1]);
             fan(out, &px[1], .{ 24, 12 }, &.{ 2.8, 3.6, -1.57, -0.45, 0.35 }, 22, 7);
@@ -793,7 +805,7 @@ pub fn icon(b: Block, out: *[icon_size * icon_size]Pixel) void {
         .banana => {
             tilePixels(.bamboo, &px[1]);
             for (20..icon_size) |y| for (21..27) |x| {
-                out[y * icon_size + x] = px[1][(y * tile_size / icon_size) * tile_size + (x - 21) * 10] | 0xff000000;
+                out[y * icon_size + x] = px[1][(y * tile_size / icon_size) * tile_size + (x - 21) * tile_size * 10 / 64] | 0xff000000;
             };
             tilePixels(.leafy_plant, &px[0]);
             fan(out, &px[0], .{ 24, 20 }, &.{ 2.9, 3.6, -1.4, -0.6, 0.25 }, 24, 7);
@@ -1081,7 +1093,7 @@ test "every tile is in its strip, opaque except where things are see-through, an
         const b = px[y * strip_width + tile_size - 1];
         diff += @as(i32, @intCast(a >> 8 & 0xff)) - @as(i32, @intCast(b >> 8 & 0xff));
     }
-    try std.testing.expect(@abs(diff) < 64 * 12);
+    try std.testing.expect(@abs(diff) < tile_size * 12);
 }
 
 test "icons show the cube's three faces, or the plant" {
@@ -1094,3 +1106,4 @@ test "icons show the cube's three faces, or the plant" {
     icon(.pink_flower, &px);
     try std.testing.expectEqual(@as(Pixel, 0), px[0]);
 }
+

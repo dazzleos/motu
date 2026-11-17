@@ -529,7 +529,9 @@ fn run(init: std.process.Init) !void {
     game.quality = kept;
     game.look = opts.look;
     game.setPlayerName(opts.name());
+    const textures_started = sys.nowNs();
     const renderer = try Renderer.init(gpa, host.dev);
+    print("motu: made the textures in {d} ms\n", .{(sys.nowNs() - textures_started) / std.time.ns_per_ms});
     var trouble: Trouble = .{};
     {
         // The chunks around the player now; the rest a few a frame, from

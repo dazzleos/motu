@@ -603,13 +603,17 @@ fn canoePart(o: Out, origin: V, ax: bool, before_n: i32, len_n: i32) !void {
             try h.quad(.{ h.pt(a0, p00), h.pt(a0, p01), h.pt(a1, p11), h.pt(a1, p10) }, .{ .{ a0, v(s0, p00) }, .{ a0, v(s0, p01) }, .{ a1, v(s1, p11) }, .{ a1, v(s1, p10) } }, h.dir(0, @sin(th), @cos(th)));
         }
         const up_dir = h.dir(0, 1, 0);
-        const deck_v: [4][2]f32 = .{ .{ a0, 0.45 }, .{ a0, 0.45 }, .{ a1, 0.45 }, .{ a1, 0.45 } };
-        const floor_v: [4][2]f32 = .{ .{ a0, 0.6 }, .{ a0, 0.6 }, .{ a1, 0.6 }, .{ a1, 0.6 } };
+        // Across the tile as far as across the canoe (a tile a block), so
+        // the wood is as fine as anywhere: the floor from the tile's
+        // middle, the rims and deck from above it.
+        const floor_v: [4][2]f32 = .{ .{ a0, 0.6 - s0.wi }, .{ a0, 0.6 + s0.wi }, .{ a1, 0.6 + s1.wi }, .{ a1, 0.6 - s1.wi } };
+        const deck_v: [4][2]f32 = .{ .{ a0, 0.45 - s0.w }, .{ a0, 0.45 + s0.w }, .{ a1, 0.45 + s1.w }, .{ a1, 0.45 - s1.w } };
         if (s0.hollow() and s1.hollow()) {
             // The rims, the sides inside, the floor.
             for ([2]f32{ -1, 1 }) |side| {
-                try h.quad(.{ h.pt(a0, .{ side * s0.w, s0.rim }), h.pt(a0, .{ side * s0.wi, s0.rim }), h.pt(a1, .{ side * s1.wi, s1.rim }), h.pt(a1, .{ side * s1.w, s1.rim }) }, deck_v, up_dir);
-                try h.quad(.{ h.pt(a0, .{ side * s0.wi, s0.rim }), h.pt(a0, .{ side * s0.wi, s0.rim - s0.di }), h.pt(a1, .{ side * s1.wi, s1.rim - s1.di }), h.pt(a1, .{ side * s1.wi, s1.rim }) }, .{ .{ a0, 0.25 }, .{ a0, 0.6 }, .{ a1, 0.6 }, .{ a1, 0.25 } }, h.dir(0, 0, -side));
+                const rim_v: [4][2]f32 = .{ .{ a0, 0.45 + side * s0.w }, .{ a0, 0.45 + side * s0.wi }, .{ a1, 0.45 + side * s1.wi }, .{ a1, 0.45 + side * s1.w } };
+                try h.quad(.{ h.pt(a0, .{ side * s0.w, s0.rim }), h.pt(a0, .{ side * s0.wi, s0.rim }), h.pt(a1, .{ side * s1.wi, s1.rim }), h.pt(a1, .{ side * s1.w, s1.rim }) }, rim_v, up_dir);
+                try h.quad(.{ h.pt(a0, .{ side * s0.wi, s0.rim }), h.pt(a0, .{ side * s0.wi, s0.rim - s0.di }), h.pt(a1, .{ side * s1.wi, s1.rim - s1.di }), h.pt(a1, .{ side * s1.wi, s1.rim }) }, .{ .{ a0, 0.25 }, .{ a0, 0.25 + s0.di }, .{ a1, 0.25 + s1.di }, .{ a1, 0.25 } }, h.dir(0, 0, -side));
             }
             try h.quad(.{ h.pt(a0, .{ -s0.wi, s0.rim - s0.di }), h.pt(a0, .{ s0.wi, s0.rim - s0.di }), h.pt(a1, .{ s1.wi, s1.rim - s1.di }), h.pt(a1, .{ -s1.wi, s1.rim - s1.di }) }, floor_v, up_dir);
         } else {

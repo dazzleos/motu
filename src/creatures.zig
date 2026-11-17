@@ -1118,9 +1118,20 @@ const Builder = struct {
     fn quad(b: *Builder, corners: [4]V3, normal: V3, tile: Tile, ao: u2, light: u8) void {
         if (b.at + 4 > b.out.len) return;
         const face = closestFace(normal);
-        const t0 = mesher.stripT(tile, 0.15);
-        const t1 = mesher.stripT(tile, 0.85);
-        const uvs = [4][2]f32{ .{ 0.15, t0 }, .{ 0.85, t0 }, .{ 0.85, t1 }, .{ 0.15, t1 } };
+        // A tile a block, as everywhere (so a seaplane's wing is as fine
+        // as a fish's fin): across it as far as the quad is long (it
+        // repeats across), down it as far as the quad is wide (to the
+        // whole tile), the longer way across.
+        const e1 = math.length(corners[1] - corners[0]);
+        const e2 = math.length(corners[3] - corners[0]);
+        const along = @max(e1, e2);
+        const down = @min(@min(e1, e2), 0.98);
+        const t0 = mesher.stripT(tile, 0.5 - down / 2);
+        const t1 = mesher.stripT(tile, 0.5 + down / 2);
+        const uvs: [4][2]f32 = if (e1 >= e2)
+            .{ .{ 0, t0 }, .{ along, t0 }, .{ along, t1 }, .{ 0, t1 } }
+        else
+            .{ .{ 0, t0 }, .{ 0, t1 }, .{ along, t1 }, .{ along, t0 } };
         const info = (mesher.Info{
             .tile = @intFromEnum(tile),
             .ao = ao,

@@ -45,7 +45,8 @@ const Mat4 = math.Mat4;
 pub const max_quads = 16384;
 
 /// Mipmap levels after the first: down to a pixel a tile (64 to 1).
-const mip_levels = 6;
+/// Down to 2 by 2 pixels a tile.
+const mip_levels = std.math.log2_int(u32, textures.tile_size);
 
 /// How the strips are sampled: smoothly (bilinear) up close; further off,
 /// from the mipmap levels, the nearest texel of the two nearest levels
@@ -936,14 +937,14 @@ fn boxFace(face: blocks.Face, min_v: V3, max_v: V3) [4][3]f32 {
     return out;
 }
 
-/// Where corner `c` of a box's face is on its tile: the whole tile on
-/// each face, across, and down from the face's top (or, on top and below,
-/// its north edge) to its bottom.
+/// Where corner `c` of a box's face is on its tile: a tile a block (as
+/// everywhere), across, and down from the face's top (or, on top and
+/// below, its north edge); a figure's boxes are all under a block.
 fn boxUv(face: blocks.Face, min: V3, max: V3, c: [3]f32, tile: blocks.Tile) [2]f32 {
     return switch (face) {
-        .up, .down => .{ (c[0] - min[0]) / (max[0] - min[0]), mesher.stripT(tile, (c[2] - min[2]) / (max[2] - min[2])) },
-        .east, .west => .{ (c[2] - min[2]) / (max[2] - min[2]), mesher.stripT(tile, (max[1] - c[1]) / (max[1] - min[1])) },
-        .south, .north => .{ (c[0] - min[0]) / (max[0] - min[0]), mesher.stripT(tile, (max[1] - c[1]) / (max[1] - min[1])) },
+        .up, .down => .{ c[0] - min[0], mesher.stripT(tile, c[2] - min[2]) },
+        .east, .west => .{ c[2] - min[2], mesher.stripT(tile, max[1] - c[1]) },
+        .south, .north => .{ c[0] - min[0], mesher.stripT(tile, max[1] - c[1]) },
     };
 }
 
