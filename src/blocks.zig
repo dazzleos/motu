@@ -16,38 +16,38 @@ pub const Block = enum(u8) {
     volcanic_wall,
     sand,
     sandstone,
-    /// Removed: read as sand (see `current`).
+    /// Retired: no longer made, its number kept for those after it.
     gravel,
-    /// Removed: read as sand.
+    /// Retired: no longer made, its number kept for those after it.
     clay,
-    /// Removed: read as volcanic rock.
+    /// Retired: no longer made, its number kept for those after it.
     snow,
     water,
     /// A palm's trunk: a round pole, with fronds and coconuts at its top.
     palm,
-    /// Removed: read as stick wall.
+    /// Retired: no longer made, its number kept for those after it.
     planks,
-    /// Removed: read as green paint.
+    /// Retired: no longer made, its number kept for those after it.
     leaves,
-    /// Removed: read as stick wall.
+    /// Retired: no longer made, its number kept for those after it.
     dark_planks,
-    /// Removed: read as lattice.
+    /// Retired: no longer made, its number kept for those after it.
     glass,
-    /// Removed: read as sandstone.
+    /// Retired: no longer made, its number kept for those after it.
     sandstone_bricks,
-    /// Removed: read as volcanic wall.
+    /// Retired: no longer made, its number kept for those after it.
     volcanic_bricks,
-    /// Removed: read as thatch (the slab: as a roof is).
+    /// Retired: no longer made, its number kept for those after it.
     thatch,
-    /// Removed: read as sandstone.
+    /// Retired: no longer made, its number kept for those after it.
     plaster,
-    /// Removed: read as volcanic wall.
+    /// Retired: no longer made, its number kept for those after it.
     iron,
-    /// Removed: read as yellow paint.
+    /// Retired: no longer made, its number kept for those after it.
     gold,
     /// A bamboo torch, its flame burning: on a stick, raised.
     lamp,
-    /// Removed: read as a table (stacked, they make shelves).
+    /// Retired: no longer made, its number kept for those after it.
     bookshelf,
     white,
     black,
@@ -69,9 +69,9 @@ pub const Block = enum(u8) {
     blue_flower,
     white_flower,
     orange_flower,
-    /// Removed: read as grass, with paving stones on it.
+    /// Retired: no longer made, its number kept for those after it.
     paving,
-    /// Removed: read as sandstone.
+    /// Retired: no longer made, its number kept for those after it.
     coral_stone,
     /// Straight poles side by side, lashed together, for walls.
     sticks,
@@ -126,12 +126,12 @@ pub const Block = enum(u8) {
     /// A cloth slung between posts (or walls, or palms), sagging: hammocks
     /// in a row are one longer one.
     hammock,
-    /// Removed: read as air.
+    /// Retired: no longer made, its number kept for those after it.
     pot,
     /// A dugout canoe with an outrigger: canoes end to end are one longer
     /// one, pointed at its ends.
     canoe,
-    /// Removed: read as a stick.
+    /// Retired: no longer made, its number kept for those after it.
     statue,
     /// Flat round stones on the ground (put on grass, as flowers are), for
     /// paths: they join up with the stones beside them.
@@ -343,28 +343,14 @@ pub const Block = enum(u8) {
 
     /// A block that exists (one of the named ones).
     pub fn isValid(b: Block) bool {
-        return @intFromEnum(b) <= @intFromEnum(Block.stones) and b.current() == b;
+        return @intFromEnum(b) <= @intFromEnum(Block.stones) and !b.retired();
     }
 
-    /// What a block is now: a kind that was removed is read as the one
-    /// most like it.
-    pub fn current(b: Block) Block {
+    /// A kind no longer made (its number kept, for those after it).
+    pub fn retired(b: Block) bool {
         return switch (b) {
-            .iron, .volcanic_bricks => .volcanic_wall,
-            .sandstone_bricks, .coral_stone => .sandstone,
-            .planks, .dark_planks => .sticks,
-            .gold => .yellow,
-            .gravel, .clay => .sand,
-            .snow => .volcanic_rock,
-            .plaster => .sandstone,
-            .leaves => .green,
-            .bookshelf => .table,
-            .glass => .lattice,
-            .thatch => .thatch_slab,
-            .paving => .grass,
-            .pot => .air,
-            .statue => .post,
-            else => b,
+            .iron, .volcanic_bricks, .sandstone_bricks, .coral_stone, .planks, .dark_planks, .gold, .gravel, .clay, .snow, .plaster, .leaves, .bookshelf, .glass, .thatch, .paving, .pot, .statue => true,
+            else => false,
         };
     }
 
@@ -556,13 +542,11 @@ test "every block that can be placed has a name and its own look" {
     try std.testing.expect(Block.table.isSolid() and !Block.table.isOpaque() and Block.lamp.emits() > 0);
     try std.testing.expect(Block.palm.isSolid() and !Block.palm.isOpaque());
     for (Block.flowers) |b| try std.testing.expect(b.isFlower() and b.shape() == .plant);
-    try std.testing.expectEqual(Block.lattice, Block.glass.current());
     try std.testing.expect(!Block.water.isSolid());
     const unknown: Block = @enumFromInt(200);
     try std.testing.expect(!unknown.isValid() and unknown.shape() == .none);
-    // Removed kinds are not placed, and are read as others.
-    try std.testing.expect(!Block.iron.isValid() and !Block.gold.isValid());
-    try std.testing.expect(Block.iron.current().isValid() and Block.gold.current().isValid());
+    // Retired kinds are not.
+    try std.testing.expect(!Block.iron.isValid() and !Block.gold.isValid() and Block.iron.retired());
     // Lava glows; a curtain is walked through; a mat is stepped onto.
     try std.testing.expect(Block.lava.emits() > 0 and Block.lava.isOpaque());
     try std.testing.expect(!Block.curtain.isSolid() and Block.mat.solidHeight() < 0.1);

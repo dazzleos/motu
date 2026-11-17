@@ -71,9 +71,6 @@ pub const World = struct {
     /// those being looked at in this one.
     flow_next: std.ArrayList(u32) = .empty,
     flow_now: std.ArrayList(u32) = .empty,
-    /// How far what was read was moved (a world from before the atoll
-    /// is put in the middle of this one), for what was saved with it.
-    moved_by: [2]i32 = .{ 0, 0 },
 
     pub fn create(gpa: std.mem.Allocator) !*World {
         const w = try gpa.create(World);
@@ -708,9 +705,6 @@ pub const World = struct {
     // --- Saving ------------------------------------------------------------------------
 
     pub const magic = "DZBW";
-    /// 2: palms. Worlds from before (1) are read too: their trees' logs
-    /// are palms' trunks now (the same number), and the leaves round
-    /// their tops are taken away (see `fromTrees`).
     pub const version = 2;
 
     /// The world's blocks, run-length encoded (light is worked out again
@@ -734,119 +728,25 @@ pub const World = struct {
         }
     }
 
-    /// For a world from before palms: its trees' trunks are palms now,
-    /// and the leaves that were their tops are taken away, as palms' own
-    /// fronds are drawn. The leaves taken are those around the top of a
-    /// trunk with leaves on it, as far out as a tree's reached: leaves
-    /// built elsewhere stay.
-    /// Paving was a block of grass, stones on it: now the stones are put
-    /// on the grass (where there is room above it).
-    fn fromPaving(w: *World) void {
-        for (w.blocks, 0..) |b, i| {
-            if (b != .paving) continue;
-            const above = i + size_x * size_z;
-            if (above < w.blocks.len and w.blocks[above] == .air) w.blocks[above] = .stones;
-        }
-    }
-
-    fn fromTrees(w: *World) void {
-        var y: i32 = 0;
-        while (y < size_y - 1) : (y += 1) {
-            var z: i32 = 0;
-            while (z < size_z) : (z += 1) {
-                var x: i32 = 0;
-                while (x < size_x) : (x += 1) {
-                    if (w.blocks[index(x, y, z)] != .palm or w.blocks[index(x, y + 1, z)] != .leaves) continue;
-                    var dy: i32 = -2;
-                    while (dy <= 2) : (dy += 1) {
-                        var dz: i32 = -2;
-                        while (dz <= 2) : (dz += 1) {
-                            var dx: i32 = -2;
-                            while (dx <= 2) : (dx += 1) {
-                                const lx = x + dx;
-                                const ly = y + dy;
-                                const lz = z + dz;
-                                if (inBounds(lx, ly, lz) and w.blocks[index(lx, ly, lz)] == .leaves) w.blocks[index(lx, ly, lz)] = .air;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Where a world from before (128 across) is put in this one.
-    pub const small_offset: [2]i32 = .{ (size_x - 128) / 2, (size_z - 128) / 2 };
-
-    /// A world from before the atoll, 128 across, read into the middle of
-    /// this one, the deep sea round it; returns how many bytes it took.
-    fn decodeSmall(w: *World, data: []const u8) !usize {
-        const from = data[4];
-        w.seed = std.mem.readInt(u32, data[11..15], .little);
-        const small_volume = 128 * size_y * 128;
-        const old = try w.gpa.alloc(Block, small_volume);
-        defer w.gpa.free(old);
-        var at: usize = 15;
-        var i: usize = 0;
-        while (i < old.len) {
-            if (at + 2 > data.len) return error.Truncated;
-            const n = @as(usize, data[at]) + 1;
-            const b: Block = @enumFromInt(data[at + 1]);
-            if (!b.current().isValid() or i + n > old.len) return error.Corrupt;
-            @memset(old[i..][0..n], b);
-            i += n;
-            at += 2;
-        }
-        // The sea, then the old world in its middle.
-        for (0..size_z) |zu| for (0..size_x) |xu| for (0..size_y) |yu| {
-            const y: i32 = @intCast(yu);
-            w.blocks[index(@intCast(xu), y, @intCast(zu))] = if (y < sea_level - 11) .volcanic_rock else if (y < sea_level - 9) .sand else if (y < sea_level) .water else .air;
-        };
-        for (0..128) |zu| for (0..size_y) |yu| {
-            const src = (yu * 128 + zu) * 128;
-            const dst = index(small_offset[0], @intCast(yu), @as(i32, @intCast(zu)) + small_offset[1]);
-            @memcpy(w.blocks[dst..][0..128], old[src..][0..128]);
-        };
-        if (from < 2) w.fromTrees();
-        w.fromPaving();
-        for (w.blocks) |*b| b.* = b.current();
-        w.settle();
-        try w.computeLight();
-        w.dirty = .full;
-        w.moved_by = small_offset;
-        return at;
-    }
-
     /// Reads what `encode` wrote; returns how many bytes it took.
     pub fn decode(w: *World, data: []const u8) !usize {
-        if (data.len < 15 or !std.mem.eql(u8, data[0..4], magic) or data[4] < 1 or data[4] > version) return error.NotAWorld;
-        const from = data[4];
-        w.moved_by = .{ 0, 0 };
+        if (data.len < 15 or !std.mem.eql(u8, data[0..4], magic) or data[4] != version) return error.NotAWorld;
         const sx = std.mem.readInt(u16, data[5..7], .little);
         const sy = std.mem.readInt(u16, data[7..9], .little);
         const sz = std.mem.readInt(u16, data[9..11], .little);
-        // A world from before the atoll (128 across): in the middle of
-        // this one, the deep sea round it.
-        const small = sx == 128 and sy == size_y and sz == 128;
-        if (!small and (sx != size_x or sy != size_y or sz != size_z)) return error.WrongSize;
-        if (small) return w.decodeSmall(data);
+        if (sx != size_x or sy != size_y or sz != size_z) return error.WrongSize;
         w.seed = std.mem.readInt(u32, data[11..15], .little);
         var at: usize = 15;
         var i: usize = 0;
         while (i < w.blocks.len) {
             if (at + 2 > data.len) return error.Truncated;
             const n = @as(usize, data[at]) + 1;
-            // As saved: removed kinds are read as others after (an old
-            // world's trees need its leaves).
             const b: Block = @enumFromInt(data[at + 1]);
-            if (!b.current().isValid() or i + n > w.blocks.len) return error.Corrupt;
+            if (!b.isValid() or i + n > w.blocks.len) return error.Corrupt;
             @memset(w.blocks[i..][0..n], b);
             i += n;
             at += 2;
         }
-        if (from < 2) w.fromTrees();
-        w.fromPaving();
-        for (w.blocks) |*b| b.* = b.current();
         w.settle();
         try w.computeLight();
         w.dirty = .full;
@@ -1073,78 +973,6 @@ test "saving and loading give back the same world" {
     try testing.expectError(error.Truncated, back.decode(out.items[0..100]));
 }
 
-test "a world from before palms: trees' trunks are palms, without their leaves; leaves built stay" {
-    const w = try World.create(testing.allocator);
-    defer w.destroy();
-    // An old tree, as trees were made: a trunk of logs (the number palms
-    // have now) with leaves round its top.
-    const top: i32 = 30;
-    var y: i32 = 25;
-    while (y < top) : (y += 1) w.blocks[World.index(20, y, 20)] = .palm;
-    var dy: i32 = -3;
-    while (dy <= 1) : (dy += 1) {
-        var dz: i32 = -2;
-        while (dz <= 2) : (dz += 1) {
-            var dx: i32 = -2;
-            while (dx <= 2) : (dx += 1) {
-                const i = World.index(20 + dx, top + dy, 20 + dz);
-                if (w.blocks[i] == .air) w.blocks[i] = .leaves;
-            }
-        }
-    }
-    // A hedge.
-    for (0..5) |x| w.blocks[World.index(@intCast(60 + x), 25, 60)] = .leaves;
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(testing.allocator);
-    try w.encode(&out, testing.allocator);
-    out.items[4] = 1;
-    const back = try World.create(testing.allocator);
-    defer back.destroy();
-    _ = try back.decode(out.items);
-    var hedge: usize = 0;
-    var palms: usize = 0;
-    for (back.blocks) |b| {
-        if (b == .green) hedge += 1;
-        if (b == .palm) palms += 1;
-    }
-    // Leaves are gone since: the hedge is green paint.
-    try testing.expectEqual(@as(usize, 5), hedge);
-    try testing.expectEqual(@as(usize, 5), palms);
-    // Read as it is now, no leaves are taken (all are paint).
-    out.items[4] = World.version;
-    _ = try back.decode(out.items);
-    var green: usize = 0;
-    for (back.blocks) |b| {
-        if (b == .green) green += 1;
-    }
-    try testing.expect(green > 5);
-}
-
-test "removed kinds of block are read as the ones most like them" {
-    const w = try World.create(testing.allocator);
-    defer w.destroy();
-    w.blocks[World.index(5, 30, 5)] = .iron;
-    w.blocks[World.index(6, 30, 5)] = .gold;
-    w.blocks[World.index(7, 30, 5)] = .snow;
-    w.blocks[World.index(8, 30, 5)] = .clay;
-    w.blocks[World.index(9, 30, 5)] = .gravel;
-    w.blocks[World.index(10, 30, 5)] = .planks;
-    w.blocks[World.index(11, 30, 5)] = .volcanic_bricks;
-    w.blocks[World.index(12, 30, 5)] = .coral_stone;
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(testing.allocator);
-    try w.encode(&out, testing.allocator);
-    _ = try w.decode(out.items);
-    try testing.expectEqual(Block.volcanic_wall, w.get(5, 30, 5));
-    try testing.expectEqual(Block.yellow, w.get(6, 30, 5));
-    try testing.expectEqual(Block.volcanic_rock, w.get(7, 30, 5));
-    try testing.expectEqual(Block.sand, w.get(8, 30, 5));
-    try testing.expectEqual(Block.sand, w.get(9, 30, 5));
-    try testing.expectEqual(Block.sticks, w.get(10, 30, 5));
-    try testing.expectEqual(Block.volcanic_wall, w.get(11, 30, 5));
-    try testing.expectEqual(Block.sandstone, w.get(12, 30, 5));
-}
-
 test "the island has caves: shelters in the rock, none deep" {
     const w = try World.create(testing.allocator);
     defer w.destroy();
@@ -1171,42 +999,6 @@ test "the island has caves: shelters in the rock, none deep" {
     try testing.expect(rock > 300);
 }
 
-test "a world from before the atoll (128 across) is read into the middle of this one" {
-    // Saved as they were: below 30 rock, a lamp at (10, 30, 20), air.
-    var data: std.ArrayList(u8) = .empty;
-    defer data.deinit(testing.allocator);
-    try data.appendSlice(testing.allocator, World.magic);
-    try data.append(testing.allocator, World.version);
-    var hdr: [10]u8 = undefined;
-    std.mem.writeInt(u16, hdr[0..2], 128, .little);
-    std.mem.writeInt(u16, hdr[2..4], size_y, .little);
-    std.mem.writeInt(u16, hdr[4..6], 128, .little);
-    std.mem.writeInt(u32, hdr[6..10], 5, .little);
-    try data.appendSlice(testing.allocator, &hdr);
-    const old = try testing.allocator.alloc(Block, 128 * size_y * 128);
-    defer testing.allocator.free(old);
-    for (old, 0..) |*b, i| b.* = if (i / (128 * 128) < 30) .volcanic_rock else .air;
-    old[(30 * 128 + 20) * 128 + 10] = .lamp;
-    var i: usize = 0;
-    while (i < old.len) {
-        var n: usize = 1;
-        while (n < 256 and i + n < old.len and old[i + n] == old[i]) n += 1;
-        try data.appendSlice(testing.allocator, &.{ @intCast(n - 1), @intFromEnum(old[i]) });
-        i += n;
-    }
-    const w = try World.create(testing.allocator);
-    defer w.destroy();
-    _ = try w.decode(data.items);
-    const o = World.small_offset;
-    try testing.expectEqual(o, w.moved_by);
-    try testing.expectEqual(Block.lamp, w.get(o[0] + 10, 30, o[1] + 20));
-    try testing.expectEqual(Block.volcanic_rock, w.get(o[0] + 10, 29, o[1] + 20));
-    // Round it, the sea.
-    try testing.expectEqual(Block.water, w.get(2, sea_level - 1, 2));
-    try testing.expectEqual(Block.air, w.get(2, sea_level, 2));
-}
-
-/// A world of rock, a little above the sea's level, the sea at x < 10.
 fn shoreWorld() !*World {
     const w = try World.create(testing.allocator);
     for (0..size_z) |zu| for (0..size_x) |xu| for (0..sea_level + 3) |yu| {
@@ -1291,21 +1083,3 @@ test "water: a world saved while it flowed is flooded when read" {
     try testing.expectEqual(Block.water, r.get(19, sea_level - 1, 50));
 }
 
-test "paving from before: grass, with the stones on it" {
-    // As saved before: paving blocks (one with something on it).
-    const r = try World.create(testing.allocator);
-    defer r.destroy();
-    r.blocks[World.index(5, 30, 5)] = .paving;
-    r.blocks[World.index(6, 30, 5)] = .paving;
-    r.blocks[World.index(6, 31, 5)] = .lamp;
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(testing.allocator);
-    try r.encode(&out, testing.allocator);
-    const w = try World.create(testing.allocator);
-    defer w.destroy();
-    _ = try w.decode(out.items);
-    try testing.expectEqual(Block.grass, w.get(5, 30, 5));
-    try testing.expectEqual(Block.stones, w.get(5, 31, 5));
-    try testing.expectEqual(Block.grass, w.get(6, 30, 5));
-    try testing.expectEqual(Block.lamp, w.get(6, 31, 5));
-}

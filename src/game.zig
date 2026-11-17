@@ -771,14 +771,10 @@ pub const Game = struct {
         var f: [6]f32 = undefined;
         for (&f, 0..) |*v, i| v.* = @bitCast(std.mem.readInt(u32, rest[5 + i * 4 ..][0..4], .little));
         for (f) |v| if (!std.math.isFinite(v)) return error.Corrupt;
-        // Moved with the world, if it was (see World.decode).
-        const moved = g.world.moved_by;
-        f[0] += @floatFromInt(moved[0]);
-        f[2] += @floatFromInt(moved[1]);
         g.player = .{ .pos = .{ f[0], f[1], f[2] }, .yaw = f[3], .pitch = std.math.clamp(f[4], -1.55, 1.55), .flying = rest[29] != 0 };
         g.time_of_day = @mod(f[5], 1);
         for (&g.hotbar, rest[30..39]) |*h, b| {
-            const blk = (@as(Block, @enumFromInt(b))).current();
+            const blk: Block = @enumFromInt(b);
             h.* = if (blk.isValid() and blk != .air) blk else .volcanic_rock;
         }
         g.slot = rest[39] % 9;
@@ -790,7 +786,7 @@ pub const Game = struct {
                 v.* = @bitCast(std.mem.readInt(u32, rest[45 + i * 4 ..][0..4], .little));
                 if (!std.math.isFinite(v.*)) return error.Corrupt;
             }
-            var b: boat_mod.Boat = .{ .pos = .{ bf[0] + @as(f32, @floatFromInt(moved[0])), bf[1], bf[2] + @as(f32, @floatFromInt(moved[1])) }, .yaw = bf[3], .len = rest[44] };
+            var b: boat_mod.Boat = .{ .pos = .{ bf[0], bf[1], bf[2] }, .yaw = bf[3], .len = rest[44] };
             b.sink = if (b.onWater(g.world)) furniture.float_depth else 0;
             g.boat = b;
             g.player.pos = b.seat();

@@ -33,46 +33,9 @@ const boat_mod = @import("boat.zig");
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(vc4.Device);
 
-/// Where the islands are kept, and how their files end (as they did when
-/// Motu was Blocks, to be renamed).
+/// Where the islands are kept, and how their files end.
 const islands_dir = sys.system.user_dir;
 const island_ext = ".motu";
-const old_island_ext = ".blocks";
-
-/// Islands and options kept by Blocks (as Motu was) renamed as Motu's.
-fn renameOldFiles() void {
-    _ = linux.rename(options.old_file, options.file);
-    var buf: [4096]u8 align(8) = undefined;
-    // Renaming while reading can skip some: until none are left.
-    for (0..4) |_| {
-        var renamed = false;
-        const dir = sys.open(islands_dir, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }) catch return;
-        defer sys.close(dir);
-        while (true) {
-            const len = sys.check(linux.getdents64(dir, &buf, buf.len)) catch break;
-            if (len == 0) break;
-            var at: usize = 0;
-            while (at < len) {
-                const reclen = std.mem.readInt(u16, buf[at + 16 ..][0..2], .little);
-                const file = std.mem.sliceTo(buf[at + 19 .. at + reclen], 0);
-                at += reclen;
-                if (!std.mem.endsWith(u8, file, old_island_ext) or file.len == old_island_ext.len) continue;
-                const n = file[0 .. file.len - old_island_ext.len];
-                var from_buf: [256]u8 = undefined;
-                var to_buf: [256]u8 = undefined;
-                const from = std.fmt.bufPrintSentinel(&from_buf, "{s}/{s}", .{ islands_dir, file }, 0) catch continue;
-                const to = pathOf(n, &to_buf);
-                // Not over one Motu has already.
-                if (linux.errno(linux.access(to, linux.F_OK)) == .SUCCESS) continue;
-                if (linux.errno(linux.rename(from, to)) == .SUCCESS) {
-                    print("motu: {s} is now {s}\n", .{ from, to });
-                    renamed = true;
-                }
-            }
-        }
-        if (!renamed) break;
-    }
-}
 
 /// The island played now: its name (its file's, less the ending).
 const Current = struct {
@@ -191,7 +154,6 @@ const save_every = 60;
 
 pub fn main(init: std.process.Init) u8 {
     sys.logToKmsgIfStderr();
-    renameOldFiles();
     run(init) catch |err| {
         print(sys.log_error ++ "motu: error: {s}\n", .{@errorName(err)});
         return 1;

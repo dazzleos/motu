@@ -8,8 +8,6 @@ const linux = std.os.linux;
 const sys = @import("sys");
 
 pub const file = sys.system.user_dir ++ "/.motu-options";
-/// Where they were kept when Motu was Blocks (renamed to `file`).
-pub const old_file = sys.system.user_dir ++ "/.blocks-options";
 
 /// The least quality: the window drawn half as big across and down.
 pub const min_quality: f32 = 0.5;
