@@ -68,7 +68,11 @@ const turn_speed: f32 = 2.2;
 /// The telescope (T): the view this much narrower (magnified), turning as
 /// much slower, and seeing this much further, the fog further out: as far
 /// as it can at the same frame rate, its view drawing less of the world
-/// at each distance (measured on a Raspberry Pi 3 A+).
+/// at each distance. Its view is about a fifth as wide as the usual one's
+/// (20° to 102° across, at 16:9), so the same ground is √5 ≈ 2.2 times as
+/// far, and only the square its circle is in is drawn. On a Raspberry Pi
+/// 3 A+ at 1920x1080, it drew as many triangles (114,000 to 110,000 to
+/// 120,000) at the same frame rate (33 to 34 fps) seeing 2.3 times as far.
 pub const telescope_zoom: f32 = 4;
 pub const telescope_reach: f32 = 2.3;
 /// Pixels a press can move and still be a click.

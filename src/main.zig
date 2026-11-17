@@ -720,7 +720,7 @@ fn run(init: std.process.Init) !void {
         if (now - log_since >= 10 * std.time.ns_per_s) {
             const s = renderer.stats;
             print("motu: {d:.1} fps; {d} chunks, {d} draws, {d} triangles\n", .{ fps, s.chunks, s.draws, s.triangles });
-            timing.report(host.dev.fd, now - log_since, game.quality, scene.reach.k);
+            timing.report(host.dev.fd, now - log_since, game.quality, scene.reach.k * game.seeing());
             timing = .{ .gpu = timing.gpu, .waited_ns = app.window.gpu_waited_ns };
             log_since = now;
         }
