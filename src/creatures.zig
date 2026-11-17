@@ -736,23 +736,31 @@ const plane_y: f32 = world_mod.sea_level + 24;
 /// How far it flies, from out at sea to out at sea.
 const plane_path: f32 = 720;
 
-/// Where the seaplane is on day `day`, `secs` seconds into it (it flies
-/// past once a day, at a time between morning and afternoon, along one
-/// side of the island, over the beaches and shallows), or null.
+/// Where the seaplane is on day `day`, `secs` seconds into it, or null.
+/// It flies between two places beyond the horizon, one each side of the
+/// island, along the same line every day (over one side of the atoll's
+/// ring: its beaches and shallows): there in the morning, back in the
+/// afternoon, at times that change from day to day.
 pub fn planeAt(seed: u32, day: u32, secs: f32) ?Plane {
     const s = seed ^ 0x5ea91a4e;
     const d: i32 = @intCast(day % 1000000);
     const length_secs = plane_path / plane_speed;
-    // From 0.32 to 0.62 of a 600 second day.
-    const start = 192 + world_mod.hash(s, d, 1) * 180;
-    const along = (secs - start) * plane_speed - plane_path / 2;
+    // There between 0.2 and 0.35 of a 600 second day; back between 0.6
+    // and 0.75.
+    const there = 120 + world_mod.hash(s, d, 1) * 90;
+    const back = 360 + world_mod.hash(s, d, 5) * 90;
+    const returning = secs >= back;
+    const start = if (returning) back else there;
     if (secs < start or secs > start + length_secs) return null;
-    const heading = world_mod.hash(s, d, 2) * 2 * std.math.pi;
-    const dir = V3{ @sin(heading), 0, -@cos(heading) };
-    const side = V3{ @cos(heading), 0, @sin(heading) };
-    // Past the atoll's middle, off to one side: over its ring.
-    const offset = (world_mod.atoll_radius - 12 + world_mod.hash(s, d, 3) * 24) * (if (world_mod.hash(s, d, 4) < 0.5) @as(f32, -1) else 1);
+    const along = (secs - start) * plane_speed - plane_path / 2;
+    // The island's route: which way it lies, and how far to one side of
+    // the middle.
+    const route = world_mod.hash(s, 0, 2) * 2 * std.math.pi;
+    const offset = (world_mod.atoll_radius - 12 + world_mod.hash(s, 0, 3) * 24) * (if (world_mod.hash(s, 0, 4) < 0.5) @as(f32, -1) else 1);
+    const side = V3{ @cos(route), 0, @sin(route) };
     const centre = V3{ world_mod.size_x / 2, plane_y, world_mod.size_z / 2 } + side * math.splat(offset);
+    const heading = if (returning) route + std.math.pi else route;
+    const dir = V3{ @sin(heading), 0, -@cos(heading) };
     return .{
         .pos = centre + dir * math.splat(along) + V3{ 0, @sin(secs * 0.3) * 0.8, 0 },
         .yaw = heading,
@@ -1460,17 +1468,40 @@ test "creature meshes: every quad uses strip 2 and is wound counter-clockwise fa
     }
 }
 
-test "the seaplane flies past once a day, for a while, high over the sea by the island" {
+test "the seaplane flies there and back each day, along the same line, high over the sea by the island" {
+    var line_point: ?V3 = null;
+    var route_yaw: ?f32 = null;
     for (0..20) |day| {
+        var flights: u32 = 0;
         var seen: u32 = 0;
+        var last_yaw: ?f32 = null;
         var secs: f32 = 0;
         while (secs < 600) : (secs += 0.5) {
             const p = planeAt(7, @intCast(day), secs) orelse continue;
             seen += 1;
             try testing.expect(p.pos[1] > world_mod.sea_level + 20 and p.pos[1] < world_mod.size_y);
+            // A new flight: the other way from the last.
+            if (last_yaw == null or @abs(angleDiff(p.yaw, last_yaw.?)) > 1) {
+                if (last_yaw) |y| try testing.expectApproxEqAbs(@as(f32, std.math.pi), @abs(angleDiff(p.yaw, y)), 0.001);
+                flights += 1;
+            }
+            last_yaw = p.yaw;
+            // Every flight on one line: across it from a point on it,
+            // nothing (but its bob up and down).
+            const dir = V3{ @sin(p.yaw), 0, -@cos(p.yaw) };
+            if (line_point) |q| {
+                const off = V3{ p.pos[0] - q[0], 0, p.pos[2] - q[2] };
+                const across = off - dir * math.splat(math.dot(off, dir));
+                try testing.expect(@sqrt(math.dot(across, across)) < 0.01);
+                try testing.expect(@abs(angleDiff(p.yaw, route_yaw.?)) < 0.001 or @abs(@abs(angleDiff(p.yaw, route_yaw.?)) - std.math.pi) < 0.001);
+            } else {
+                line_point = p.pos;
+                route_yaw = p.yaw;
+            }
         }
-        // Half a minute or so, once.
-        try testing.expect(seen > 40 and seen < 80);
+        // There and back: half a minute or so each.
+        try testing.expectEqual(@as(u32, 2), flights);
+        try testing.expect(seen > 80 and seen < 160);
         // Near the island at the middle of its flight.
         var nearest: f32 = 999;
         secs = 0;
