@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Motu
+Comment=Build islands out of blocks
+Exec=motu
+Icon=${SNAP}/meta/gui/motu.png
+Categories=Game;
+StartupNotify=true

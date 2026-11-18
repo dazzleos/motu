@@ -1,0 +1,108 @@
+name: motu
+title: Motu
+base: core24
+# The version is the date of the commit built (2026.11.19)
+adopt-info: motu
+summary: Build islands out of blocks
+description: |
+  Build on a tropical atoll of blocks. Shape the islands, build huts,
+  paddle a canoe across the lagoon, and look out to sea with a telescope.
+  The sun rises and sets, the weather turns, birds fly over and fish swim
+  in the shallows.
+
+  Friends on the same network can come and play on your island.
+license: MIT
+website: https://github.com/dazzleos/motu
+source-code: https://github.com/dazzleos/motu
+issues: https://github.com/dazzleos/motu/issues
+contact: https://github.com/dazzleos/motu/issues
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+# Vulkan's drivers come from the mesa-2404 snap
+plugs:
+  gpu-2404:
+    interface: content
+    target: $SNAP/gpu-2404
+    default-provider: mesa-2404
+
+layout:
+  /usr/share/libdrm:
+    bind: $SNAP/gpu-2404/libdrm
+  /usr/share/drirc.d:
+    symlink: $SNAP/gpu-2404/drirc.d
+
+apps:
+  motu:
+    command: usr/bin/motu
+    command-chain:
+      - bin/desktop-sockets
+      - bin/gpu-2404-wrapper
+    desktop: meta/gui/motu.desktop
+    environment:
+      LD_LIBRARY_PATH: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+    plugs:
+      - wayland
+      - opengl
+      # Playing together: finding games on the network, and hosting them
+      - network
+      - network-bind
+
+parts:
+  motu:
+    plugin: nil
+    # The committed tree, not the folder: build caches there run to gigabytes
+    source: .
+    source-type: git
+    override-pull: |
+      craftctl default
+      craftctl set version="$(git log -1 --format=%cs | awk -F- '{ printf "%d.%d.%d", $1, $2, $3 }')"
+    # Zig from the Zig snap: ziglang.org downloads take minutes
+    build-snaps:
+      - zig/latest/beta
+    build-packages:
+      - ca-certificates
+      - curl
+      - git
+      - tar
+    # Vulkan's loader (Motu and kete open it with dlopen)
+    stage-packages:
+      - libvulkan1
+    # Build for a CPU every machine of the architecture has, not the build
+    # machine's own (Zig's default)
+    override-build: |
+      case "$CRAFT_ARCH_BUILD_FOR" in
+        amd64) cpu=x86_64_v2 ;;
+        *) cpu=baseline ;;
+      esac
+      # Zig can't fetch dependencies here: it fails on the container's scoped
+      # IPv6 nameserver in resolv.conf
+      # (https://codeberg.org/ziglang/zig/issues/36186). So download the
+      # commits build.zig.zon names (Dazzle's, and the kete Dazzle's names)
+      # with curl and build against those.
+      fetch() {
+        rm -rf "$2"
+        mkdir "$2"
+        curl -fsSL "https://github.com/$(sed -n "s|.*\"git+https://github.com/\(.*/$3\)#\([0-9a-f]*\)\".*|\1/archive/\2.tar.gz|p" "$1")" | tar -xz -C "$2" --strip-components=1
+      }
+      fetch build.zig.zon dazzle-src dazzle
+      fetch dazzle-src/build.zig.zon kete-src kete
+      zig build -Dplatform=linux -Dcpu=$cpu --fork="$PWD/dazzle-src" --fork="$PWD/kete-src" --prefix "$CRAFT_PART_INSTALL/usr"
+
+  gpu-2404:
+    after: [motu]
+    source: https://github.com/canonical/gpu-snap.git
+    plugin: dump
+    override-prime: |
+      craftctl default
+      ${CRAFT_PART_SRC}/bin/gpu-2404-cleanup mesa-2404
+    prime:
+      - bin/gpu-2404-wrapper
+
+  desktop-sockets:
+    plugin: dump
+    source: snap/local
