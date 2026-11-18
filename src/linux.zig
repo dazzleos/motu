@@ -4,7 +4,7 @@
 //! playing together on the network.
 //!
 //! The world is drawn with Vulkan (see vulkan.zig), on the GPU kete draws
-//! the window with, straight into its frames.
+//! the window with, straight into its frames (nothing copied).
 
 const std = @import("std");
 const sys = @import("sys");
@@ -85,9 +85,9 @@ const Scene = struct {
         const box = area.viewport;
         if (box.width == 0 or box.height == 0) return;
         _ = s.reach.frame(sys.nowNs(), 0);
-        // Into an image as big as the view (at 0, 0 in it), copied in.
+        // Straight into the window's frame, where the view is (the
+        // renderer's viewport and scissor are within the view: at 0, 0).
         const vp: gpu.Viewport = .{ .x = 0, .y = 0, .width = box.width, .height = box.height };
-        const at: [2]i32 = .{ box.x, box.y };
         const scissor: ?gpu.Viewport = if (area.scissor) |sc| .{ .x = sc.x - box.x, .y = sc.y - box.y, .width = sc.width, .height = sc.height } else null;
         var boats: main.Boats = .{};
         const v: renderer_mod.View = .{
@@ -104,13 +104,13 @@ const Scene = struct {
             .boats = boats.items(g),
             .reach = s.reach.k * g.seeing(),
         };
-        try dev.begin(frame, vp.width, vp.height);
+        // Cleared within what may be drawn on (outside the telescope's
+        // square, black).
+        const within = area.scissor orelse box;
+        try dev.begin(frame, .{ .x = box.x, .y = box.y, .width = box.width, .height = box.height }, .{ .x = within.x, .y = within.y, .width = within.width, .height = within.height });
+        defer dev.end();
         const cut = if (g.telescope) main.lens(vp, scissor) else scissor;
         r.draw(renderer_mod.FrameSink{ .frame = dev }, vp, cut, v) catch |err| s.trouble.note("drawing the world", err);
-        // The view copied in (within what may be drawn on); outside the
-        // telescope's square, black.
-        const within = area.scissor orelse box;
-        dev.end(frame, at, .{ .x = within.x, .y = within.y, .width = within.width, .height = within.height });
     }
 };
 

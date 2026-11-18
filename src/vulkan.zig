@@ -5,9 +5,9 @@
 //! the CPU to fill, named by a number in draws; pipelines made from a
 //! shader (its SPIR-V, the same as Dazzle's compiler is given) and a
 //! vertex layout; draws, each with its uniforms, up to three textures, and
-//! a viewport and scissor. A frame's draws go into an image of Motu's own
-//! (with a depth buffer), which is then copied into the window's frame
-//! where the world is (as kete's VulkanArea does).
+//! a viewport and scissor. A frame's draws go straight into the window's
+//! frame (kete's image, which the compositor is given), where the world's
+//! view is, with a depth buffer of Motu's own: nothing is copied.
 //!
 //! The shaders are Dazzle's: OpenGL's depth (from -1 to 1), which the
 //! projection is moved into Vulkan's (0 to 1) for (`clip`), and drawn the
@@ -57,8 +57,7 @@ pub const Shader = struct {
     blend: bool,
 };
 
-/// Where the world is drawn before it is copied into the window's frame:
-/// as the window's frames are (kete's), and its depth.
+/// The window's frames (as kete makes them), and the depth Motu adds.
 const color_format = vk.VK_FORMAT_B8G8R8A8_UNORM;
 const depth_format = vk.VK_FORMAT_D32_SFLOAT;
 
@@ -115,7 +114,6 @@ const Procs = struct {
     CmdDraw: *const fn (vk.VkCommandBuffer, u32, u32, u32, u32) callconv(.c) void,
     CmdDrawIndexed: *const fn (vk.VkCommandBuffer, u32, u32, u32, i32, u32) callconv(.c) void,
     CmdPipelineBarrier: *const fn (vk.VkCommandBuffer, vk.VkFlags, vk.VkFlags, vk.VkFlags, u32, ?*const anyopaque, u32, ?*const anyopaque, u32, [*]const vk.VkImageMemoryBarrier) callconv(.c) void,
-    CmdCopyImage: *const fn (vk.VkCommandBuffer, vk.VkImage, u32, vk.VkImage, u32, u32, [*]const vk.VkImageCopy) callconv(.c) void,
     CmdCopyBufferToImage: *const fn (vk.VkCommandBuffer, vk.VkBuffer, vk.VkImage, u32, u32, [*]const vk.VkBufferImageCopy) callconv(.c) void,
 };
 
@@ -142,6 +140,7 @@ const Dead = struct {
         buffer: BufferRec,
         texture: TextureRec,
         target: Target,
+        window: Window,
     },
 };
 
@@ -155,13 +154,17 @@ const Upload = struct {
     levels: u32,
 };
 
-/// Where a frame is drawn: an image as big as the world's view, and its
-/// depth.
+/// The depth the world is drawn with, as big as the window's frames.
 const Target = struct {
     width: u32 = 0,
     height: u32 = 0,
-    color: TextureRec = .{},
     depth: TextureRec = .{},
+};
+
+/// A frame of the window's, as it is drawn into: its image (kete's), and
+/// the depth with it. Made for each frame (kete's images come and go).
+const Window = struct {
+    view: vk.VkImageView = vk.VK_NULL_HANDLE,
     framebuffer: vk.VkFramebuffer = vk.VK_NULL_HANDLE,
 };
 
@@ -193,13 +196,17 @@ pub const State = struct {
     ring_map: []u8 = &.{},
     ring_at: u32 = 0,
     target: Target = .{},
+    /// The frame being drawn: where the world's view is in its image, and
+    /// the part of it that may be drawn on.
+    offset: [2]i32 = .{ 0, 0 },
+    area: Viewport = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+    window: Window = .{},
     /// Frames drawn.
     frame_no: u64 = 0,
     /// The texture a draw with none samples (a white pixel).
     blank: Texture = .{ .id = 0 },
     /// The frame being drawn, while it is.
     cmd: ?vk.VkCommandBuffer = null,
-    pass_open: bool = false,
 
     /// On the device kete's window renderer uses.
     pub fn init(gpa: std.mem.Allocator, shared: kv.SharedDevice) !Device {
@@ -233,6 +240,7 @@ pub const State = struct {
         for (s.textures.items) |t| s.destroyTextureRec(t);
         s.textures.deinit(s.gpa);
         s.destroyTarget(s.target);
+        s.destroyWindow(s.window);
         s.destroyBufferRec(s.ring);
         s.sets.deinit(s.gpa);
         s.f.DestroyDescriptorPool(s.device, s.pool, null);
@@ -273,21 +281,33 @@ pub const State = struct {
         try check(s.f.CreateDescriptorPool(s.device, &.{ .maxSets = 64, .poolSizeCount = sizes.len, .pPoolSizes = &sizes }, null, &s.pool));
 
         const attachments = [_]vk.VkAttachmentDescription{
-            .{ .format = color_format, .samples = vk.VK_SAMPLE_COUNT_1_BIT, .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE, .finalLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL },
+            // The window's image (shared with the compositor: in GENERAL
+            // layout), cleared where the world is.
+            .{ .format = color_format, .samples = vk.VK_SAMPLE_COUNT_1_BIT, .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE, .initialLayout = vk.VK_IMAGE_LAYOUT_GENERAL, .finalLayout = vk.VK_IMAGE_LAYOUT_GENERAL },
             .{ .format = depth_format, .samples = vk.VK_SAMPLE_COUNT_1_BIT, .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE, .finalLayout = vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL },
         };
-        const color_ref = [_]vk.VkAttachmentReference{.{ .attachment = 0, .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }};
+        const color_ref = [_]vk.VkAttachmentReference{.{ .attachment = 0, .layout = vk.VK_IMAGE_LAYOUT_GENERAL }};
         const depth_ref: vk.VkAttachmentReference = .{ .attachment = 1, .layout = vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
         const subpass = [_]vk.VkSubpassDescription{.{ .pColorAttachments = &color_ref, .pDepthStencilAttachment = &depth_ref }};
-        // After the last frame's copy out of the image, and its depth.
-        const deps = [_]vk.VkSubpassDependency{.{
+        // After what kete drew under it (and the last frame's depth), and
+        // before what it draws over it.
+        const color_rw = vk.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        const depth_rw = vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        const deps = [_]vk.VkSubpassDependency{ .{
             .srcSubpass = vk.VK_SUBPASS_EXTERNAL,
             .dstSubpass = 0,
-            .srcStageMask = vk.VK_PIPELINE_STAGE_TRANSFER_BIT | vk.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | vk.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
             .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            .srcAccessMask = vk.VK_ACCESS_TRANSFER_READ_BIT | vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-        }};
+            .srcAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = color_rw | depth_rw,
+        }, .{
+            .srcSubpass = 0,
+            .dstSubpass = vk.VK_SUBPASS_EXTERNAL,
+            .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = color_rw,
+        } };
         try check(s.f.CreateRenderPass(s.device, &.{ .attachmentCount = attachments.len, .pAttachments = &attachments, .pSubpasses = &subpass, .dependencyCount = deps.len, .pDependencies = &deps }, null, &s.render_pass));
 
         s.ring = try s.makeBuffer(ring_size, vk.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
@@ -322,9 +342,12 @@ pub const State = struct {
     }
 
     fn destroyTarget(s: *State, t: Target) void {
-        if (t.framebuffer != vk.VK_NULL_HANDLE) s.f.DestroyFramebuffer(s.device, t.framebuffer, null);
-        s.destroyTextureRec(t.color);
         s.destroyTextureRec(t.depth);
+    }
+
+    fn destroyWindow(s: *State, w: Window) void {
+        if (w.framebuffer != vk.VK_NULL_HANDLE) s.f.DestroyFramebuffer(s.device, w.framebuffer, null);
+        if (w.view != vk.VK_NULL_HANDLE) s.f.DestroyImageView(s.device, w.view, null);
     }
 
     fn destroyNow(s: *State, d: Dead) void {
@@ -332,6 +355,7 @@ pub const State = struct {
             .buffer => |b| s.destroyBufferRec(b),
             .texture => |t| s.destroyTextureRec(t),
             .target => |t| s.destroyTarget(t),
+            .window => |w| s.destroyWindow(w),
         }
     }
 
@@ -443,13 +467,12 @@ pub const State = struct {
 
     // --- Frames ----------------------------------------------------------------
 
-    /// Starts drawing a frame of the world, `width` by `height`, into
-    /// `frame`'s command buffer: the textures made since the last copied
-    /// in, and what was let go of then destroyed; the frame's image (and
-    /// its depth) cleared.
-    pub fn begin(s: *State, frame: *const Frame, width: u32, height: u32) !void {
+    /// Starts drawing the world into `frame` (kete's), in its command
+    /// buffer: the textures made since the last copied in, and what was
+    /// let go of then destroyed; then, where the world's view is (`view`,
+    /// in the frame), within `within`, the frame cleared (and the depth).
+    pub fn begin(s: *State, frame: *const Frame, view: Viewport, within: Viewport) !void {
         const cmd = frame.cmd;
-        s.cmd = cmd;
         s.frame_no += 1;
         var k: usize = 0;
         while (k < s.dead.items.len) {
@@ -460,71 +483,81 @@ pub const State = struct {
         for (s.uploads.items) |u| s.recordUpload(cmd, u);
         for (s.uploads.items) |u| s.bury(.{ .buffer = u.staging });
         s.uploads.clearRetainingCapacity();
+
+        // The frame in its image (inside the window's shadow, if it has
+        // one), and what may be drawn on: within the frame.
+        const fw = if (frame.width > 0) frame.width else @as(u32, @intCast(view.x)) + view.width;
+        const fh = if (frame.height > 0) frame.height else @as(u32, @intCast(view.y)) + view.height;
+        const x0 = @max(within.x, 0);
+        const y0 = @max(within.y, 0);
+        const x1 = @min(within.x + @as(i32, @intCast(within.width)), @as(i32, @intCast(fw)));
+        const y1 = @min(within.y + @as(i32, @intCast(within.height)), @as(i32, @intCast(fh)));
+        if (x1 <= x0 or y1 <= y0) return;
+        const origin = frame.origin;
+        s.offset = .{ view.x + origin[0], view.y + origin[1] };
+        s.area = .{ .x = x0 + origin[0], .y = y0 + origin[1], .width = @intCast(x1 - x0), .height = @intCast(y1 - y0) };
+        // The depth (and the framebuffer) as big as the image is, up to
+        // the frame's far corner.
+        const width: u32 = @intCast(origin[0] + @as(i32, @intCast(fw)));
+        const height: u32 = @intCast(origin[1] + @as(i32, @intCast(fh)));
         if (s.target.width != width or s.target.height != height) {
-            if (s.target.framebuffer != vk.VK_NULL_HANDLE) s.bury(.{ .target = s.target });
+            if (s.target.depth.image != vk.VK_NULL_HANDLE) s.bury(.{ .target = s.target });
             s.target = .{};
             s.target = try s.makeTarget(width, height);
         }
+        var w: Window = .{};
+        errdefer s.destroyWindow(w);
+        try check(s.f.CreateImageView(s.device, &.{
+            .image = frame.image,
+            .format = color_format,
+            .subresourceRange = .{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT },
+        }, null, &w.view));
+        const views = [2]vk.VkImageView{ w.view, s.target.depth.view };
+        try check(s.f.CreateFramebuffer(s.device, &.{ .renderPass = s.render_pass, .attachmentCount = 2, .pAttachments = &views, .width = width, .height = height }, null, &w.framebuffer));
+        s.window = w;
+
         const clears = [2]vk.VkClearValue{
             .{ .color = .{ 0, 0, 0, 1 } },
             .{ .depth_stencil = .{ .depth = 1.0, .stencil = 0 } },
         };
         s.f.CmdBeginRenderPass(cmd, &.{
             .renderPass = s.render_pass,
-            .framebuffer = s.target.framebuffer,
-            .renderArea = .{ .offset = .{ .x = 0, .y = 0 }, .extent = .{ .width = width, .height = height } },
+            .framebuffer = w.framebuffer,
+            .renderArea = .{ .offset = .{ .x = s.area.x, .y = s.area.y }, .extent = .{ .width = s.area.width, .height = s.area.height } },
             .clearValueCount = clears.len,
             .pClearValues = &clears,
         }, 0);
-        s.pass_open = true;
+        s.cmd = cmd;
     }
 
-    /// Ends the frame: the world's image copied into `frame`'s, at
-    /// `at` (within it, where the world's view is), only within `within`.
-    pub fn end(s: *State, frame: *const Frame, at: [2]i32, within: Viewport) void {
-        const cmd = frame.cmd;
+    /// Ends drawing the world into the frame (kete draws on, over it).
+    pub fn end(s: *State) void {
+        const cmd = s.cmd orelse return;
         s.f.CmdEndRenderPass(cmd);
-        s.pass_open = false;
         s.cmd = null;
-        const color = vk.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        const range: vk.VkImageSubresourceRange = .{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT };
-        const before = [1]vk.VkImageMemoryBarrier{.{ .srcAccessMask = color, .dstAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL, .newLayout = vk.VK_IMAGE_LAYOUT_GENERAL, .image = frame.image, .subresourceRange = range }};
-        s.f.CmdPipelineBarrier(cmd, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, 0, null, 1, &before);
-        if (within.width > 0 and within.height > 0) {
-            const region = [1]vk.VkImageCopy{.{
-                .srcOffset = .{ .x = within.x - at[0], .y = within.y - at[1], .z = 0 },
-                .dstOffset = .{ .x = within.x + frame.origin[0], .y = within.y + frame.origin[1], .z = 0 },
-                .extent = .{ .width = within.width, .height = within.height, .depth = 1 },
-            }};
-            s.f.CmdCopyImage(cmd, s.target.color.image, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, frame.image, vk.VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-        }
-        const after = [1]vk.VkImageMemoryBarrier{.{ .srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = color, .oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL, .newLayout = vk.VK_IMAGE_LAYOUT_GENERAL, .image = frame.image, .subresourceRange = range }};
-        s.f.CmdPipelineBarrier(cmd, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, null, 0, null, 1, &after);
+        s.bury(.{ .window = s.window });
+        s.window = .{};
     }
 
     fn makeTarget(s: *State, width: u32, height: u32) !Target {
         var t: Target = .{ .width = width, .height = height };
         errdefer s.destroyTarget(t);
-        for ([2]u32{ color_format, depth_format }, [2]*TextureRec{ &t.color, &t.depth }) |format, r| {
-            const is_depth = format == depth_format;
-            try check(s.f.CreateImage(s.device, &.{
-                .format = format,
-                .extent = .{ .width = width, .height = height, .depth = 1 },
-                .samples = vk.VK_SAMPLE_COUNT_1_BIT,
-                .usage = if (is_depth) vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT else vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            }, null, &r.image));
-            var req: vk.VkMemoryRequirements = undefined;
-            s.f.GetImageMemoryRequirements(s.device, r.image, &req);
-            try check(s.f.AllocateMemory(s.device, &.{ .allocationSize = req.size, .memoryTypeIndex = try s.memoryType(req.memoryTypeBits, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) }, null, &r.memory));
-            try check(s.f.BindImageMemory(s.device, r.image, r.memory, 0));
-            try check(s.f.CreateImageView(s.device, &.{
-                .image = r.image,
-                .format = format,
-                .subresourceRange = .{ .aspectMask = if (is_depth) vk.VK_IMAGE_ASPECT_DEPTH_BIT else vk.VK_IMAGE_ASPECT_COLOR_BIT },
-            }, null, &r.view));
-        }
-        const views = [2]vk.VkImageView{ t.color.view, t.depth.view };
-        try check(s.f.CreateFramebuffer(s.device, &.{ .renderPass = s.render_pass, .attachmentCount = 2, .pAttachments = &views, .width = width, .height = height }, null, &t.framebuffer));
+        const r = &t.depth;
+        try check(s.f.CreateImage(s.device, &.{
+            .format = depth_format,
+            .extent = .{ .width = width, .height = height, .depth = 1 },
+            .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+            .usage = vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        }, null, &r.image));
+        var req: vk.VkMemoryRequirements = undefined;
+        s.f.GetImageMemoryRequirements(s.device, r.image, &req);
+        try check(s.f.AllocateMemory(s.device, &.{ .allocationSize = req.size, .memoryTypeIndex = try s.memoryType(req.memoryTypeBits, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) }, null, &r.memory));
+        try check(s.f.BindImageMemory(s.device, r.image, r.memory, 0));
+        try check(s.f.CreateImageView(s.device, &.{
+            .image = r.image,
+            .format = depth_format,
+            .subresourceRange = .{ .aspectMask = vk.VK_IMAGE_ASPECT_DEPTH_BIT },
+        }, null, &r.view));
         return t;
     }
 
@@ -675,14 +708,26 @@ pub const Pipeline = struct {
         const at = s.uniforms(p.uniform_bytes[0..p.uniform_len]);
         s.f.CmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipe);
         s.f.CmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, @ptrCast(&set), 1, @ptrCast(&at));
-        const vp = d.viewport orelse Viewport{ .x = 0, .y = 0, .width = s.target.width, .height = s.target.height };
+        // In the frame's image: moved to where the world's view is, and cut
+        // to what may be drawn on.
+        var vp = d.viewport orelse Viewport{ .x = 0, .y = 0, .width = s.area.width, .height = s.area.height };
+        vp.x += s.offset[0];
+        vp.y += s.offset[1];
         // Upside down: Dazzle's (and OpenGL's) up, up.
         const vk_vp = [1]vk.VkViewport{.{ .x = @floatFromInt(vp.x), .y = @as(f32, @floatFromInt(vp.y)) + @as(f32, @floatFromInt(vp.height)), .width = @floatFromInt(vp.width), .height = -@as(f32, @floatFromInt(vp.height)), .minDepth = 0, .maxDepth = 1 }};
         s.f.CmdSetViewport(cmd, 0, 1, &vk_vp);
-        const sc = d.scissor orelse vp;
-        const x0 = @max(sc.x, 0);
-        const y0 = @max(sc.y, 0);
-        const vk_sc = [1]vk.VkRect2D{.{ .offset = .{ .x = x0, .y = y0 }, .extent = .{ .width = @intCast(@max(sc.x + @as(i32, @intCast(sc.width)) - x0, 0)), .height = @intCast(@max(sc.y + @as(i32, @intCast(sc.height)) - y0, 0)) } }};
+        var sc = d.scissor orelse vp;
+        if (d.scissor != null) {
+            sc.x += s.offset[0];
+            sc.y += s.offset[1];
+        }
+        const a = s.area;
+        const x0 = @max(sc.x, a.x);
+        const y0 = @max(sc.y, a.y);
+        const x1 = @min(sc.x + @as(i32, @intCast(sc.width)), a.x + @as(i32, @intCast(a.width)));
+        const y1 = @min(sc.y + @as(i32, @intCast(sc.height)), a.y + @as(i32, @intCast(a.height)));
+        if (x1 <= x0 or y1 <= y0) return;
+        const vk_sc = [1]vk.VkRect2D{.{ .offset = .{ .x = x0, .y = y0 }, .extent = .{ .width = @intCast(x1 - x0), .height = @intCast(y1 - y0) } }};
         s.f.CmdSetScissor(cmd, 0, 1, &vk_sc);
         const buf = [1]vk.VkBuffer{s.bufferOf(d.vertices)};
         const off = [1]vk.VkDeviceSize{d.vertex_offset};
