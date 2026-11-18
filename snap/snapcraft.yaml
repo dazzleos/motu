@@ -23,7 +23,8 @@ platforms:
   amd64:
   arm64:
 
-# Vulkan's drivers come from the mesa-2404 snap
+# Vulkan (its loader, which Motu and kete open with dlopen, and its
+# drivers) comes from the mesa-2404 snap
 plugs:
   gpu-2404:
     interface: content
@@ -43,8 +44,6 @@ apps:
       - bin/desktop-sockets
       - bin/gpu-2404-wrapper
     desktop: meta/gui/motu.desktop
-    environment:
-      LD_LIBRARY_PATH: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
     plugs:
       - wayland
       - opengl
@@ -69,9 +68,6 @@ parts:
       - curl
       - git
       - tar
-    # Vulkan's loader (Motu and kete open it with dlopen)
-    stage-packages:
-      - libvulkan1
     # Build for a CPU every machine of the architecture has, not the build
     # machine's own (Zig's default)
     override-build: |
