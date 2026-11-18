@@ -7,29 +7,28 @@
 //! window's frame stretches over the view.
 
 const std = @import("std");
-const vc4 = @import("vc4");
-const shader = @import("shader");
+const gpu = @import("gpu.zig");
 const app = @import("app");
 
-const render = vc4.render;
-const texture = vc4.texture;
+const render = gpu;
+const texture = gpu.texture;
 
 /// The image is drawn into here (a frame is large: one, reused at once,
 /// as the kernel copies what it is given).
 var image_frame: render.Frame = undefined;
 
 pub const Upscaler = struct {
-    dev: vc4.Device,
-    pipeline: shader.Pipeline,
+    dev: gpu.Device,
+    pipeline: gpu.Pipeline,
     /// Two triangles over the view, with texture coordinates over the
     /// image.
-    quad: vc4.Bo,
+    quad: gpu.Buffer,
     /// The image: as big as the view (its smaller sizes fit in it).
-    image: ?vc4.Bo = null,
+    image: ?gpu.Buffer = null,
     image_size: [2]u32 = .{ 0, 0 },
 
-    pub fn init(gpa: std.mem.Allocator, dev: vc4.Device) !Upscaler {
-        var pipeline = try shader.Pipeline.init(gpa, dev, shader.Program.decode(@embedFile("upscale.shader")) catch unreachable, .{
+    pub fn init(gpa: std.mem.Allocator, dev: gpu.Device) !Upscaler {
+        var pipeline = try gpu.Pipeline.init(gpa, dev, gpu.Program.decode(@embedFile("upscale.shader")) catch unreachable, .{
             .vertex_stride = 16,
             .attributes = &.{ .{ .location = 0, .offset = 0 }, .{ .location = 1, .offset = 8 } },
         });
@@ -84,7 +83,7 @@ pub const Upscaler = struct {
             .viewport = viewport,
             .scissor = scissor,
             .texture = .{ .handle = u.image.?.handle, .config = .{
-                .type = vc4.Format.xrgb8888.textureType(),
+                .type = gpu.Format.xrgb8888.textureType(),
                 .width = size[0],
                 .height = size[1],
                 .mag_filter = .linear,
@@ -95,7 +94,7 @@ pub const Upscaler = struct {
         });
     }
 
-    fn targetOf(bo: vc4.Bo, size: [2]u32) render.Target {
+    fn targetOf(bo: gpu.Buffer, size: [2]u32) render.Target {
         return .{
             .handle = bo.handle,
             .width = @intCast(size[0]),

@@ -7,7 +7,7 @@
 const std = @import("std");
 const kete = @import("kete");
 const gfx = kete.gfx;
-const vc4 = @import("vc4");
+const gpu = @import("gpu.zig");
 const blocks = @import("blocks.zig");
 const textures = @import("textures.zig");
 const game_mod = @import("game.zig");
@@ -47,7 +47,7 @@ pub const Icons = struct {
 /// Draws the world into the frame.
 pub const Draw = struct {
     ctx: *anyopaque,
-    f: *const fn (ctx: *anyopaque, frame: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void,
+    f: *const fn (ctx: *anyopaque, frame: *gpu.Frame, area: kete.gfx.GpuArea) anyerror!void,
 };
 
 
@@ -631,7 +631,7 @@ const WorldView = struct {
         if (self.draw != null) p.gpu(self, drawWorld);
     }
 
-    fn drawWorld(self: *const WorldView, frame: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void {
+    fn drawWorld(self: *const WorldView, frame: *gpu.Frame, area: kete.gfx.GpuArea) anyerror!void {
         const d = self.draw.?;
         try d.f(d.ctx, frame, area);
     }

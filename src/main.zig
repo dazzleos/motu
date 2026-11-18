@@ -16,7 +16,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const sys = @import("sys");
 const locale = @import("locale");
-const vc4 = @import("vc4");
+const gpu = @import("gpu.zig");
 const app = @import("app");
 const kete = @import("kete");
 const kete_vc4 = @import("kete_vc4");
@@ -31,7 +31,7 @@ const upscale = @import("upscale.zig");
 const boat_mod = @import("boat.zig");
 
 const print = sys.print;
-const Renderer = renderer_mod.Renderer(vc4.Device);
+const Renderer = renderer_mod.Renderer(gpu.Device);
 
 /// Where the islands are kept, and how their files end.
 const islands_dir = sys.system.user_dir;
@@ -178,7 +178,7 @@ const Scene = struct {
     /// `app.window.gpu_waited_ns` at the last frame.
     waited_ns: u64 = 0,
 
-    fn draw(ctx: *anyopaque, f: *vc4.render.Frame, area: kete.gfx.GpuArea) anyerror!void {
+    fn draw(ctx: *anyopaque, f: *gpu.Frame, area: kete.gfx.GpuArea) anyerror!void {
         const s: *Scene = @ptrCast(@alignCast(ctx));
         const g = s.game;
         // Laid out at the window's size; drawn in its buffer, perhaps
@@ -207,7 +207,7 @@ const Scene = struct {
         if (s.stretch and s.quality < 1) {
             const size = upscale.sizeOf(.{ vp.width, vp.height }, s.quality);
             if (s.upscaler.begin(.{ vp.width, vp.height }, size)) |image| {
-                const all: vc4.render.Viewport = .{ .x = 0, .y = 0, .width = size[0], .height = size[1] };
+                const all: gpu.Viewport = .{ .x = 0, .y = 0, .width = size[0], .height = size[1] };
                 try s.renderer.draw(renderer_mod.FrameSink{ .frame = image }, all, if (g.telescope) lens(all, null) else null, v);
                 return s.upscaler.finish(f, size, vp, if (g.telescope) lens(vp, scissor) else scissor);
             }
@@ -220,7 +220,7 @@ const Scene = struct {
 /// What the telescope shows of `vp`: the square its circle is in (the
 /// view's height, in the middle), within `scissor` if there is one; the
 /// rest is not drawn (it is black).
-fn lens(vp: vc4.render.Viewport, scissor: ?vc4.render.Viewport) vc4.render.Viewport {
+fn lens(vp: gpu.Viewport, scissor: ?gpu.Viewport) gpu.Viewport {
     const side = @min(vp.width, vp.height);
     var x0: i32 = vp.x + @as(i32, @intCast((vp.width - side) / 2));
     var y0: i32 = vp.y + @as(i32, @intCast((vp.height - side) / 2));

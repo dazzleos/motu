@@ -21,8 +21,9 @@
 //! than one index range holds is drawn in parts.
 
 const std = @import("std");
+const gpu = @import("gpu.zig");
+// (The tests' fake GPU takes compiled programs, as Dazzle's does.)
 const vc4 = @import("vc4");
-const shader = @import("shader");
 const blocks = @import("blocks.zig");
 const world_mod = @import("world.zig");
 const mesher = @import("mesher.zig");
@@ -52,19 +53,19 @@ const mip_levels = textures.mip_levels;
 const tile_strips = [blocks.Tile.strips][]const u8{ @embedFile("tiles-0.bin"), @embedFile("tiles-1.bin"), @embedFile("tiles-2.bin"), @embedFile("tiles-3.bin") };
 
 /// Strip `strip`'s format: 16 bits a texel (see textures.stripSeeThrough).
-fn stripFormat(strip: usize) vc4.Format {
+fn stripFormat(strip: usize) gpu.Format {
     return if (textures.stripSeeThrough(@intCast(strip))) .rgba4444 else .rgb565;
 }
 
-fn stripLayout(strip: usize) vc4.texture.Mipmapped {
-    return vc4.texture.mipmapLayoutOf(stripFormat(strip), textures.strip_width, textures.strip_height, mip_levels);
+fn stripLayout(strip: usize) gpu.texture.Mipmapped {
+    return gpu.texture.mipmapLayoutOf(stripFormat(strip), textures.strip_width, textures.strip_height, mip_levels);
 }
 
 /// How strip `strip` is sampled: smoothly (bilinear) up close; further
 /// off, from the mipmap levels, the nearest texel of the two nearest
 /// levels mixed (so a texel of the next tile down never bleeds in);
 /// repeating across the tile, and not down it.
-fn stripConfig(strip: usize) vc4.texture.Config {
+fn stripConfig(strip: usize) gpu.texture.Config {
     const layout = stripLayout(strip);
     return .{
         .offset = layout.base,
@@ -264,7 +265,7 @@ const ChunkMesh = struct {
 /// What is drawn: a region's chunks' meshes in one buffer, each section's
 /// together, and of each solid strip, the faces facing each way together.
 const ChunkGpu = struct {
-    bo: ?vc4.Bo = null,
+    bo: ?gpu.Buffer = null,
     /// Quads in each of its meshes (one after another in `bo`, in the
     /// order of mesher.Section).
     quads: [mesher.Section.count]u32 = @splat(0),
@@ -358,27 +359,27 @@ pub fn Renderer(comptime Device: type) type {
 
         gpa: std.mem.Allocator,
         dev: Device,
-        terrain: shader.Pipeline,
-        terrain_blend: shader.Pipeline,
-        water: shader.Pipeline,
-        sky: shader.Pipeline,
-        line: shader.Pipeline,
+        terrain: gpu.Pipeline,
+        terrain_blend: gpu.Pipeline,
+        water: gpu.Pipeline,
+        sky: gpu.Pipeline,
+        line: gpu.Pipeline,
         /// The tiles, a strip each (see textures.zig), with mipmaps.
-        strips: [blocks.Tile.strips]vc4.Bo,
-        indices: vc4.Bo,
-        sea: vc4.Bo,
+        strips: [blocks.Tile.strips]gpu.Buffer,
+        indices: gpu.Buffer,
+        sea: gpu.Buffer,
         sea_quads: u32,
         sea_patches: [sea_patch_count]SeaPatch,
-        dome: vc4.Bo,
+        dome: gpu.Buffer,
         dome_quads: u32,
-        cube_lines: vc4.Bo,
+        cube_lines: gpu.Buffer,
         /// The other players' figures, as they look (one for each shown,
         /// made again when how they look changes).
-        avatars: vc4.Bo,
+        avatars: gpu.Buffer,
         avatar_meshes: [player_mod.most]?AvatarMesh = @splat(null),
         /// Double-buffered vertices for birds and fish (so a pipelined
         /// frame in flight on the GPU is not overwritten).
-        creatures_bo: [2]vc4.Bo,
+        creatures_bo: [2]gpu.Buffer,
         creatures_frame: u1 = 0,
         creatures: creatures.Creatures = .{},
         /// Canoes as they move, by length (made when first wanted).
@@ -389,32 +390,32 @@ pub fn Renderer(comptime Device: type) type {
         mesh: mesher.Mesh = .{},
         stats: Stats = .{},
 
-        const world_layout: []const shader.pipeline.VertexField = &.{
+        const world_layout: []const gpu.pipeline.VertexField = &.{
             .{ .location = 0, .offset = @offsetOf(Vertex, "pos") },
             .{ .location = 1, .offset = @offsetOf(Vertex, "uv") },
             .{ .location = 2, .offset = @offsetOf(Vertex, "info") },
         };
-        const pos_layout: []const shader.pipeline.VertexField = &.{.{ .location = 0, .offset = 0 }};
+        const pos_layout: []const gpu.pipeline.VertexField = &.{.{ .location = 0, .offset = 0 }};
 
         pub fn init(gpa: std.mem.Allocator, dev: Device) !*Self {
             const r = try gpa.create(Self);
             errdefer gpa.destroy(r);
-            const prog = shader.Program.decode;
-            var terrain = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
+            const prog = gpu.Program.decode;
+            var terrain = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("terrain.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
             errdefer terrain.deinit(dev);
-            var terrain_blend = try shader.Pipeline.init(gpa, dev, prog(@embedFile("terrain_blend.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true, .depth_write = false });
+            var terrain_blend = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("terrain_blend.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true, .depth_write = false });
             errdefer terrain_blend.deinit(dev);
-            var water = try shader.Pipeline.init(gpa, dev, prog(@embedFile("water.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
+            var water = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("water.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
             errdefer water.deinit(dev);
-            var sky = try shader.Pipeline.init(gpa, dev, prog(@embedFile("sky.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .cull = .none, .early_z = true });
+            var sky = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("sky.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .cull = .none, .early_z = true });
             errdefer sky.deinit(dev);
-            var line = try shader.Pipeline.init(gpa, dev, prog(@embedFile("line.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .primitive = .lines, .early_z = true });
+            var line = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("line.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .primitive = .lines, .early_z = true });
             errdefer line.deinit(dev);
 
             // The tiles (see `strips`), drawn at build time, as the GPU
             // takes them: inflated here (not in the GPU's memory, slow to
             // read back from), then copied in.
-            var bos: [blocks.Tile.strips]vc4.Bo = undefined;
+            var bos: [blocks.Tile.strips]gpu.Buffer = undefined;
             var made: usize = 0;
             errdefer for (bos[0..made]) |bo| dev.destroyBo(bo);
             const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
@@ -515,7 +516,7 @@ pub fn Renderer(comptime Device: type) type {
             for (&r.chunks) |*c| r.gpa.free(c.verts);
             for (&r.regions) |*g| if (g.bo) |bo| r.dev.destroyBo(bo);
             for (r.strips) |bo| r.dev.destroyBo(bo);
-            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.creatures_bo[0], r.creatures_bo[1] }) |bo| r.dev.destroyBo(bo);
+            for ([_]gpu.Buffer{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.creatures_bo[0], r.creatures_bo[1] }) |bo| r.dev.destroyBo(bo);
             for (r.boat_meshes) |m| if (m) |bm| r.dev.destroyBo(bm.bo);
             r.terrain.deinit(r.dev);
             r.terrain_blend.deinit(r.dev);
@@ -538,7 +539,7 @@ pub fn Renderer(comptime Device: type) type {
             var tiles: usize = 0;
             for (r.strips) |bo| tiles += bo.map.len;
             var other: usize = 0;
-            for ([_]vc4.Bo{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.creatures_bo[0], r.creatures_bo[1] }) |bo| other += bo.map.len;
+            for ([_]gpu.Buffer{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.creatures_bo[0], r.creatures_bo[1] }) |bo| other += bo.map.len;
             for (r.boat_meshes) |m| if (m) |bm| {
                 other += bm.bo.map.len;
             };
@@ -688,7 +689,7 @@ pub fn Renderer(comptime Device: type) type {
             return m;
         }
 
-        pub fn draw(r: *Self, sink: anytype, viewport: vc4.render.Viewport, scissor: ?vc4.render.Viewport, v: View) !void {
+        pub fn draw(r: *Self, sink: anytype, viewport: gpu.Viewport, scissor: ?gpu.Viewport, v: View) !void {
             r.stats = .{};
             const cam = v.camera;
             const proj = cam.projection(v.aspect);
@@ -740,7 +741,7 @@ pub fn Renderer(comptime Device: type) type {
             }.less);
             // The chunks in them.
             r.stats.chunks = @intCast(n * region_chunks * region_chunks);
-            var tex: [blocks.Tile.strips]vc4.render.Texture = undefined;
+            var tex: [blocks.Tile.strips]gpu.Texture = undefined;
             for (&tex, r.strips, 0..) |*t, bo, i| t.* = .{ .handle = bo.handle, .config = stripConfig(i) };
             const target: Target(@TypeOf(sink)) = .{ .sink = sink, .viewport = viewport, .scissor = scissor, .indices = r.indices.handle, .stats = &r.stats };
 
@@ -836,7 +837,7 @@ pub fn Renderer(comptime Device: type) type {
             // 3. Water, far to near; the sea around the world first (it is
             // furthest), culled in 64x64 patches.
             const water = &r.water;
-            const no_tex: [3]?vc4.render.Texture = .{ null, null, null };
+            const no_tex: [3]?gpu.Texture = .{ null, null, null };
             const sea_y: f32 = world_mod.sea_level - 1 + mesher.water_top;
             const max_sea_d = depth + start + 16;
             var sea_run_first: u32 = 0;
@@ -893,13 +894,13 @@ pub fn Renderer(comptime Device: type) type {
 
 /// Where the GPU's draws go: into a frame.
 pub const FrameSink = struct {
-    frame: *vc4.render.Frame,
+    frame: *gpu.Frame,
 
     pub fn hasRoom(s: FrameSink, uniform_words: usize) bool {
         return s.frame.hasRoom(uniform_words);
     }
 
-    pub fn draw(s: FrameSink, p: *shader.Pipeline, d: shader.Pipeline.Draw) !void {
+    pub fn draw(s: FrameSink, p: *gpu.Pipeline, d: gpu.Pipeline.Draw) !void {
         try p.draw(s.frame, d);
     }
 };
@@ -908,15 +909,15 @@ pub const FrameSink = struct {
 fn Target(comptime Sink: type) type {
     return struct {
         sink: Sink,
-        viewport: vc4.render.Viewport,
-        scissor: ?vc4.render.Viewport,
+        viewport: gpu.Viewport,
+        scissor: ?gpu.Viewport,
         indices: u32,
         stats: *Stats,
 
         /// Draws `count` quads from `offset` in a buffer, in parts of up to
         /// `max_quads`. A frame that is full gets no more (it cannot be
         /// rendered and started again without losing its depth).
-        fn quads(t: @This(), p: *shader.Pipeline, handle: u32, offset: u32, count: u32, tex: [3]?vc4.render.Texture) !void {
+        fn quads(t: @This(), p: *gpu.Pipeline, handle: u32, offset: u32, count: u32, tex: [3]?gpu.Texture) !void {
             var done: u32 = 0;
             while (done < count) {
                 const n: u32 = @min(count - done, max_quads);
@@ -954,7 +955,7 @@ const AvatarMesh = struct {
 
 /// A canoe's quads, a strip's after another's.
 const BoatMesh = struct {
-    bo: vc4.Bo,
+    bo: gpu.Buffer,
     first: [blocks.Tile.strips]u32,
     quads: [blocks.Tile.strips]u32,
 };
@@ -1227,7 +1228,7 @@ pub const FakeDevice = struct {
         }
     };
 
-    pub fn createBo(d: FakeDevice, size: u32) !vc4.Bo {
+    pub fn createBo(d: FakeDevice, size: u32) !gpu.Buffer {
         const s = d.state;
         if (s.full) return error.OutOfMemory;
         const map = try s.gpa.alignedAlloc(u8, .fromByteUnits(std.heap.page_size_min), std.mem.alignForward(u32, size, 4096));
@@ -1237,7 +1238,7 @@ pub const FakeDevice = struct {
         return .{ .handle = s.next, .map = map };
     }
 
-    pub fn destroyBo(d: FakeDevice, bo: vc4.Bo) void {
+    pub fn destroyBo(d: FakeDevice, bo: gpu.Buffer) void {
         _ = d.state.bos.remove(bo.handle);
         d.state.gpa.free(bo.map);
     }
@@ -1280,7 +1281,7 @@ test "the whole island in view fits one frame, the near chunks first" {
     try testing.expectEqual(@as(usize, 0), try r.update(w, w.spawn, 1000));
     // High over the island, looking down at all of it.
     const cam: math.Camera = .{ .eye = .{ 64, 100, 150 }, .yaw = 0, .pitch = -0.6 };
-    const frame = try testing.allocator.create(vc4.render.Frame);
+    const frame = try testing.allocator.create(gpu.Frame);
     defer testing.allocator.destroy(frame);
     frame.begin(.{ .handle = 1, .width = 1920, .height = 1080 }, .{ .clear = 0 });
     try r.draw(FrameSink{ .frame = frame }, .{ .x = 0, .y = 0, .width = 1920, .height = 1080 }, null, .{
