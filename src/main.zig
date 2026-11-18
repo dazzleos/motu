@@ -29,24 +29,26 @@ const options = @import("options.zig");
 const reach_mod = @import("reach.zig");
 const upscale = @import("upscale.zig");
 const boat_mod = @import("boat.zig");
+const places = @import("places.zig");
+const platform = @import("platform").platform;
+const on_linux = @import("linux.zig");
 
 const print = sys.print;
 const Renderer = renderer_mod.Renderer(gpu.Device);
 
-/// Where the islands are kept, and how their files end.
-const islands_dir = sys.system.user_dir;
+/// How the islands' files end (they are kept in places.dir()).
 const island_ext = ".motu";
 
 /// The island played now: its name (its file's, less the ending).
-const Current = struct {
+pub const Current = struct {
     buf: [48]u8 = undefined,
     len: usize = 0,
 
-    fn name(c: *const Current) []const u8 {
+    pub fn name(c: *const Current) []const u8 {
         return c.buf[0..c.len];
     }
 
-    fn set(c: *Current, n: []const u8) void {
+    pub fn set(c: *Current, n: []const u8) void {
         c.len = @min(n.len, c.buf.len);
         @memcpy(c.buf[0..c.len], n[0..c.len]);
     }
@@ -58,16 +60,16 @@ const Current = struct {
 };
 
 fn pathOf(n: []const u8, buf: *[256]u8) [:0]const u8 {
-    return std.fmt.bufPrintSentinel(buf, "{s}/{s}{s}", .{ islands_dir, n, island_ext }, 0) catch buf[0..0 :0];
+    return std.fmt.bufPrintSentinel(buf, "{s}/{s}{s}", .{ places.dir(), n, island_ext }, 0) catch buf[0..0 :0];
 }
 
 /// The islands kept, by name, into `g.islands` (the current one marked);
 /// returns the one changed most recently, if any.
-fn findIslands(g: *game_mod.Game, current: []const u8) ?u8 {
+pub fn findIslands(g: *game_mod.Game, current: []const u8) ?u8 {
     g.islands = .{};
     var newest: ?u8 = null;
     var newest_time: i64 = std.math.minInt(i64);
-    const dir = sys.open(islands_dir, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }) catch return null;
+    const dir = sys.open(places.dir(), .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }) catch return null;
     defer sys.close(dir);
     var buf: [4096]u8 align(8) = undefined;
     while (true) {
@@ -139,7 +141,7 @@ const Boats = struct {
 };
 
 /// Makes a new island (from `seed`), to play from its start.
-fn makeIsland(g: *game_mod.Game, seed: u32) !void {
+pub fn makeIsland(g: *game_mod.Game, seed: u32) !void {
     const started = sys.nowNs();
     try g.world.generate(seed);
     g.player = .{ .pos = g.world.spawn, .yaw = g.world.spawn_yaw };
@@ -150,9 +152,16 @@ fn makeIsland(g: *game_mod.Game, seed: u32) !void {
     print("motu: made an island in {d} ms\n", .{(sys.nowNs() - started) / std.time.ns_per_ms});
 }
 /// How often a changed world is saved, in seconds.
-const save_every = 60;
+pub const save_every = 60;
 
 pub fn main(init: std.process.Init) u8 {
+    if (platform == .linux) {
+        on_linux.run(init) catch |err| {
+            print("motu: error: {s}\n", .{@errorName(err)});
+            return 1;
+        };
+        return 0;
+    }
     sys.logToKmsgIfStderr();
     run(init) catch |err| {
         print(sys.log_error ++ "motu: error: {s}\n", .{@errorName(err)});
@@ -235,7 +244,7 @@ fn lens(vp: gpu.Viewport, scissor: ?gpu.Viewport) gpu.Viewport {
     return .{ .x = x0, .y = y0, .width = @intCast(@max(x1 - x0, 0)), .height = @intCast(@max(y1 - y0, 0)) };
 }
 
-fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !void {
+pub fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !void {
     var pbuf: [256]u8 = undefined;
     const save_path = cur.path(&pbuf);
     const data = sys.readFileAlloc(gpa, save_path, 64 * 1024 * 1024) catch |err| {
@@ -250,7 +259,7 @@ fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !void {
 }
 
 /// Back from another's game: this island, as saved before joining.
-fn backHome(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
+pub fn backHome(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
     load(gpa, g, cur) catch {
         makeIsland(g, world_mod.default_seed) catch {};
     };
@@ -258,7 +267,7 @@ fn backHome(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void
 }
 
 /// Does what the menu asked with the islands.
-fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, action: game_mod.IslandAction) void {
+pub fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, action: game_mod.IslandAction) void {
     if (g.net.status != .alone) {
         g.say("Not while playing together");
         return;
@@ -299,7 +308,7 @@ fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, action
     }
 }
 
-fn save(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
+pub fn save(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
     var pbuf: [256]u8 = undefined;
     const save_path = cur.path(&pbuf);
     var out: std.ArrayList(u8) = .empty;
@@ -462,11 +471,11 @@ const Root = struct {
 /// The input the game takes before the widgets see it: all the keys, and
 /// with the mouse taken, the mouse too (it turns the view, and its buttons
 /// act on the middle of it).
-const Input = struct {
+pub const Input = struct {
     game: *game_mod.Game,
     win: ?*app.Window = null,
 
-    fn filter(in: *Input, e: kete.window.InputEvent) bool {
+    pub fn filter(in: *Input, e: kete.window.InputEvent) bool {
         const game = in.game;
         switch (e) {
             .key => |k| {

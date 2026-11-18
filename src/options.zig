@@ -1,6 +1,5 @@
 //! The menu's options (the quality, and the player's name and look), as
-//! chosen: kept in the user's files
-//! (`file`) once changed. Until then, as suits the GPU: at its best for
+//! chosen: kept in Motu's folder (see places.zig) once changed. Until then, as suits the GPU: at its best for
 //! the Pi 4's and 5's; the older one's (Pi Zero to Pi 3) cannot draw that
 //! fast enough, so the window is drawn smaller (the display stretches it).
 
@@ -8,8 +7,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const sys = @import("sys");
 const avatar = @import("avatar.zig");
-
-pub const file = sys.system.user_dir ++ "/.motu-options";
+const places = @import("places.zig");
 
 /// The least quality: the window drawn half as big across and down.
 pub const min_quality: f32 = 0.5;
@@ -81,11 +79,14 @@ pub fn effective(o: Options, fast: bool) f32 {
 
 pub fn load() Options {
     var buf: [256]u8 = undefined;
-    return .parse(sys.readFile(file, &buf) orelse return .{});
+    var path: [256]u8 = undefined;
+    return .parse(sys.readFile(places.optionsFile(&path), &buf) orelse return .{});
 }
 
 pub fn save(o: *const Options) void {
     var buf: [256]u8 = undefined;
+    var path: [256]u8 = undefined;
+    const file = places.optionsFile(&path);
     _ = linux.unlink(file);
     sys.files.writeNew(file, o.format(&buf)) catch |err| {
         sys.print(sys.log_warning ++ "motu: cannot keep the options: {s}\n", .{@errorName(err)});

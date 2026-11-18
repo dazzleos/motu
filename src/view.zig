@@ -8,6 +8,7 @@ const std = @import("std");
 const kete = @import("kete");
 const gfx = kete.gfx;
 const gpu = @import("gpu.zig");
+const platform = @import("platform").platform;
 const blocks = @import("blocks.zig");
 const textures = @import("textures.zig");
 const game_mod = @import("game.zig");
@@ -626,9 +627,12 @@ const WorldView = struct {
         return size;
     }
 
-    pub fn paint(self: *const WorldView, _: *kete.WidgetNode, p: *kete.Painter) void {
+    pub fn paint(self: *const WorldView, n: *kete.WidgetNode, p: *kete.Painter) void {
         // A new picture every frame (things move, even standing still).
         if (self.draw != null) p.gpu(self, drawWorld);
+        // (On Dazzle, the host draws a frame each time round; on Linux,
+        // kete draws when asked.)
+        if (platform == .linux) n.ui.needs_frame = true;
     }
 
     fn drawWorld(self: *const WorldView, frame: *gpu.Frame, area: kete.gfx.GpuArea) anyerror!void {
