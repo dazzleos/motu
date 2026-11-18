@@ -90,9 +90,12 @@ pub fn level(l: f32) f32 {
 /// Lamps' warm light.
 pub const lamp_color = Vec3{ 1.0, 0.78, 0.5 };
 
+// The functions given the uniforms are inline: SPIR-V (as Zig makes it)
+// cannot pass them to a function Vulkan's drivers take.
+
 /// The light on a vertex of a face turned to `n`, with the sky's and
 /// lamps' light levels there, as an RGB multiplier.
-pub fn light(u: *addrspace(.uniform) const Scene, n: Vec3, sky: f32, lamp: f32) Vec3 {
+pub inline fn light(u: *addrspace(.uniform) const Scene, n: Vec3, sky: f32, lamp: f32) Vec3 {
     const sun = u.sun;
     const diffuse = @max(n[0] * sun[0] + n[1] * sun[1] + n[2] * sun[2], 0);
     // Faces are shaded a little by which way they face, whatever the
@@ -111,12 +114,12 @@ pub fn light(u: *addrspace(.uniform) const Scene, n: Vec3, sky: f32, lamp: f32) 
 
 /// How much fog there is at a distance: none up close, all of it at the
 /// far end.
-pub fn fogAmount(u: *addrspace(.uniform) const Scene, dist: f32) f32 {
+pub inline fn fogAmount(u: *addrspace(.uniform) const Scene, dist: f32) f32 {
     const f = gpu.clamp((dist - u.misc[0]) * u.fog[3], 0, 1);
     return f * (2 - f);
 }
 
-pub fn project(u: *addrspace(.uniform) const Scene, p: Vec3) Vec4 {
+pub inline fn project(u: *addrspace(.uniform) const Scene, p: Vec3) Vec4 {
     const m = u.mvp;
     return m[0] * gpu.splat4(p[0]) + m[1] * gpu.splat4(p[1]) + m[2] * gpu.splat4(p[2]) + m[3];
 }

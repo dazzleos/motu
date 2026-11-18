@@ -35,3 +35,15 @@ To try a build on a Pi before publishing it, serve it with Dazzle's
 (Settings, Software, Software server):
 
     cd ../dazzle && zig build serve -- --source=motu=../motu/zig-out
+
+## On Linux
+
+Motu also builds for Linux (Wayland, drawn with Vulkan), from the same
+code: Dazzle's is what it is made for, and the Linux build adds nothing
+to it (the GPU is chosen when it is built: see `src/gpu.zig`).
+
+    ../dazzle/scripts/zig build -Dplatform=linux --prefix zig-out/linux
+    ./zig-out/linux/bin/motu
+
+Islands are kept in `$XDG_DATA_HOME/motu` (in a snap, `$SNAP_USER_COMMON`).
+With kete changes of your own, add `--fork=` and its checkout.

@@ -11,6 +11,7 @@ const common = @import("common.zig");
 const Vec3 = gpu.Vec3;
 const Vec4 = gpu.Vec4;
 
+/// (Functions given it are inline: see common.zig.)
 const Scene = *addrspace(.uniform) const common.Scene;
 
 /// The world's size across (world.zig's size_x and size_z), and the
@@ -58,7 +59,7 @@ pub const Surface = struct {
 };
 
 /// A vertex of water, `info` its packed information (see mesher.Info).
-pub fn surface(u: Scene, in_pos: Vec3, info: common.Info) Surface {
+pub inline fn surface(u: Scene, in_pos: Vec3, info: common.Info) Surface {
     var p = in_pos;
     const t = u.camera[3];
     // Waves only on the surface (3), fading out past the world's edge;
@@ -120,6 +121,6 @@ pub fn surface(u: Scene, in_pos: Vec3, info: common.Info) Surface {
 
 /// How strongly the sun glints, before its colour: 1.6 at its brightest,
 /// none seen from below, and fogged.
-pub fn glintStrength(u: Scene, s: Surface) f32 {
+pub inline fn glintStrength(u: Scene, s: Surface) f32 {
     return if (s.facing > 0) 1.6 * u.sun[3] * (1 - s.fog) else 0;
 }

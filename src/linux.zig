@@ -3,8 +3,8 @@
 //! the same as on Dazzle: its islands (kept in places.dir()), the menu,
 //! playing together on the network.
 //!
-//! The world itself is not drawn yet (the view is black): that is
-//! gpu.zig's Vulkan backend's, to come.
+//! The world is drawn with Vulkan (see vulkan.zig), on the GPU kete draws
+//! the window with, straight into its frames.
 
 const std = @import("std");
 const sys = @import("sys");
@@ -16,17 +16,101 @@ const game_mod = @import("game.zig");
 const view = @import("view.zig");
 const net = @import("net.zig");
 const options = @import("options.zig");
+const gpu = @import("gpu.zig");
+const vulkan = @import("vulkan.zig");
+const renderer_mod = @import("renderer.zig");
+const reach_mod = @import("reach.zig");
 
 const print = sys.print;
 
-/// The window's root: the menu, the hotbar and the rest over the world
-/// (not drawn yet).
+/// The window's root: the menu, the hotbar and the rest over the world.
 const Root = struct {
     game: *game_mod.Game,
     icons: *const view.Icons,
+    scene: *Scene,
 
     pub fn build(r: *const Root, cx: *kete.BuildContext) kete.Widget {
-        return cx.make(view.Motu{ .game = r.game, .icons = r.icons, .draw = null });
+        return cx.make(view.Motu{ .game = r.game, .icons = r.icons, .draw = .{ .ctx = r.scene, .f = Scene.draw } });
+    }
+};
+
+/// What drawing the world needs: the renderer, made on kete's Vulkan
+/// device once the window has one.
+const Scene = struct {
+    gpa: std.mem.Allocator,
+    app: *kete.App,
+    game: *game_mod.Game,
+    dev: ?gpu.Device = null,
+    renderer: ?*main.Renderer = null,
+    /// Vulkan could not be had (or the renderer made): not tried again.
+    failed: bool = false,
+    reach: reach_mod.Reach = .{},
+    trouble: main.Trouble = .{},
+
+    fn deinit(s: *Scene) void {
+        if (s.renderer) |r| r.deinit();
+        if (s.dev) |d| d.deinit();
+    }
+
+    /// The renderer, if there is one (made the first time).
+    fn ready(s: *Scene) ?*main.Renderer {
+        if (s.renderer) |r| return r;
+        if (s.failed) return null;
+        const shared = (s.app.gpuDevice() orelse return null);
+        if (shared != .vulkan) {
+            print("motu: the window is not drawn with Vulkan: the world cannot be shown\n", .{});
+            s.failed = true;
+            return null;
+        }
+        const dev = vulkan.State.init(s.gpa, shared.vulkan) catch |err| {
+            print("motu: no Vulkan ({s})\n", .{@errorName(err)});
+            s.failed = true;
+            return null;
+        };
+        s.renderer = main.Renderer.init(s.gpa, dev) catch |err| {
+            print("motu: cannot draw the world ({s})\n", .{@errorName(err)});
+            dev.deinit();
+            s.failed = true;
+            return null;
+        };
+        s.dev = dev;
+        return s.renderer;
+    }
+
+    fn draw(ctx: *anyopaque, frame: *view.Draw.Frame, area: kete.gfx.GpuArea) anyerror!void {
+        const s: *Scene = @ptrCast(@alignCast(ctx));
+        const r = s.ready() orelse return;
+        const g = s.game;
+        const dev = s.dev.?;
+        const box = area.viewport;
+        if (box.width == 0 or box.height == 0) return;
+        _ = s.reach.frame(sys.nowNs(), 0);
+        // Into an image as big as the view (at 0, 0 in it), copied in.
+        const vp: gpu.Viewport = .{ .x = 0, .y = 0, .width = box.width, .height = box.height };
+        const at: [2]i32 = .{ box.x, box.y };
+        const scissor: ?gpu.Viewport = if (area.scissor) |sc| .{ .x = sc.x - box.x, .y = sc.y - box.y, .width = sc.width, .height = sc.height } else null;
+        var boats: main.Boats = .{};
+        const v: renderer_mod.View = .{
+            .camera = g.camera(),
+            .aspect = @as(f32, @floatFromInt(vp.width)) / @as(f32, @floatFromInt(vp.height)),
+            .time = g.clock,
+            .env = renderer_mod.Environment.at(g.time_of_day).withWeather(g.weather()),
+            .weather = g.weather(),
+            .day = g.day,
+            .day_seconds = g.time_of_day * game_mod.day_length,
+            .underwater = g.player.underwater(g.world),
+            .outline = if (g.target) |t| t.cell else null,
+            .avatars = g.net.others,
+            .boats = boats.items(g),
+            .reach = s.reach.k * g.seeing(),
+        };
+        try dev.begin(frame, vp.width, vp.height);
+        const cut = if (g.telescope) main.lens(vp, scissor) else scissor;
+        r.draw(renderer_mod.FrameSink{ .frame = dev }, vp, cut, v) catch |err| s.trouble.note("drawing the world", err);
+        // The view copied in (within what may be drawn on); outside the
+        // telescope's square, black.
+        const within = area.scissor orelse box;
+        dev.end(frame, at, .{ .x = within.x, .y = within.y, .width = within.width, .height = within.height });
     }
 };
 
@@ -65,7 +149,9 @@ pub fn run(init: std.process.Init) !void {
     };
     defer if (session) |*s| s.deinit();
 
-    const root: Root = .{ .game = &game, .icons = icons };
+    var scene: Scene = .{ .gpa = gpa, .app = app, .game = &game };
+    defer scene.deinit();
+    const root: Root = .{ .game = &game, .icons = icons, .scene = &scene };
     var input: main.Input = .{ .game = &game };
     const window = try app.openWindow(.{
         .title = "Motu",
@@ -103,6 +189,7 @@ pub fn run(init: std.process.Init) !void {
             .failed => game.say("Cannot reach that game"),
         };
         game.tick(dt);
+        if (scene.renderer) |r| main.mesh(r, world, game.player.eye(), 12, &scene.trouble);
         if (game.wantsSave() and now - last_save > main.save_every * std.time.ns_per_s) {
             main.save(gpa, &game, &cur);
             last_save = now;

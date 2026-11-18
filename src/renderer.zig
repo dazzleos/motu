@@ -57,6 +57,21 @@ fn stripFormat(strip: usize) gpu.Format {
     return if (textures.stripSeeThrough(@intCast(strip))) .rgba4444 else .rgb565;
 }
 
+/// A strip as the GPU has it: a buffer of its texels (on Dazzle, sampled
+/// as `stripConfig` says), or a texture (with Vulkan).
+const Strip = if (gpu.vulkan) gpu.Texture else gpu.Buffer;
+
+/// Strip `strip`'s bytes, with its mipmaps (with Vulkan: four a texel,
+/// each level after the one before; see tools/mktiles.zig).
+fn stripSize(strip: usize) u32 {
+    if (gpu.vulkan) {
+        var size: u32 = 0;
+        for (0..mip_levels + 1) |l| size += @max(@as(u32, textures.strip_width) >> @intCast(l), 1) * @max(@as(u32, textures.strip_height) >> @intCast(l), 1) * 4;
+        return size;
+    }
+    return stripLayout(strip).size;
+}
+
 fn stripLayout(strip: usize) gpu.texture.Mipmapped {
     return gpu.texture.mipmapLayoutOf(stripFormat(strip), textures.strip_width, textures.strip_height, mip_levels);
 }
@@ -365,7 +380,7 @@ pub fn Renderer(comptime Device: type) type {
         sky: gpu.Pipeline,
         line: gpu.Pipeline,
         /// The tiles, a strip each (see textures.zig), with mipmaps.
-        strips: [blocks.Tile.strips]gpu.Buffer,
+        strips: [blocks.Tile.strips]Strip,
         indices: gpu.Buffer,
         sea: gpu.Buffer,
         sea_quads: u32,
@@ -400,27 +415,37 @@ pub fn Renderer(comptime Device: type) type {
         pub fn init(gpa: std.mem.Allocator, dev: Device) !*Self {
             const r = try gpa.create(Self);
             errdefer gpa.destroy(r);
-            const prog = gpu.Program.decode;
-            var terrain = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("terrain.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
+            var terrain = try gpu.Pipeline.init(gpa, dev, gpu.shader("terrain"), .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true });
             errdefer terrain.deinit(dev);
-            var terrain_blend = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("terrain_blend.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true, .depth_write = false });
+            var terrain_blend = try gpu.Pipeline.init(gpa, dev, gpu.shader("terrain_blend"), .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .back, .early_z = true, .depth_write = false });
             errdefer terrain_blend.deinit(dev);
-            var water = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("water.shader")) catch unreachable, .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
+            var water = try gpu.Pipeline.init(gpa, dev, gpu.shader("water"), .{ .vertex_stride = @sizeOf(Vertex), .attributes = world_layout, .cull = .none, .early_z = true });
             errdefer water.deinit(dev);
-            var sky = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("sky.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .cull = .none, .early_z = true });
+            var sky = try gpu.Pipeline.init(gpa, dev, gpu.shader("sky"), .{ .vertex_stride = 12, .attributes = pos_layout, .cull = .none, .early_z = true });
             errdefer sky.deinit(dev);
-            var line = try gpu.Pipeline.init(gpa, dev, prog(@embedFile("line.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .primitive = .lines, .early_z = true });
+            var line = try gpu.Pipeline.init(gpa, dev, gpu.shader("line"), .{ .vertex_stride = 12, .attributes = pos_layout, .primitive = .lines, .early_z = true });
             errdefer line.deinit(dev);
 
             // The tiles (see `strips`), drawn at build time, as the GPU
             // takes them: inflated here (not in the GPU's memory, slow to
             // read back from), then copied in.
-            var bos: [blocks.Tile.strips]gpu.Buffer = undefined;
+            var bos: [blocks.Tile.strips]Strip = undefined;
             var made: usize = 0;
-            errdefer for (bos[0..made]) |bo| dev.destroyBo(bo);
+            errdefer for (bos[0..made]) |bo| if (gpu.vulkan) dev.destroyTexture(bo) else dev.destroyBo(bo);
             const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
             defer gpa.free(window);
             for (&bos, tile_strips, 0..) |*bo, strip, i| {
+                if (gpu.vulkan) {
+                    const size = stripSize(i);
+                    const px = try gpa.alignedAlloc(u8, .@"4", size);
+                    defer gpa.free(px);
+                    var in: std.Io.Reader = .fixed(strip);
+                    var d: std.compress.flate.Decompress = .init(&in, .raw, window);
+                    d.reader.readSliceAll(px) catch return error.BadTiles;
+                    bo.* = try dev.createTexture(std.mem.bytesAsSlice(u32, px), textures.strip_width, textures.strip_height, mip_levels, .{ .min_linear = false, .repeat_s = true });
+                    made += 1;
+                    continue;
+                }
                 const size = stripLayout(i).size;
                 bo.* = try dev.createBo(size);
                 made += 1;
@@ -515,7 +540,7 @@ pub fn Renderer(comptime Device: type) type {
         pub fn deinit(r: *Self) void {
             for (&r.chunks) |*c| r.gpa.free(c.verts);
             for (&r.regions) |*g| if (g.bo) |bo| r.dev.destroyBo(bo);
-            for (r.strips) |bo| r.dev.destroyBo(bo);
+            for (r.strips) |bo| if (gpu.vulkan) r.dev.destroyTexture(bo) else r.dev.destroyBo(bo);
             for ([_]gpu.Buffer{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.creatures_bo[0], r.creatures_bo[1] }) |bo| r.dev.destroyBo(bo);
             for (r.boat_meshes) |m| if (m) |bm| r.dev.destroyBo(bm.bo);
             r.terrain.deinit(r.dev);
@@ -537,7 +562,11 @@ pub fn Renderer(comptime Device: type) type {
                 regions += 1;
             };
             var tiles: usize = 0;
-            for (r.strips) |bo| tiles += bo.map.len;
+            if (gpu.vulkan) {
+                for (0..r.strips.len) |i| tiles += stripSize(i);
+            } else for (r.strips) |bo| {
+                tiles += bo.map.len;
+            }
             var other: usize = 0;
             for ([_]gpu.Buffer{ r.indices, r.sea, r.dome, r.cube_lines, r.avatars, r.creatures_bo[0], r.creatures_bo[1] }) |bo| other += bo.map.len;
             for (r.boat_meshes) |m| if (m) |bm| {
@@ -693,7 +722,8 @@ pub fn Renderer(comptime Device: type) type {
             r.stats = .{};
             const cam = v.camera;
             const proj = cam.projection(v.aspect);
-            const vp = math.mul(proj, cam.view());
+            const world_vp = math.mul(proj, cam.view());
+            const vp = gpu.clip(world_vp);
             const env = v.env;
             const light = env.lightDir();
             const fog: V3 = if (v.underwater) V3{ 0.07, 0.34, 0.44 } * math.splat(0.25 + 0.75 * env.daylight) else env.horizon;
@@ -719,7 +749,7 @@ pub fn Renderer(comptime Device: type) type {
             r.keepInSight(cam.eye, depth + start + 12);
 
             // The regions in view, nearest first.
-            const frustum = math.Frustum.of(vp);
+            const frustum = math.Frustum.of(world_vp);
             var order: [region_count]struct { i: u8, d: f32 } = undefined;
             var n: usize = 0;
             for (r.regions, 0..) |c, i| {
@@ -742,7 +772,7 @@ pub fn Renderer(comptime Device: type) type {
             // The chunks in them.
             r.stats.chunks = @intCast(n * region_chunks * region_chunks);
             var tex: [blocks.Tile.strips]gpu.Texture = undefined;
-            for (&tex, r.strips, 0..) |*t, bo, i| t.* = .{ .handle = bo.handle, .config = stripConfig(i) };
+            for (&tex, r.strips, 0..) |*t, bo, i| t.* = if (gpu.vulkan) bo else .{ .handle = bo.handle, .config = stripConfig(i) };
             const target: Target(@TypeOf(sink)) = .{ .sink = sink, .viewport = viewport, .scissor = scissor, .indices = r.indices.handle, .stats = &r.stats };
 
             // 1. Solid blocks, near to far.
@@ -815,7 +845,7 @@ pub fn Renderer(comptime Device: type) type {
             // 2. The sky.
             const env_sun = env.sun_dir;
             var sky: SkyUniforms = .{
-                .turn = math.mul(proj, cam.rotation()),
+                .turn = gpu.clip(math.mul(proj, cam.rotation())),
                 .sun = .{ env_sun[0], env_sun[1], env_sun[2], env.sun_shows },
                 .sun_color = .{ env.sun_color[0] + 0.3 * env.sun_shows, env.sun_color[1] + 0.25 * env.sun_shows, env.sun_color[2] + 0.15 * env.sun_shows, 0 },
                 .moon = .{ -env_sun[0], -env_sun[1], -env_sun[2], env.moon_shows },
@@ -897,6 +927,7 @@ pub const FrameSink = struct {
     frame: *gpu.Frame,
 
     pub fn hasRoom(s: FrameSink, uniform_words: usize) bool {
+        if (gpu.vulkan) return true;
         return s.frame.hasRoom(uniform_words);
     }
 

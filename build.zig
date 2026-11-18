@@ -3,6 +3,7 @@
 //!
 //!     zig build                 the program, and its archive and catalogue (zig-out/apps)
 //!     zig build test            its tests, on this computer
+//!     zig build -Dplatform=linux  for Linux (Wayland and Vulkan): see src/linux.zig
 //!
 //! With a Dazzle (or kete) checkout of your own beside it:
 //! `zig build --fork=../dazzle`.
@@ -48,6 +49,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run = b.addRunArtifact(mktiles);
+    // For Vulkan: plain RGBA, each level after the one before.
+    if (app.platform == .linux) run.addArg("--linear");
     var files: [5]std.Build.LazyPath = undefined;
     for (0..4) |i| files[i] = run.addOutputFileArg(b.fmt("tiles-{d}.bin", .{i}));
     files[4] = run.addOutputFileArg("icons.bin");
@@ -55,4 +58,20 @@ pub fn build(b: *std.Build) void {
         for (0..4) |i| m.addAnonymousImport(b.fmt("tiles-{d}.bin", .{i}), .{ .root_source_file = files[i] });
         m.addAnonymousImport("icons.bin", .{ .root_source_file = files[4] });
     }
+
+    // Each shader's render state, for the Vulkan backend (on Dazzle, the
+    // shader compiler builds it into the program):
+    // `@import("shader_state").<name>`.
+    var state: std.Io.Writer.Allocating = .init(b.allocator);
+    for (app.shaders) |sh| {
+        var depth_test = false;
+        var blend = false;
+        for (sh.args) |a| {
+            if (std.mem.eql(u8, a, "--depth-test")) depth_test = true;
+            if (std.mem.eql(u8, a, "--blend=source-over")) blend = true;
+        }
+        state.writer.print("pub const {s} = .{{ .depth_test = {}, .blend = {} }};\n", .{ sh.name, depth_test, blend }) catch @panic("OOM");
+    }
+    const state_file = b.addWriteFiles().add("shader_state.zig", state.written());
+    app.module.addAnonymousImport("shader_state", .{ .root_source_file = state_file });
 }

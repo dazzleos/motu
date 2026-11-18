@@ -34,7 +34,7 @@ const platform = @import("platform").platform;
 const on_linux = @import("linux.zig");
 
 const print = sys.print;
-const Renderer = renderer_mod.Renderer(gpu.Device);
+pub const Renderer = renderer_mod.Renderer(gpu.Device);
 
 /// How the islands' files end (they are kept in places.dir()).
 const island_ext = ".motu";
@@ -122,10 +122,10 @@ fn newName(g: *const game_mod.Game, buf: []u8) []const u8 {
 }
 
 /// The canoes being paddled: this player's, and the others'.
-const Boats = struct {
+pub const Boats = struct {
     list: [net.max_players + 1]boat_mod.Shown = undefined,
 
-    fn items(b: *Boats, g: *const game_mod.Game) []const boat_mod.Shown {
+    pub fn items(b: *Boats, g: *const game_mod.Game) []const boat_mod.Shown {
         var n: usize = 0;
         if (g.boat) |mine| {
             b.list[n] = mine.shown();
@@ -229,7 +229,7 @@ const Scene = struct {
 /// What the telescope shows of `vp`: the square its circle is in (the
 /// view's height, in the middle), within `scissor` if there is one; the
 /// rest is not drawn (it is black).
-fn lens(vp: gpu.Viewport, scissor: ?gpu.Viewport) gpu.Viewport {
+pub fn lens(vp: gpu.Viewport, scissor: ?gpu.Viewport) gpu.Viewport {
     const side = @min(vp.width, vp.height);
     var x0: i32 = vp.x + @as(i32, @intCast((vp.width - side) / 2));
     var y0: i32 = vp.y + @as(i32, @intCast((vp.height - side) / 2));
@@ -423,14 +423,14 @@ test "the GPU's time is read from the kernel's counters for its file" {
 /// Errors Motu goes on from (the frame or the meshes are made again
 /// later), said in the log: each kind once, and then at most every few
 /// seconds, so one that keeps happening does not fill it.
-const Trouble = struct {
+pub const Trouble = struct {
     last_ns: u64 = 0,
     last: ?anyerror = null,
     since_said: u32 = 0,
 
     const quiet_ns = 5 * std.time.ns_per_s;
 
-    fn note(t: *Trouble, what: []const u8, err: anyerror) void {
+    pub fn note(t: *Trouble, what: []const u8, err: anyerror) void {
         const now = sys.nowNs();
         t.since_said += 1;
         if (t.last != null and t.last.? == err and now -| t.last_ns < quiet_ns) return;
@@ -443,7 +443,7 @@ const Trouble = struct {
 
 /// Meshes up to `limit` of the chunks changed, nearest `near` first; if
 /// it cannot (no memory), they are meshed later.
-fn mesh(renderer: *Renderer, world: *world_mod.World, near: anytype, limit: usize, trouble: *Trouble) void {
+pub fn mesh(renderer: *Renderer, world: *world_mod.World, near: anytype, limit: usize, trouble: *Trouble) void {
     _ = renderer.update(world, near, limit) catch |err| trouble.note("meshing the island", err);
 }
 
