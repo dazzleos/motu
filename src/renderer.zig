@@ -51,14 +51,24 @@ const mip_levels = textures.mip_levels;
 /// tools/mktiles.zig at build time), deflated.
 const tile_strips = [blocks.Tile.strips][]const u8{ @embedFile("tiles-0.bin"), @embedFile("tiles-1.bin"), @embedFile("tiles-2.bin"), @embedFile("tiles-3.bin") };
 
-/// How the strips are sampled: smoothly (bilinear) up close; further off,
-/// from the mipmap levels, the nearest texel of the two nearest levels
-/// mixed (so a texel of the next tile down never bleeds in); repeating
-/// across the tile, and not down it.
-fn stripConfig() vc4.texture.Config {
-    const layout = vc4.texture.mipmapLayout(textures.strip_width, textures.strip_height, mip_levels);
+/// Strip `strip`'s format: 16 bits a texel (see textures.stripSeeThrough).
+fn stripFormat(strip: usize) vc4.Format {
+    return if (textures.stripSeeThrough(@intCast(strip))) .rgba4444 else .rgb565;
+}
+
+fn stripLayout(strip: usize) vc4.texture.Mipmapped {
+    return vc4.texture.mipmapLayoutOf(stripFormat(strip), textures.strip_width, textures.strip_height, mip_levels);
+}
+
+/// How strip `strip` is sampled: smoothly (bilinear) up close; further
+/// off, from the mipmap levels, the nearest texel of the two nearest
+/// levels mixed (so a texel of the next tile down never bleeds in);
+/// repeating across the tile, and not down it.
+fn stripConfig(strip: usize) vc4.texture.Config {
+    const layout = stripLayout(strip);
     return .{
         .offset = layout.base,
+        .type = stripFormat(strip).textureType(),
         .width = textures.strip_width,
         .height = textures.strip_height,
         .mag_filter = .linear,
@@ -401,27 +411,24 @@ pub fn Renderer(comptime Device: type) type {
             var line = try shader.Pipeline.init(gpa, dev, prog(@embedFile("line.shader")) catch unreachable, .{ .vertex_stride = 12, .attributes = pos_layout, .primitive = .lines, .early_z = true });
             errdefer line.deinit(dev);
 
-            // The tiles (see `strips`).
-            const layout = vc4.texture.mipmapLayout(textures.strip_width, textures.strip_height, mip_levels);
+            // The tiles (see `strips`), drawn at build time, as the GPU
+            // takes them: inflated here (not in the GPU's memory, slow to
+            // read back from), then copied in.
             var bos: [blocks.Tile.strips]vc4.Bo = undefined;
             var made: usize = 0;
             errdefer for (bos[0..made]) |bo| dev.destroyBo(bo);
-            for (&bos) |*bo| {
-                bo.* = try dev.createBo(layout.size);
-                made += 1;
-            }
-            // Drawn at build time, as the GPU takes them.
-            // Inflated here (not in the GPU's memory, slow to read back
-            // from), then copied in.
-            const px = try gpa.alloc(u8, layout.size);
-            defer gpa.free(px);
             const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
             defer gpa.free(window);
-            for (bos, tile_strips) |bo, strip| {
+            for (&bos, tile_strips, 0..) |*bo, strip, i| {
+                const size = stripLayout(i).size;
+                bo.* = try dev.createBo(size);
+                made += 1;
+                const px = try gpa.alloc(u8, size);
+                defer gpa.free(px);
                 var in: std.Io.Reader = .fixed(strip);
                 var d: std.compress.flate.Decompress = .init(&in, .raw, window);
                 d.reader.readSliceAll(px) catch return error.BadTiles;
-                @memcpy(bo.map[0..layout.size], px);
+                @memcpy(bo.map[0..size], px);
             }
 
             // Every quad's triangles.
@@ -734,7 +741,7 @@ pub fn Renderer(comptime Device: type) type {
             // The chunks in them.
             r.stats.chunks = @intCast(n * region_chunks * region_chunks);
             var tex: [blocks.Tile.strips]vc4.render.Texture = undefined;
-            for (&tex, r.strips) |*t, bo| t.* = .{ .handle = bo.handle, .config = stripConfig() };
+            for (&tex, r.strips, 0..) |*t, bo, i| t.* = .{ .handle = bo.handle, .config = stripConfig(i) };
             const target: Target(@TypeOf(sink)) = .{ .sink = sink, .viewport = viewport, .scissor = scissor, .indices = r.indices.handle, .stats = &r.stats };
 
             // 1. Solid blocks, near to far.

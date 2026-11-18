@@ -578,8 +578,8 @@ test "a lone block: six faces, wound to face out, lit and unshaded" {
     var m: Mesh = .{};
     defer m.deinit(testing.allocator);
     try build(testing.allocator, w, 0, 0, &m);
-    // Bricks are in the second strip.
-    const bricks = m.items(.solid1);
+    // Bricks are in the first strip.
+    const bricks = m.items(.solid0);
     try testing.expectEqual(@as(usize, 24), bricks.len);
     try testing.expectEqual(@as(usize, 24), m.solidCount());
     try expectWound(bricks);
@@ -694,10 +694,10 @@ test "plants: fans of fronds, both ways round" {
     try build(testing.allocator, w, 0, 0, &m);
     try testing.expectEqual(@as(usize, 0), m.solidCount());
     // Seven fronds, both ways round (the island's strip).
-    try testing.expectEqual(@as(usize, 14 * 4), m.items(.clear0).len);
+    try testing.expectEqual(@as(usize, 14 * 4), m.items(.clear3).len);
     // Their tips sway; their feet are on the ground, in the block.
     var tips: u32 = 0;
-    for (m.items(.clear0)) |v| {
+    for (m.items(.clear3)) |v| {
         if (Info.unpack(v.info).anim == .plant) {
             try testing.expect(v.pos[1] > 20.4 and v.pos[1] < 21.1);
             tips += 1;
@@ -727,7 +727,7 @@ test "palms: a solid trunk facing out, and a crown of fronds reaching past its b
     for (solid) |v| try testing.expect(v.pos[0] > 7.5 and v.pos[0] < 9.5 and v.pos[2] > 7.5 and v.pos[2] < 9.5);
     // The crown: see-through, round the top, reaching out past the block.
     var far: f32 = 0;
-    for (m.items(.clear0)) |v| {
+    for (m.items(.clear3)) |v| {
         try testing.expect(v.pos[1] > 22 and v.pos[1] < 27);
         far = @max(far, @abs(v.pos[0] - 8.5), @abs(v.pos[2] - 8.5));
     }
@@ -792,7 +792,9 @@ test "the island's chunks: how many quads (to keep drawing it within budget)" {
         // Nothing built: the island's strip, but for bamboo's canes,
         // hibiscus' and mangroves' leaves, black sand and shells (the
         // building strip's, an extra draw where they are).
-        try testing.expectEqual(@as(usize, 0), m.items(.solid2).len + m.items(.solid3).len);
+        // No colours (the players' and creatures') on the island; leafy
+        // plants (solid) in the see-through strip.
+        try testing.expectEqual(@as(usize, 0), m.items(.solid2).len);
         bamboo += m.items(.solid1).len / 4;
     };
     try testing.expect(bamboo * 8 < solid);

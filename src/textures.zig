@@ -27,6 +27,50 @@ pub const mip_levels = std.math.log2_int(u32, tile_size);
 /// The blocks with icons (for tools/mktiles.zig).
 pub const palette = blocks.palette;
 
+/// Whether strip `strip`'s tiles have see-through texels (the last's
+/// only: see blocks.Tile). The GPU keeps the strips in 16 bits a texel, to
+/// leave its memory for the rest: RGBA4444 for that strip (`pack4444`),
+/// RGB565 for the others (`pack565`).
+pub fn stripSeeThrough(strip: u2) bool {
+    return strip == Tile.strips - 1;
+}
+
+/// An ordered dither's threshold at (x, y), from 0 to 1: a colour between
+/// two of the fewer a 16-bit texel has is one or the other, as often as it
+/// is near each, so the tiles' gradients do not show bands.
+fn dither(x: u32, y: u32) f32 {
+    const bayer = [16]u8{ 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+    return (@as(f32, @floatFromInt(bayer[(y & 3) * 4 + (x & 3)])) + 0.5) / 16;
+}
+
+fn quantise(v: u32, levels: u32, d: f32) u32 {
+    const f = @as(f32, @floatFromInt(v)) * @as(f32, @floatFromInt(levels)) / 255 + d;
+    return @min(levels, @as(u32, @intFromFloat(@floor(f))));
+}
+
+/// A texel (0xAARRGGBB) as the texture unit's RGB565 has it: blue in the
+/// top 5 bits, then green (6), red in the low 5 (it returns the top bits as
+/// a 32-bit texel's low byte; see Dazzle's vc4.Format).
+pub fn pack565(c: u32, x: u32, y: u32) u16 {
+    const d = dither(x, y);
+    const b = quantise(c & 0xff, 31, d);
+    const g = quantise(c >> 8 & 0xff, 63, d);
+    const r = quantise(c >> 16 & 0xff, 31, d);
+    return @intCast(b << 11 | g << 5 | r);
+}
+
+/// A texel (0xAARRGGBB) as the texture unit's RGBA4444 has it: blue in the
+/// top 4 bits, then green, red, and alpha (not dithered: it says where a
+/// leaf's edge is) in the low 4.
+pub fn pack4444(c: u32, x: u32, y: u32) u16 {
+    const d = dither(x, y);
+    const b = quantise(c & 0xff, 15, d);
+    const g = quantise(c >> 8 & 0xff, 15, d);
+    const r = quantise(c >> 16 & 0xff, 15, d);
+    const a = quantise(c >> 24, 15, 0.5);
+    return @intCast(b << 12 | g << 8 | r << 4 | a);
+}
+
 /// 0xAARRGGBB.
 const Pixel = u32;
 
@@ -1111,6 +1155,8 @@ test "every tile is in its strip, opaque except where things are see-through, an
                 if (px[(oy + y) * strip_width + x] >> 24 != 0xff) clear += 1;
             };
             try std.testing.expect((clear > 0) == see_through);
+            // And in the strip kept with alpha (see `stripSeeThrough`).
+            try std.testing.expectEqual(see_through, stripSeeThrough(@intCast(strip)));
         }
     }
     // Wrapping noise: the left and right edges of grass are close in
@@ -1145,4 +1191,21 @@ test "the icons drawn at build time are as drawn now" {
     // icon, as drawn now.
     icon(palette[0], &S.icon_px);
     try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&S.icon_px), @embedFile("icons.bin")[0 .. icon_size * icon_size * 4]);
+}
+
+test "texels in 16 bits: the channels where the GPU takes them, gradients dithered" {
+    // Pure colours: each channel at its place.
+    try std.testing.expectEqual(@as(u16, 0xf800), pack565(0xff0000ff, 0, 0));
+    try std.testing.expectEqual(@as(u16, 0x07e0), pack565(0xff00ff00, 0, 0));
+    try std.testing.expectEqual(@as(u16, 0x001f), pack565(0xffff0000, 0, 0));
+    try std.testing.expectEqual(@as(u16, 0xf00f), pack4444(0xff0000ff, 0, 0));
+    try std.testing.expectEqual(@as(u16, 0x00f0), pack4444(0x00ff0000, 0, 0));
+    // A grey between two levels: some texels of a 4x4 block one, some the
+    // other.
+    var seen = [2]bool{ false, false };
+    for (0..4) |y| for (0..4) |x| {
+        const v = pack4444(0xff7a7a7a, @intCast(x), @intCast(y)) >> 12;
+        seen[@intFromBool(v == 8)] = true;
+    };
+    try std.testing.expect(seen[0] and seen[1]);
 }

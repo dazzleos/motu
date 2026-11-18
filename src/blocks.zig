@@ -444,6 +444,10 @@ pub const Face = enum(u3) {
 /// The first strip has everything the island is made of, so a chunk not
 /// built on is drawn with one texture.
 pub const Tile = enum(u6) {
+    // Opaque tiles in the first three strips (kept in 16 bits, RGB565);
+    // those with see-through texels in the last (RGBA4444: see
+    // textures.zig).
+    //
     // The island.
     grass_top = 0,
     grass_side,
@@ -452,29 +456,18 @@ pub const Tile = enum(u6) {
     sand,
     sandstone_top,
     sandstone_side,
-    /// Under the lagoon, with the island's.
-    seagrass,
     coral,
     palm_bark,
-    frond,
     coconut,
-    tall_grass,
-    red_flower,
-    yellow_flower,
-    leafy_plant,
     // Building.
-    volcanic_wall = 16,
+    volcanic_wall,
     thatch,
     /// A bed's pillow.
     plaster,
-    /// A torch's flame.
-    lamp,
-    /// For water's icon (the water itself is drawn by its own shader).
-    water,
     sticks_side,
     bed_cover,
     chest_side,
-    chest_top,
+    chest_top = 16,
     bamboo,
     sticks_top,
     hibiscus,
@@ -484,7 +477,15 @@ pub const Tile = enum(u6) {
     shells,
     /// A frangipani's leaves, and its flowers among them.
     frangipani,
-    // Colours.
+    // More building and furniture.
+    lava,
+    mat,
+    hammock,
+    /// A string of beads.
+    beads,
+    /// A canoe's hull, carved.
+    canoe,
+    // Colours (creatures are drawn from this strip alone).
     white = 32,
     black,
     red,
@@ -495,28 +496,31 @@ pub const Tile = enum(u6) {
     purple,
     pink,
     cyan,
-    // More flowers.
-    pink_flower,
-    purple_flower,
-    blue_flower,
-    white_flower,
-    orange_flower,
     /// For sharks.
     grey,
-    // More building and furniture.
-    lava = 48,
-    mat,
-    hammock,
-    /// A string of beads.
-    beads,
-    /// A canoe's hull, carved.
-    canoe,
     // Players' skin (see avatar.zig).
     skin_pale,
     skin_light,
     skin_tan,
     skin_brown,
     skin_dark,
+    // See-through.
+    /// For water's icon (the water itself is drawn by its own shader).
+    water = 48,
+    /// Under the lagoon, with the island's.
+    seagrass,
+    frond,
+    tall_grass,
+    red_flower,
+    yellow_flower,
+    leafy_plant,
+    /// A torch's flame.
+    lamp,
+    pink_flower,
+    purple_flower,
+    blue_flower,
+    white_flower,
+    orange_flower,
 
     pub const per_strip = 16;
     pub const strips = 4;
@@ -548,9 +552,12 @@ test "every block that can be placed has a name and its own look" {
         try std.testing.expect(b.shape() != .none);
     }
     for (std.enums.values(Tile)) |t| try std.testing.expect(t.strip() < Tile.strips);
-    // What the island is made of is all in the first strip.
-    for ([_]Block{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .palm, .tall_grass, .leafy_plant }) |b|
+    // What the island is made of is all in the first strip; its plants
+    // in the last, with what else can be seen through.
+    for ([_]Block{ .grass, .dirt, .volcanic_rock, .sand, .sandstone, .palm }) |b|
         for (Face.all) |f| try std.testing.expectEqual(@as(u2, 0), b.tile(f).strip());
+    for ([_]Block{ .tall_grass, .leafy_plant }) |b|
+        for (Face.all) |f| try std.testing.expectEqual(@as(u2, Tile.strips - 1), b.tile(f).strip());
     try std.testing.expectEqual(Tile.grass_top, Block.grass.tile(.up));
     try std.testing.expectEqual(Tile.grass_side, Block.grass.tile(.north));
     try std.testing.expect(Block.table.isSolid() and !Block.table.isOpaque() and Block.lamp.emits() > 0);

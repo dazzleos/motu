@@ -1,7 +1,7 @@
 //! Makes Motu's tiles and icons at build time, so the game does not spend
-//! its start drawing them (see src/apps/motu/textures.zig): each strip of
-//! tiles as the GPU takes it, mipmaps and all (vc4.texture.uploadMipmaps's
-//! layout), deflated (raw), as a quarter as much is quicker to read from
+//! its start drawing them (see src/textures.zig): each strip of tiles as
+//! the GPU takes it, in 16 bits a texel, mipmaps and all
+//! (vc4.texture.uploadMipmapsOf's layout), deflated (raw), as a quarter as much is quicker to read from
 //! an SD card than to inflate; and the palette's icons, one after another
 //! (0xAARRGGBB, little endian).
 //!
@@ -20,12 +20,20 @@ pub fn main(init: std.process.Init) !void {
     }
     const cwd = std.Io.Dir.cwd();
     const px = try arena.alloc(u32, textures.strip_width * textures.strip_height);
-    const layout = texture.mipmapLayout(textures.strip_width, textures.strip_height, textures.mip_levels);
-    const out = try arena.alloc(u8, layout.size);
     for (0..textures.strip_count) |i| {
         textures.strips(@intCast(i), px[0 .. textures.strip_width * textures.strip_height]);
+        // In 16 bits a texel (see textures.stripSeeThrough).
+        const see_through = textures.stripSeeThrough(@intCast(i));
+        const layout = if (see_through)
+            texture.mipmapLayoutOf(.rgba4444, textures.strip_width, textures.strip_height, textures.mip_levels)
+        else
+            texture.mipmapLayoutOf(.rgb565, textures.strip_width, textures.strip_height, textures.mip_levels);
+        const out = try arena.alloc(u8, layout.size);
         @memset(out, 0);
-        try texture.uploadMipmaps(arena, out, px, textures.strip_width, textures.strip_height, textures.mip_levels, .colour);
+        if (see_through)
+            try texture.uploadMipmapsOf(arena, .rgba4444, out, px, textures.strip_width, textures.strip_height, textures.mip_levels, .colour, textures.pack4444)
+        else
+            try texture.uploadMipmapsOf(arena, .rgb565, out, px, textures.strip_width, textures.strip_height, textures.mip_levels, .colour, textures.pack565);
         try write(init.io, cwd, args[1 + i], try deflate(arena, out));
     }
     const icons = try arena.alloc(u32, textures.palette.len * textures.icon_size * textures.icon_size);
