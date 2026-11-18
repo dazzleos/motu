@@ -162,13 +162,14 @@ pub fn run(init: std.process.Init) !void {
         .on_input = .of(&input, main.Input.filter),
     });
     window.setFullscreen(true);
+    input.linux_win = window;
     print("motu: keeping islands in {s}\n", .{places.dir()});
 
     var last = sys.nowNs();
     var last_save = last;
-    // The mouse is not taken yet (kete's Wayland windows cannot lock the
-    // pointer): the view is turned with the keys.
-    game.can_capture = false;
+    // The mouse can be taken (it turns the view) if the compositor can
+    // lock the pointer: until it says it cannot.
+    game.can_capture = true;
     while (try app.step(std.time.ns_per_s / 60)) {
         const now = sys.nowNs();
         const dt: f32 = @floatCast(@as(f64, @floatFromInt(now - last)) / std.time.ns_per_s);
@@ -189,6 +190,15 @@ pub fn run(init: std.process.Init) !void {
             .failed => game.say("Cannot reach that game"),
         };
         game.tick(dt);
+        if (game.capture_wanted) |take| {
+            game.capture_wanted = null;
+            if (take) {
+                if (!window.win.lockPointer()) game.can_capture = false;
+            } else {
+                window.win.unlockPointer();
+                game.captured = false;
+            }
+        }
         if (scene.renderer) |r| main.mesh(r, world, game.player.eye(), 12, &scene.trouble);
         if (game.wantsSave() and now - last_save > main.save_every * std.time.ns_per_s) {
             main.save(gpa, &game, &cur);

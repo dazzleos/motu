@@ -474,6 +474,8 @@ const Root = struct {
 pub const Input = struct {
     game: *game_mod.Game,
     win: ?*app.Window = null,
+    /// On Linux: kete's window (Dazzle's is `win`).
+    linux_win: if (platform == .linux) ?*kete.App.Window else void = if (platform == .linux) null else {},
 
     pub fn filter(in: *Input, e: kete.window.InputEvent) bool {
         const game = in.game;
@@ -500,7 +502,11 @@ pub const Input = struct {
             .pointer_locked => |locked| {
                 // Given back (the shell took it): the menu.
                 game.pointerLocked(locked);
-                if (!locked) if (in.win) |w| w.unlockPointer();
+                if (!locked) {
+                    if (platform == .linux) {
+                        if (in.linux_win) |w| w.win.unlockPointer();
+                    } else if (in.win) |w| w.unlockPointer();
+                }
                 return true;
             },
             else => {},
