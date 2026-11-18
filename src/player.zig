@@ -25,6 +25,13 @@ const fly_speed: f32 = 11;
 const swim_speed: f32 = 3;
 const climb_speed: f32 = 3;
 const creep_speed: f32 = 1.4;
+/// How high a ledge can be over the feet to be climbed out onto from the
+/// water (swimming at it, Space held: lifted onto it). Swimming up, the
+/// feet stay some way under the surface (the middle comes out of the
+/// water, and rises no further), so a bank a block over the water is
+/// nearly one and a half blocks over them.
+const climb_out: f32 = 1.5;
+
 /// How high a step it walks up without jumping.
 const step_up: f32 = 0.55;
 
@@ -139,6 +146,9 @@ pub const Player = struct {
             p.vel[1] = @max(p.vel[1], -40);
         }
         p.on_ground = false;
+        // Swimming against a bank with Space held, its top within reach:
+        // lifted out of the water onto it (see `climb_out`).
+        var against = false;
         // Each axis on its own, stopping at what is solid.
         inline for (.{ 0, 2, 1 }) |axis| {
             const d = p.vel[axis] * dt;
@@ -154,8 +164,15 @@ pub const Player = struct {
                     // Up to the block, nearly touching it.
                     p.pos[axis] += p.approach(w, axis, d);
                     if (axis == 1 and d < 0) p.on_ground = true;
+                    if (axis != 1) against = true;
                     p.vel[axis] = 0;
                 }
+            }
+        }
+        if (swimming and against and c.up and p.vel[1] >= 0) {
+            if (p.ledgeHeight(w, wish)) |up| {
+                p.pos[1] += up;
+                p.vel[1] = 0;
             }
         }
         // In the world, across.
@@ -167,6 +184,26 @@ pub const Player = struct {
             p.vel[1] = 0;
             p.on_ground = true;
         }
+    }
+
+    /// How far up the top of what it is against (pushing along `wish`) is,
+    /// if it is within `climb_out` and it could stand on it: the height to
+    /// lift it by, onto it.
+    fn ledgeHeight(p: *const Player, w: *const World, wish: V3) ?f32 {
+        if (math.length(wish) < 0.1) return null;
+        const ahead = p.pos + math.normalize(wish) * math.splat(half_width + 0.1);
+        const x: i32 = @intFromFloat(@floor(ahead[0]));
+        const z: i32 = @intFromFloat(@floor(ahead[2]));
+        // The first block above the feet that is not solid, at that place.
+        var y: i32 = @intFromFloat(@floor(p.pos[1]));
+        const highest: i32 = @intFromFloat(@floor(p.pos[1] + climb_out));
+        while (y <= highest and w.get(x, y, z).isSolid()) y += 1;
+        const top: f32 = @floatFromInt(y);
+        const up = top - p.pos[1] + 0.01;
+        if (up <= 0 or up > climb_out) return null;
+        var q = p.*;
+        q.pos[1] += up;
+        return if (q.collides(w)) null else up;
     }
 
     /// How far along `axis` it can go of `d` before it meets something.
@@ -373,4 +410,25 @@ test "slabs are walked up onto, half a block; ladders are climbed" {
     for (0..30) |_| p.update(w, .{}, 1.0 / 60.0);
     for (0..60) |_| p.update(w, .{ .forward = 1 }, 1.0 / 60.0);
     try testing.expect(p.pos[1] > 32.5);
+}
+
+test "out of the water onto a block above it, swimming at it with Space held" {
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    // Deep water to x 20, then a bank whose top is a block over the
+    // water's surface (the sea's level, y 24).
+    for (0..world_mod.size_z) |z| for (0..40) |x| {
+        for (18..world_mod.sea_level) |y| w.blocks[World.index(@intCast(x), @intCast(y), @intCast(z))] = if (x < 20) .water else .sand;
+        if (x >= 20) w.blocks[World.index(@intCast(x), world_mod.sea_level, @intCast(z))] = .grass;
+        w.blocks[World.index(@intCast(x), 17, @intCast(z))] = .sand;
+    };
+    for ([_]f32{ 21, 23.3 }) |start_y| {
+        var p: Player = .{ .pos = .{ 17, start_y, 64.5 }, .yaw = std.math.pi / 2.0 };
+        // Swimming east, at the bank, Space held.
+        var t: f32 = 0;
+        while (t < 6) : (t += 0.02) p.update(w, .{ .forward = 1, .up = true }, 0.02);
+        // Up on the bank's top, and on along it.
+        try testing.expect(p.pos[0] > 21);
+        try testing.expect(p.pos[1] >= world_mod.sea_level + 1 - 0.01);
+    }
 }
