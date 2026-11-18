@@ -21,38 +21,28 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      # Dazzle beside Motu, as build.zig.zon has it (../dazzle).
       - uses: actions/checkout@v4
+      # Zig as Dazzle's scripts/zig pins it. Dazzle itself is fetched as
+      # build.zig.zon pins it.
+      - uses: mlugg/setup-zig@v2
         with:
-          path: motu
-      - uses: actions/checkout@v4
-        with:
-          repository: dazzleos/dazzle
-          path: dazzle
-
-      - name: Cache Zig
-        uses: actions/cache@v4
-        with:
-          path: dazzle/build/zig
-          key: zig-${{ runner.os }}-${{ hashFiles('dazzle/scripts/zig') }}
+          version: 0.17.1
 
       - name: Test
-        working-directory: motu
-        run: ../dazzle/scripts/zig build test --summary new
+        run: zig build test --summary new
 
       # Signed with the key Dazzle's apps are (and Settings trusts).
       - name: Build
-        working-directory: motu
         env:
           DAZZLE_SIGNING_KEY: ${{ secrets.DAZZLE_SIGNING_KEY }}
         run: |
-          ../dazzle/scripts/zig build
+          zig build
           ls -l zig-out/apps
 
       - uses: actions/upload-artifact@v4
         with:
           name: motu
-          path: motu/zig-out/apps/
+          path: zig-out/apps/
           if-no-files-found: error
 
   publish:
