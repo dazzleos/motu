@@ -73,6 +73,24 @@ jobs:
             --target "$GITHUB_SHA" --title "Motu (latest build, $short)" \
             --notes-file notes.md --latest
 
+      # Each build also as a release of its own, tagged by its commit,
+      # which the store (dazzleos/store) lists: its files stay as they are
+      # (the latest release's are replaced by the next build's). The ten
+      # newest are kept.
+      - name: A release of this build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          short=$(echo "$GITHUB_SHA" | cut -c1-7)
+          tag="build-$short"
+          gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" dist/* \
+            --target "$GITHUB_SHA" --title "Motu (build $short)" \
+            --notes "The build of Motu from commit $short, as dazzleos/store lists it." --latest=false
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("build-"))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
+            while read -r old; do gh release delete "$old" --cleanup-tag --yes; done
+
   # The snap, for Linux (see snap/snapcraft.yaml): built for both
   # architectures, and kept as the run's artifacts.
   snap:
