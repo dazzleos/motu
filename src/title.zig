@@ -2,9 +2,9 @@
 //! (and after one is left). A map, title.motu, as islands are kept (see
 //! Game.encode), made into Motu.
 //!
-//! The camera stands on its cyan block (`camera_block`), looking the way
-//! the player looked when the map was saved; the time of day is the one
-//! it was saved at. The weather is always fair (Game.weather), and its
+//! The camera stands on its cyan block (`camera_block`), always facing
+//! the same way (north: towards -z, `yaw`), at the same time of day
+//! (`time_of_day`); the weather is always fair (Game.weather). Its
 //! creatures are the title scene's (creatures.zig: one pod of dolphins and
 //! a turtle, ahead of the camera), as its world's seed is
 //! `World.title_seed`.
@@ -12,8 +12,8 @@
 //! To change it: copy title.motu to the islands folder (on Linux,
 //! ~/.local/share/motu, or ~/snap/motu/common in the snap) under another
 //! name (Title.motu), join it from the menu, change it (keeping one cyan
-//! block, stood on and looking the way the camera should), leave it (it is
-//! saved) and copy it back here.
+//! block, where the camera stands), leave it (it is saved) and copy it
+//! back here.
 
 const std = @import("std");
 const blocks = @import("blocks.zig");
@@ -28,6 +28,11 @@ pub const data = @embedFile("title.motu");
 
 /// What the camera stands on.
 pub const camera_block: Block = .cyan;
+/// Which way it faces (yaw 0 faces -z), a little down.
+pub const yaw: f32 = 0;
+pub const pitch: f32 = -0.04;
+/// The time of day (0.4: mid-morning).
+pub const time_of_day: f32 = 0.4;
 
 /// The title scene into `g`: its world, and the camera on its cyan block.
 pub fn load(g: *Game) !void {
@@ -35,8 +40,9 @@ pub fn load(g: *Game) !void {
     const w = g.world;
     const at = find(w) orelse return error.NoCameraBlock;
     w.spawn = .{ @as(f32, @floatFromInt(at[0])) + 0.5, @floatFromInt(at[1] + 1), @as(f32, @floatFromInt(at[2])) + 0.5 };
-    w.spawn_yaw = g.player.yaw;
-    g.player.pos = w.spawn;
+    w.spawn_yaw = yaw;
+    g.player = .{ .pos = w.spawn, .yaw = yaw, .pitch = pitch };
+    g.time_of_day = time_of_day;
 }
 
 /// Where the cyan block is (the highest, if there are more).
