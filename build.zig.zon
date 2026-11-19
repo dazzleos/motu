@@ -8,8 +8,8 @@
         // is built with. To build with a Dazzle checkout beside Motu's
         // instead: `zig build --fork=../dazzle`.
         .dazzle = .{
-            .url = "git+https://github.com/dazzleos/dazzle#056e3e6ec7c7ccb933e291b6e7a68b216669313e",
-            .hash = "dazzle-0.0.0-ze61IH8jzAC6yEaMr1VfENiCxPxvGvNNOSy4s0AxFnsS",
+            .url = "git+https://github.com/dazzleos/dazzle#96724957946e9c19d72d93a3f0ea7475f3b8b3ee",
+            .hash = "dazzle-0.0.0-ze61IGxmrwAGEJQLgFQH3UGfJ_MvljU5w0V47jA8xsa0",
         },
     },
     .paths = .{
