@@ -242,6 +242,13 @@ pub const Game = struct {
     island_action: ?IslandAction = null,
     /// The island asked to be deleted, until it is said for sure.
     delete_asked: ?u8 = null,
+    /// What the island played is called (`islandName`).
+    island_name_buf: [48]u8 = undefined,
+    island_name_len: u8 = 0,
+    /// An island being renamed, and its new name as typed.
+    renaming: ?u8 = null,
+    rename_buf: [48]u8 = undefined,
+    rename_len: u8 = 0,
     /// Asked to quit (main.zig saves first).
     quit_asked: bool = false,
     /// Frames a second, each second, the oldest first (for the menu's
@@ -547,7 +554,7 @@ pub const Game = struct {
     /// Typing (the name, in the Player tab): keys go to it, but Esc and
     /// Tab.
     pub fn typing(g: *const Game) bool {
-        return g.menu_open and g.menu_tab == .player;
+        return g.menu_open and (g.menu_tab == .player or g.renaming != null);
     }
 
     pub fn showMenuTab(g: *Game, i: usize) void {
@@ -559,9 +566,10 @@ pub const Game = struct {
         g.showMenuTab(@intFromEnum(MenuTab.islands));
     }
 
-    /// An island asked to be deleted, not now.
+    /// An island asked to be deleted, not now (nor one being renamed).
     pub fn hideIslands(g: *Game) void {
         g.delete_asked = null;
+        g.renaming = null;
     }
 
     pub fn newIsland(g: *Game) void {
@@ -570,39 +578,6 @@ pub const Game = struct {
 
     pub fn openIsland(g: *Game, i: u8) void {
         g.island_action = .{ .open = i };
-    }
-
-    /// Chooses an island in the menu (to join, or delete).
-    pub fn selectIsland(g: *Game, i: u8) void {
-        if (i < g.islands.count) g.islands.selected = i;
-        g.islands.remote = null;
-        g.delete_asked = null;
-    }
-
-    /// Chooses an island nearby, on another computer (to join).
-    pub fn selectRemote(g: *Game, n: Nearby) void {
-        g.islands.remote = n.where();
-        g.islands.selected = null;
-        g.delete_asked = null;
-    }
-
-    /// The island nearby chosen, if it is still there.
-    pub fn remoteChosen(g: *const Game) ?Nearby {
-        const w = g.islands.remote orelse return null;
-        for (g.net.nearby) |n| if (n.same(w)) return n;
-        return null;
-    }
-
-    /// Plays on the island chosen: one kept here, or asks to join one
-    /// nearby.
-    pub fn joinIsland(g: *Game) void {
-        if (g.remoteChosen()) |n| return g.joinNearby(n);
-        if (g.islands.selected) |i| g.openIsland(i);
-    }
-
-    /// Whether an island is chosen that can be joined.
-    pub fn canJoin(g: *const Game) bool {
-        return g.remoteChosen() != null or g.islands.selected != null;
     }
 
     /// Lets others on the network join this island (or not).
@@ -644,6 +619,38 @@ pub const Game = struct {
 
     pub fn keepIsland(g: *Game) void {
         g.delete_asked = null;
+    }
+
+    /// Starts renaming island `i` (in the menu: its name in a box).
+    pub fn startRename(g: *Game, i: u8) void {
+        if (i >= g.islands.count) return;
+        const n = g.islands.name(i);
+        @memcpy(g.rename_buf[0..n.len], n);
+        g.rename_len = @intCast(n.len);
+        g.renaming = i;
+        g.delete_asked = null;
+    }
+
+    /// The new name, as typed.
+    pub fn setRenameText(g: *Game, text: []const u8) void {
+        const n = @min(text.len, g.rename_buf.len);
+        @memcpy(g.rename_buf[0..n], text[0..n]);
+        g.rename_len = @intCast(n);
+    }
+
+    pub fn renameText(g: *const Game) []const u8 {
+        return std.mem.trim(u8, g.rename_buf[0..g.rename_len], " ");
+    }
+
+    /// Renames the island being renamed (as typed).
+    pub fn finishRename(g: *Game) void {
+        const i = g.renaming orelse return;
+        g.renaming = null;
+        g.island_action = .{ .rename = i };
+    }
+
+    pub fn cancelRename(g: *Game) void {
+        g.renaming = null;
     }
 
     pub fn quit(g: *Game) void {
@@ -915,8 +922,41 @@ pub const Game = struct {
     /// 2: the day, at the end. 3: then the canoe the player is in.
     const version = 3;
 
-    /// The world, then the player and the hotbar.
+    /// What the island played is called (kept in its file).
+    pub fn islandName(g: *const Game) []const u8 {
+        return g.island_name_buf[0..g.island_name_len];
+    }
+
+    pub fn setIslandName(g: *Game, n: []const u8) void {
+        const len = @min(n.len, g.island_name_buf.len);
+        @memcpy(g.island_name_buf[0..len], n[0..len]);
+        g.island_name_len = @intCast(len);
+    }
+
+    /// An island's file's start: what the island is called (its length,
+    /// then it), before its world.
+    pub const name_magic = "DZBI";
+
+    /// `n` as an island's file starts with it.
+    pub fn nameHeader(buf: *[5 + 48]u8, n: []const u8) []const u8 {
+        const len = @min(n.len, 48);
+        @memcpy(buf[0..4], name_magic);
+        buf[4] = @intCast(len);
+        @memcpy(buf[5..][0..len], n[0..len]);
+        return buf[0 .. 5 + len];
+    }
+
+    /// The name an island's file starts with (if it does: older ones do
+    /// not), and the rest of it.
+    pub fn splitHeader(data: []const u8) struct { name: ?[]const u8, rest: []const u8 } {
+        if (data.len < 5 or !std.mem.eql(u8, data[0..4], name_magic) or data[4] > 48 or data.len < 5 + @as(usize, data[4])) return .{ .name = null, .rest = data };
+        return .{ .name = data[5..][0..data[4]], .rest = data[5 + @as(usize, data[4]) ..] };
+    }
+
+    /// The island's name, its world, then the player and the hotbar.
     pub fn encode(g: *const Game, out: *std.ArrayList(u8)) !void {
+        var hbuf: [5 + 48]u8 = undefined;
+        try out.appendSlice(g.gpa, nameHeader(&hbuf, g.islandName()));
         try g.world.encode(out, g.gpa);
         try out.appendSlice(g.gpa, magic);
         try out.append(g.gpa, version);
@@ -950,7 +990,10 @@ pub const Game = struct {
     }
 
     /// Reads what `encode` wrote.
-    pub fn decode(g: *Game, data: []const u8) !void {
+    pub fn decode(g: *Game, file: []const u8) !void {
+        const split = splitHeader(file);
+        if (split.name) |n| g.setIslandName(n);
+        const data = split.rest;
         const at = try g.world.decode(data);
         const rest = data[at..];
         if (rest.len < 5 + 6 * 4 + 1 + 9 + 1 or !std.mem.eql(u8, rest[0..4], magic) or rest[4] < 1 or rest[4] > version) return error.Corrupt;
@@ -997,23 +1040,44 @@ pub const Islands = struct {
     pub const max = 16;
     names: [max][48]u8 = undefined,
     lens: [max]u8 = @splat(0),
+    /// Their files' names (less ".motu"): kept as they were made, whatever
+    /// the islands are called since.
+    files: [max][48]u8 = undefined,
+    file_lens: [max]u8 = @splat(0),
     count: u8 = 0,
     /// The one played now (none in the title scene, or another's game).
     current: ?u8 = null,
-    /// The one chosen in the menu.
-    selected: ?u8 = null,
-    /// Or one nearby, on another computer, chosen in the menu.
-    remote: ?Nearby.Where = null,
 
+    /// What it is called (as its file says).
     pub fn name(i: *const Islands, k: usize) []const u8 {
         return i.names[k][0..i.lens[k]];
     }
 
+    /// Its file's name.
+    pub fn file(i: *const Islands, k: usize) []const u8 {
+        return i.files[k][0..i.file_lens[k]];
+    }
+
+    /// One called `n`, in a file of the same name.
     pub fn add(i: *Islands, n: []const u8) void {
-        if (i.count == max or n.len > 48) return;
+        i.addFile(n, n);
+    }
+
+    pub fn addFile(i: *Islands, f: []const u8, n: []const u8) void {
+        if (i.count == max or n.len > 48 or f.len > 48) return;
         @memcpy(i.names[i.count][0..n.len], n);
         i.lens[i.count] = @intCast(n.len);
+        @memcpy(i.files[i.count][0..f.len], f);
+        i.file_lens[i.count] = @intCast(f.len);
         i.count += 1;
+    }
+
+    /// Swaps the `j`th and `k`th.
+    pub fn swap(i: *Islands, j: usize, k: usize) void {
+        std.mem.swap([48]u8, &i.names[j], &i.names[k]);
+        std.mem.swap(u8, &i.lens[j], &i.lens[k]);
+        std.mem.swap([48]u8, &i.files[j], &i.files[k]);
+        std.mem.swap(u8, &i.file_lens[j], &i.file_lens[k]);
     }
 };
 
@@ -1021,6 +1085,8 @@ pub const IslandAction = union(enum) {
     new,
     open: u8,
     delete: u8,
+    /// Renamed (to `Game.renameText`).
+    rename: u8,
     /// Back to the title scene.
     leave,
 };

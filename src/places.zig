@@ -13,8 +13,12 @@ var linux_dir: [:0]const u8 = ".";
 
 /// The folder (on Linux, as `init` found it).
 pub fn dir() [:0]const u8 {
+    if (@import("builtin").is_test) if (test_dir) |d| return d;
     return if (platform == .dazzle) sys.system.user_dir else linux_dir;
 }
+
+/// In tests: a folder of their own.
+pub var test_dir: ?[:0]const u8 = null;
 
 /// On Linux: finds (and makes) Motu's folder, from the environment.
 pub fn init(environ: std.process.Environ) void {

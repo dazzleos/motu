@@ -418,13 +418,13 @@ const AvatarPicture = struct {
 
 /// The islands. In the title scene: those kept here, and under them those
 /// nearby, on other computers on the network (a plane on their icon, the
-/// computer's name under theirs): choose one and join it, delete one kept
-/// here (asked twice), or make a new one. On an island: it, a switch to let
-/// others on the network join, and leaving it (back to the title scene, to
-/// choose another); in another's game, leaving it.
+/// computer's name under theirs), each played with its own button; ours
+/// renamed, or deleted (asked twice), and a row under them for a new one.
+/// On an island: it, a switch to let others on the network join (and who
+/// has, to remove), and leaving it (back to the title scene, to choose
+/// another); in another's game, leaving it.
 fn islandsTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
     const a = cx.arena;
-    const t = cx.theme();
     const note = struct {
         fn f(c: *kete.BuildContext, text: []const u8) kete.Widget {
             const th = c.theme();
@@ -465,21 +465,35 @@ fn islandsTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
         const i: u8 = @intCast(k);
         const act = a.create(IslandPick) catch break;
         act.* = .{ .game = g, .index = i };
+        // Being renamed: its name in a box, to save or not.
+        if (g.renaming == i) {
+            items.append(a, cx.make(kete.Padding{ .padding = .{ .left = 16, .right = 8, .top = 6, .bottom = 6 }, .child = cx.make(kete.Row{ .spacing = 8, .children = a.dupe(kete.Widget, &.{
+                cx.make(kete.Icon{ .icon = .landscape }),
+                cx.make(kete.Expanded{ .child = cx.make(kete.TextField{ .placeholder = "Its name", .initial = g.islands.name(k), .max_len = 48, .emoji = false, .autofocus = true, .on_changed = .of(g, Game.setRenameText), .on_submit = .of(g, Game.finishRename), .width = std.math.inf(f32) }) }),
+                cx.make(kete.IconButton{ .icon = .check, .size = 36, .on_press = .of(g, Game.finishRename) }),
+                cx.make(kete.IconButton{ .icon = .close, .size = 36, .on_press = .of(g, Game.cancelRename) }),
+            }) catch &.{} }) })) catch {};
+            continue;
+        }
+        // Rename it, play it, or delete it (asked twice).
         const trailing: kete.Widget = if (g.delete_asked == i) cx.make(kete.Row{ .fill = false, .spacing = 4, .children = a.dupe(kete.Widget, &.{
             cx.make(kete.TextButton{ .label = "Keep", .on_press = .of(g, Game.keepIsland) }),
             cx.make(kete.FilledButton{ .label = "Delete", .on_press = .of(act, IslandPick.delete) }),
-        }) catch &.{} }) else cx.make(kete.IconButton{ .icon = .delete, .size = 36, .on_press = .of(act, IslandPick.delete) });
+        }) catch &.{} }) else cx.make(kete.Row{ .fill = false, .spacing = 4, .children = a.dupe(kete.Widget, &.{
+            cx.make(kete.IconButton{ .icon = .edit, .size = 36, .on_press = .of(act, IslandPick.rename) }),
+            cx.make(kete.IconButton{ .icon = .play_arrow, .size = 36, .on_press = .of(act, IslandPick.play) }),
+            cx.make(kete.IconButton{ .icon = .delete, .size = 36, .on_press = .of(act, IslandPick.delete) }),
+        }) catch &.{} });
         items.append(a, cx.make(kete.ListItem{
             .headline = g.islands.name(k),
             .supporting_text = if (g.delete_asked == i) "Delete it for good?" else "",
             .leading_icon = .landscape,
-            .selected = g.islands.selected == i,
             .trailing = trailing,
-            .on_press = .of(act, IslandPick.select),
         })) catch {};
     }
+    // A new one, under ours.
+    items.append(a, cx.make(kete.ListItem{ .headline = "New island", .leading_icon = .add, .on_press = .of(g, Game.newIsland) })) catch {};
     // Those nearby, on other computers.
-    const chosen = g.remoteChosen();
     for (g.net.nearby) |n| {
         const pick = a.create(RemotePick) catch break;
         pick.* = .{ .game = g, .nearby = n };
@@ -487,26 +501,21 @@ fn islandsTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
             .headline = pick.nearby.name(),
             .supporting_text = pick.nearby.machine(),
             .leading = remoteIcon(cx),
-            .selected = if (chosen) |c| c.same(n.where()) else false,
-            .on_press = .of(pick, RemotePick.select),
+            .trailing = cx.make(kete.IconButton{ .icon = .play_arrow, .size = 36, .on_press = if (g.net.status == .alone) .of(pick, RemotePick.play) else null }),
         })) catch {};
     }
-    if (items.items.len == 0) items.append(a, cx.make(kete.Text{ .text = "No islands yet: make one.", .style = .{ .size = t.body_size, .color = t.on_surface_variant } })) catch {};
+    var column: std.ArrayList(kete.Widget) = .empty;
     // Asking one nearby to join it: waiting for its answer.
-    const buttons: []const kete.Widget = switch (g.net.status) {
-        .asking => |island| a.dupe(kete.Widget, &.{
+    const list_height: f32 = if (g.net.status == .asking) 170 else 222;
+    column.append(a, cx.make(kete.SizedBox{ .height = list_height, .child = cx.make(kete.ScrollView{ .child = cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 2, .children = items.items }) }) })) catch {};
+    switch (g.net.status) {
+        .asking => |island| column.append(a, cx.make(kete.Row{ .spacing = 8, .children = a.dupe(kete.Widget, &.{
             cx.make(kete.Expanded{ .child = note(cx, cx.fmt("Asking to join {s}…", .{island})) }),
             cx.make(kete.TextButton{ .label = "Stop asking", .on_press = .of(g, Game.leaveGame) }),
-        }) catch &.{},
-        else => a.dupe(kete.Widget, &.{
-            cx.make(kete.FilledButton{ .label = "Join", .on_press = if (g.canJoin()) .of(g, Game.joinIsland) else null }),
-            cx.make(kete.OutlinedButton{ .label = "New island", .on_press = .of(g, Game.newIsland) }),
-        }) catch &.{},
-    };
-    return cx.make(kete.Column{ .fill = false, .spacing = 12, .cross_axis_alignment = .stretch, .children = a.dupe(kete.Widget, &.{
-        cx.make(kete.SizedBox{ .height = 150, .child = cx.make(kete.ScrollView{ .child = cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 2, .children = items.items }) }) }),
-        cx.make(kete.Row{ .spacing = 8, .children = buttons }),
-    }) catch &.{} });
+        }) catch &.{} })) catch {},
+        else => {},
+    }
+    return cx.make(kete.Column{ .fill = false, .spacing = 8, .cross_axis_alignment = .stretch, .children = column.items });
 }
 
 /// An island's icon with a plane on its corner: one on another computer.
@@ -526,8 +535,12 @@ const IslandPick = struct {
     game: *Game,
     index: u8,
 
-    fn select(p: *IslandPick) void {
-        p.game.selectIsland(p.index);
+    fn play(p: *IslandPick) void {
+        p.game.openIsland(p.index);
+    }
+
+    fn rename(p: *IslandPick) void {
+        p.game.startRename(p.index);
     }
 
     fn delete(p: *IslandPick) void {
@@ -548,8 +561,8 @@ const RemotePick = struct {
     game: *Game,
     nearby: game_mod.Nearby,
 
-    fn select(p: *RemotePick) void {
-        p.game.selectRemote(p.nearby);
+    fn play(p: *RemotePick) void {
+        p.game.joinNearby(p.nearby);
     }
 };
 
@@ -779,6 +792,15 @@ fn findText(n: *kete.WidgetNode, text: []const u8) ?*kete.WidgetNode {
     return null;
 }
 
+/// Clicks `node` in its middle.
+fn clickNode(u: *kete.ui.WindowUi, node: *kete.WidgetNode) void {
+    const pos = node.position();
+    const p: kete.Point = .{ pos[0] + node.size.w / 2, pos[1] + node.size.h / 2 };
+    u.pointerMotion(p);
+    u.pointerButton(p, .left, true);
+    u.pointerButton(p, .left, false);
+}
+
 /// Clicks `node` (its top left corner, a little in).
 fn click(u: *kete.ui.WindowUi, node: *kete.WidgetNode) void {
     const pos = node.position();
@@ -931,11 +953,9 @@ test "playing together: islands nearby listed under ours and joined, the switch 
     try testing.expect(findText(u.root.?, "Lagoon") != null);
     try testing.expect(findText(u.root.?, "awesome-elephant") != null);
     try testing.expect(findText(u.root.?, "Reef") != null);
-    // One chosen, then joined: asked.
-    click(u, findText(u.root.?, "Lagoon").?);
-    u.frame(1920, 1036, 0, view);
-    try testing.expect(g.islands.selected == null);
-    click(u, findText(u.root.?, "Join").?);
+    // Played: asked to join (ours first, then a row for a new one, then
+    // those nearby).
+    clickNode(u, withIcon(u.root.?, .play_arrow)[1]);
     try testing.expectEqualStrings("Lagoon", g.net.join.?.name());
     try testing.expectEqual([4]u8{ 192, 168, 1, 10 }, g.net.join.?.addr);
     // Asking: it can be stopped.
@@ -1059,17 +1079,31 @@ test "the menu's islands: chosen and joined from the title scene, left, deleted 
     g.key(.escape, true);
     g.key(.escape, false);
     try testing.expect(g.menu_open);
-    // Nothing chosen: nothing to join.
-    click(u, findText(u.root.?, "Join").?);
-    u.frame(1920, 1036, 0, view);
-    try testing.expect(g.island_action == null);
-    // Chosen, then joined.
+    // Rows are not chosen: each has its own play button (and a row
+    // under them makes a new one).
     click(u, findText(u.root.?, "Island 2").?);
-    u.frame(1920, 1036, 0, view);
-    try testing.expectEqual(@as(?u8, 1), g.islands.selected);
-    click(u, findText(u.root.?, "Join").?);
+    try testing.expect(g.island_action == null);
+    try testing.expectEqual(@as(usize, 3), withIcon(u.root.?, .play_arrow).len);
+    clickNode(u, withIcon(u.root.?, .play_arrow)[1]);
     try testing.expectEqual(game_mod.IslandAction{ .open = 1 }, g.island_action.?);
     g.island_action = null;
+    click(u, findText(u.root.?, "New island").?);
+    try testing.expectEqual(game_mod.IslandAction.new, g.island_action.?);
+    g.island_action = null;
+    // Renamed: its name in a box, typed into, then saved.
+    clickNode(u, withIcon(u.root.?, .edit)[0]);
+    try testing.expectEqual(@as(?u8, 0), g.renaming);
+    try testing.expect(g.typing());
+    u.frame(1920, 1036, 0, view);
+    try testing.expect(!overflows(u.root.?));
+    try testing.expectEqual(@as(usize, 2), withIcon(u.root.?, .play_arrow).len);
+    g.setRenameText("  Moana's Isle ");
+    clickNode(u, withIcon(u.root.?, .check)[0]);
+    try testing.expectEqual(game_mod.IslandAction{ .rename = 0 }, g.island_action.?);
+    try testing.expectEqualStrings("Moana's Isle", g.renameText());
+    try testing.expect(g.renaming == null);
+    g.island_action = null;
+    u.frame(1920, 1036, 0, view);
     g.deleteIsland(2);
     try testing.expect(g.island_action == null);
     g.deleteIsland(2);

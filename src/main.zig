@@ -40,8 +40,9 @@ pub const Renderer = renderer_mod.Renderer(gpu.Device);
 /// How the islands' files end (they are kept in places.dir()).
 const island_ext = ".motu";
 
-/// The island played now: its name (its file's, less the ending); none
-/// in the title scene, or in another's game.
+/// The island played now: its file's name (less the ending: not what the
+/// island is called, which is in the file); none in the title scene, or
+/// in another's game.
 pub const Current = struct {
     buf: [48]u8 = undefined,
     len: usize = 0,
@@ -65,8 +66,8 @@ fn pathOf(n: []const u8, buf: *[256]u8) [:0]const u8 {
     return std.fmt.bufPrintSentinel(buf, "{s}/{s}{s}", .{ places.dir(), n, island_ext }, 0) catch buf[0..0 :0];
 }
 
-/// The islands kept, by name, into `g.islands` (the current one marked);
-/// returns the one changed most recently, if any.
+/// The islands kept, by what they are called, into `g.islands` (the one in
+/// file `current` marked); returns the one changed most recently, if any.
 pub fn findIslands(g: *game_mod.Game, current: []const u8) ?u8 {
     g.islands = .{};
     var newest: ?u8 = null;
@@ -83,43 +84,60 @@ pub fn findIslands(g: *game_mod.Game, current: []const u8) ?u8 {
             const file = std.mem.sliceTo(buf[at + 19 .. at + reclen], 0);
             at += reclen;
             if (!std.mem.endsWith(u8, file, island_ext) or file.len == island_ext.len) continue;
-            const n = file[0 .. file.len - island_ext.len];
-            if (n.len > 48 or g.islands.count == game_mod.Islands.max) continue;
+            const f = file[0 .. file.len - island_ext.len];
+            if (f.len > 48 or g.islands.count == game_mod.Islands.max) continue;
+            // What it is called: as its file starts (older ones' files
+            // do not say: their files' names).
+            var pbuf: [256]u8 = undefined;
+            var hbuf: [5 + 48]u8 = undefined;
+            const n = nameInFile(pathOf(f, &pbuf), &hbuf) orelse f;
             // In order of name.
             var k: usize = g.islands.count;
             while (k > 0 and std.mem.order(u8, g.islands.name(k - 1), n) == .gt) : (k -= 1) {}
-            g.islands.add(n);
+            g.islands.addFile(f, n);
             var j: usize = g.islands.count - 1;
-            while (j > k) : (j -= 1) {
-                std.mem.swap([48]u8, &g.islands.names[j], &g.islands.names[j - 1]);
-                std.mem.swap(u8, &g.islands.lens[j], &g.islands.lens[j - 1]);
-            }
+            while (j > k) : (j -= 1) g.islands.swap(j, j - 1);
             if (newest) |nw| {
                 if (nw >= k) newest = nw + 1;
             }
-            var pbuf: [256]u8 = undefined;
             var st: linux.Statx = undefined;
-            if (linux.errno(linux.statx(linux.AT.FDCWD, pathOf(n, &pbuf), 0, .{ .MTIME = true }, &st)) == .SUCCESS and st.mtime.sec > newest_time) {
+            if (linux.errno(linux.statx(linux.AT.FDCWD, pathOf(f, &pbuf), 0, .{ .MTIME = true }, &st)) == .SUCCESS and st.mtime.sec > newest_time) {
                 newest_time = st.mtime.sec;
                 newest = @intCast(k);
             }
         }
     }
-    for (0..g.islands.count) |k| if (current.len > 0 and std.mem.eql(u8, g.islands.name(k), current)) {
+    for (0..g.islands.count) |k| if (current.len > 0 and std.mem.eql(u8, g.islands.file(k), current)) {
         g.islands.current = @intCast(k);
     };
-    // The one chosen in the menu: the one played, else the newest.
-    g.islands.selected = g.islands.current orelse newest;
     return newest;
 }
 
-/// A name for a new island: "Island", or the first "Island N" not kept.
+/// What the island in the file at `path` is called, if its file says.
+fn nameInFile(path: [:0]const u8, buf: *[5 + 48]u8) ?[]const u8 {
+    const fd = sys.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }) catch return null;
+    defer sys.close(fd);
+    const n = sys.check(linux.read(fd, buf, buf.len)) catch return null;
+    const name = game_mod.Game.splitHeader(buf[0..n]).name orelse return null;
+    return if (name.len > 0) name else null;
+}
+
+/// Whether `n` can be what an island is called: something, not too long,
+/// no control characters.
+fn validName(n: []const u8) bool {
+    if (n.len == 0 or n.len > 48) return false;
+    for (n) |c| if (c < 0x20 or c == 0x7f) return false;
+    return true;
+}
+
+/// A name for a new island, and its file's: "Island", or the first
+/// "Island N" neither called nor kept as.
 fn newName(g: *const game_mod.Game, buf: []u8) []const u8 {
     var k: u32 = 1;
     while (true) : (k += 1) {
         const n = if (k == 1) "Island" else std.fmt.bufPrint(buf, "Island {d}", .{k}) catch "Island";
         const taken = for (0..g.islands.count) |i| {
-            if (std.mem.eql(u8, g.islands.name(i), n)) break true;
+            if (std.mem.eql(u8, g.islands.name(i), n) or std.mem.eql(u8, g.islands.file(i), n)) break true;
         } else false;
         if (!taken) return n;
     }
@@ -256,6 +274,8 @@ pub fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !voi
         return error.NoSave;
     };
     defer gpa.free(data);
+    // Called as its file is (older files do not say).
+    g.setIslandName(cur.name());
     g.decode(data) catch |err| {
         print("motu: {s} is not a world this can read ({s})\n", .{ save_path, @errorName(err) });
         return error.NoSave;
@@ -286,22 +306,19 @@ pub fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, ac
     }
     switch (action) {
         .new => {
-            if (g.wantsSave()) save(gpa, g, cur);
+            // Made and kept, and listed (it is played from the list).
             var nbuf: [48]u8 = undefined;
-            cur.set(newName(g, &nbuf));
-            makeIsland(g, @truncate(sys.nowNs() *% 0x9e3779b97f4a7c15 >> 32)) catch |err| {
+            newIsland(gpa, newName(g, &nbuf)) catch |err| {
                 print(sys.log_warning ++ "motu: cannot make an island ({s})\n", .{@errorName(err)});
+                g.say("Cannot make an island");
                 return;
             };
-            g.title = false;
-            save(gpa, g, cur);
-            g.say(cur.name());
         },
         .open => |i| {
             if (i >= g.islands.count) return;
             if (g.wantsSave()) save(gpa, g, cur);
             var nbuf: [48]u8 = undefined;
-            const n = g.islands.name(i);
+            const n = g.islands.file(i);
             @memcpy(nbuf[0..n.len], n);
             cur.set(nbuf[0..n.len]);
             load(gpa, g, cur) catch {
@@ -320,17 +337,63 @@ pub fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, ac
         },
         .delete => |i| {
             if (i >= g.islands.count or i == g.islands.current) return;
-            if (g.islands.selected == i) g.islands.selected = null;
             var pbuf: [256]u8 = undefined;
-            _ = linux.unlink(pathOf(g.islands.name(i), &pbuf));
+            _ = linux.unlink(pathOf(g.islands.file(i), &pbuf));
             print("motu: deleted {s}\n", .{g.islands.name(i)});
+        },
+        .rename => |i| {
+            if (i >= g.islands.count) return;
+            const new = g.renameText();
+            if (std.mem.eql(u8, g.islands.name(i), new)) return;
+            if (!validName(new)) return g.say("Not a name an island can have");
+            for (0..g.islands.count) |k| if (std.mem.eql(u8, g.islands.name(k), new)) return g.say("There is an island with that name");
+            renameInFile(gpa, g.islands.file(i), new) catch |err| {
+                print(sys.log_warning ++ "motu: cannot rename {s} ({s})\n", .{ g.islands.file(i), @errorName(err) });
+                return g.say("Cannot rename that island");
+            };
+            print("motu: renamed {s} to {s}\n", .{ g.islands.name(i), new });
         },
     }
     _ = findIslands(g, cur.name());
-    if (action != .delete) {
+    // Played, or left: the menu closes (it is the title scene's, left).
+    if (action == .open) {
         g.hideIslands();
         g.closeMenu();
     }
+}
+
+/// Makes a new island, called `name`, in the file of that name (not
+/// played: listed, to be).
+fn newIsland(gpa: std.mem.Allocator, name: []const u8) !void {
+    const w = try world_mod.World.create(gpa);
+    defer w.destroy();
+    var g = game_mod.Game.init(gpa, w);
+    defer g.deinit();
+    try makeIsland(&g, @truncate(sys.nowNs() *% 0x9e3779b97f4a7c15 >> 32));
+    g.setIslandName(name);
+    var c: Current = .{};
+    c.set(name);
+    g.unsaved = true;
+    save(gpa, &g, &c);
+    if (g.unsaved) return error.NotSaved;
+}
+
+/// What the island in file `file` is called: changed in it.
+fn renameInFile(gpa: std.mem.Allocator, file: []const u8, name: []const u8) !void {
+    var pbuf: [256]u8 = undefined;
+    const path = pathOf(file, &pbuf);
+    const data = try sys.readFileAlloc(gpa, path, 64 * 1024 * 1024);
+    defer gpa.free(data);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    var hbuf: [5 + 48]u8 = undefined;
+    try out.appendSlice(gpa, game_mod.Game.nameHeader(&hbuf, name));
+    try out.appendSlice(gpa, game_mod.Game.splitHeader(data).rest);
+    var tbuf: [260]u8 = undefined;
+    const tmp = try std.fmt.bufPrintSentinel(&tbuf, "{s}.new", .{path}, 0);
+    _ = linux.unlink(tmp);
+    try sys.files.writeNew(tmp, out.items);
+    if (linux.errno(linux.rename(tmp, path)) != .SUCCESS) return error.RenameFailed;
 }
 
 pub fn save(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
@@ -769,4 +832,59 @@ test {
     _ = @import("options.zig");
     _ = @import("reach.zig");
     _ = @import("upscale.zig");
+}
+
+test "what an island is called: something, not too long, no control characters" {
+    try std.testing.expect(validName("Moana's Isle"));
+    try std.testing.expect(!validName(""));
+    try std.testing.expect(validName(".a/b: anything"));
+    try std.testing.expect(!validName("tab\there"));
+    const long: [49]u8 = @splat('x');
+    try std.testing.expect(!validName(&long));
+}
+
+test "a new island is listed (not played), renamed in its file, played, and left" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dbuf: [128]u8 = undefined;
+    places.test_dir = try std.fmt.bufPrintSentinel(&dbuf, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
+    defer places.test_dir = null;
+    const w = try world_mod.World.create(gpa);
+    defer w.destroy();
+    var g = game_mod.Game.init(gpa, w);
+    defer g.deinit();
+    var cur: Current = .{};
+    toTitle(gpa, &g, &cur);
+    try std.testing.expect(g.title);
+    try std.testing.expectEqual(@as(u8, 0), g.islands.count);
+
+    // New: made and listed; still the title scene.
+    islandAction(gpa, &g, &cur, .new);
+    try std.testing.expect(g.title and g.menu_open);
+    try std.testing.expectEqual(@as(u8, 1), g.islands.count);
+    try std.testing.expectEqualStrings("Island", g.islands.name(0));
+
+    // Renamed: in its file (whose name stays).
+    g.startRename(0);
+    g.setRenameText("Moana's: Isle/1");
+    g.finishRename();
+    islandAction(gpa, &g, &cur, g.island_action.?);
+    try std.testing.expectEqualStrings("Moana's: Isle/1", g.islands.name(0));
+    try std.testing.expectEqualStrings("Island", g.islands.file(0));
+
+    // Played, and left: kept as it is called.
+    islandAction(gpa, &g, &cur, .{ .open = 0 });
+    try std.testing.expect(!g.title and !g.menu_open);
+    try std.testing.expectEqualStrings("Island", cur.name());
+    try std.testing.expectEqualStrings("Moana's: Isle/1", g.islandName());
+    g.unsaved = true;
+    islandAction(gpa, &g, &cur, .leave);
+    try std.testing.expect(g.title);
+    try std.testing.expectEqualStrings("Moana's: Isle/1", g.islands.name(0));
+
+    // Another new one: the next name.
+    islandAction(gpa, &g, &cur, .new);
+    try std.testing.expectEqual(@as(u8, 2), g.islands.count);
+    try std.testing.expectEqualStrings("Island 2", g.islands.name(0));
 }
