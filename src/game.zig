@@ -916,7 +916,7 @@ pub const Game = struct {
     // --- Saving ---------------------------------------------------------------------------
 
     const magic = "DZBG";
-    /// 2: the day, at the end. 3: then the canoe the player is in.
+    /// (3: with the day and the canoe the player is in, at the end.)
     const version = 3;
 
     /// What the island played is called (kept in its file).
@@ -943,14 +943,14 @@ pub const Game = struct {
         return buf[0 .. 5 + len];
     }
 
-    /// The name an island's file starts with (if it does: older ones do
-    /// not), and the rest of it.
+    /// The name an island's file starts with (null if it is not an
+    /// island's file), and the rest of it.
     pub fn splitHeader(data: []const u8) struct { name: ?[]const u8, rest: []const u8 } {
         if (data.len < 5 or !std.mem.eql(u8, data[0..4], name_magic) or data[4] > 48 or data.len < 5 + @as(usize, data[4])) return .{ .name = null, .rest = data };
         return .{ .name = data[5..][0..data[4]], .rest = data[5 + @as(usize, data[4]) ..] };
     }
 
-    /// After the name, what follows is deflated (older files' is not).
+    /// After the name, what follows is deflated.
     pub const deflated_magic = "DZBZ";
 
     /// The island's name; then, deflated, its world, the player and the
@@ -1010,26 +1010,24 @@ pub const Game = struct {
     /// Reads what `encode` wrote.
     pub fn decode(g: *Game, file: []const u8) !void {
         const split = splitHeader(file);
-        if (split.name) |n| g.setIslandName(n);
-        if (std.mem.startsWith(u8, split.rest, deflated_magic)) {
-            var in: std.Io.Reader = .fixed(split.rest[deflated_magic.len..]);
-            const window = try g.gpa.alloc(u8, std.compress.flate.max_window_len);
-            defer g.gpa.free(window);
-            var d: std.compress.flate.Decompress = .init(&in, .raw, window);
-            const raw = d.reader.allocRemaining(g.gpa, .limited(64 * 1024 * 1024)) catch return error.Corrupt;
-            defer g.gpa.free(raw);
-            return g.decodeRaw(raw);
-        }
-        return g.decodeRaw(split.rest);
+        const n = split.name orelse return error.Corrupt;
+        if (!std.mem.startsWith(u8, split.rest, deflated_magic)) return error.Corrupt;
+        var in: std.Io.Reader = .fixed(split.rest[deflated_magic.len..]);
+        const window = try g.gpa.alloc(u8, std.compress.flate.max_window_len);
+        defer g.gpa.free(window);
+        var d: std.compress.flate.Decompress = .init(&in, .raw, window);
+        const raw = d.reader.allocRemaining(g.gpa, .limited(64 * 1024 * 1024)) catch return error.Corrupt;
+        defer g.gpa.free(raw);
+        try g.decodeRaw(raw);
+        g.setIslandName(n);
     }
 
     /// Reads what `encodeRaw` wrote.
     fn decodeRaw(g: *Game, data: []const u8) !void {
         const at = try g.world.decode(data);
         const rest = data[at..];
-        if (rest.len < 5 + 6 * 4 + 1 + 9 + 1 or !std.mem.eql(u8, rest[0..4], magic) or rest[4] < 1 or rest[4] > version) return error.Corrupt;
-        if (rest[4] >= 2 and rest.len < 44) return error.Corrupt;
-        g.day = if (rest[4] >= 2) std.mem.readInt(u32, rest[40..44], .little) else 0;
+        if (rest.len < 45 or !std.mem.eql(u8, rest[0..4], magic) or rest[4] != version) return error.Corrupt;
+        g.day = std.mem.readInt(u32, rest[40..44], .little);
         var f: [6]f32 = undefined;
         for (&f, 0..) |*v, i| v.* = @bitCast(std.mem.readInt(u32, rest[5 + i * 4 ..][0..4], .little));
         for (f) |v| if (!std.math.isFinite(v)) return error.Corrupt;
@@ -1041,7 +1039,7 @@ pub const Game = struct {
         }
         g.slot = rest[39] % 9;
         g.boat = null;
-        if (rest[4] >= 3 and rest.len >= 45 and rest[44] > 0) {
+        if (rest[44] > 0) {
             if (rest.len < 45 + 16 or rest[44] > furniture.most_canoe) return error.Corrupt;
             var bf: [4]f32 = undefined;
             for (&bf, 0..) |*v, i| {
@@ -1503,7 +1501,7 @@ test "behind the menu, the pointer neither turns the view nor builds nor takes t
     try testing.expect(!g.unsaved);
 }
 
-test "an island's file: its name, then deflated (and older ones, not, read too)" {
+test "an island's file: its name, then deflated (nothing else read)" {
     const w = try World.create(testing.allocator);
     defer w.destroy();
     try w.generate(world_mod.default_seed);
@@ -1536,9 +1534,12 @@ test "an island's file: its name, then deflated (and older ones, not, read too)"
     try testing.expectEqual(g.time_of_day, g2.time_of_day);
     try testing.expect(std.mem.eql(Block, w.blocks, w2.blocks));
 
-    // An older file (no name, not deflated): read as it is.
-    g2.setIslandName("Called as its file");
-    try g2.decode(raw.items);
-    try testing.expectEqualStrings("Called as its file", g2.islandName());
-    try testing.expect(std.mem.eql(Block, w.blocks, w2.blocks));
+    // No name, or not deflated: not read.
+    try testing.expectError(error.Corrupt, g2.decode(raw.items));
+    var hbuf: [5 + 48]u8 = undefined;
+    var named: std.ArrayList(u8) = .empty;
+    defer named.deinit(testing.allocator);
+    try named.appendSlice(testing.allocator, Game.nameHeader(&hbuf, "Lagoon"));
+    try named.appendSlice(testing.allocator, raw.items);
+    try testing.expectError(error.Corrupt, g2.decode(named.items));
 }

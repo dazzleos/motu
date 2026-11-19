@@ -86,11 +86,10 @@ pub fn findIslands(g: *game_mod.Game, current: []const u8) ?u8 {
             if (!std.mem.endsWith(u8, file, island_ext) or file.len == island_ext.len) continue;
             const f = file[0 .. file.len - island_ext.len];
             if (f.len > 48 or g.islands.count == game_mod.Islands.max) continue;
-            // What it is called: as its file starts (older ones' files
-            // do not say: their files' names).
+            // What it is called: as its file starts.
             var pbuf: [256]u8 = undefined;
             var hbuf: [5 + 48]u8 = undefined;
-            const n = nameInFile(pathOf(f, &pbuf), &hbuf) orelse f;
+            const n = nameInFile(pathOf(f, &pbuf), &hbuf) orelse continue;
             // In order of name.
             var k: usize = g.islands.count;
             while (k > 0 and std.mem.order(u8, g.islands.name(k - 1), n) == .gt) : (k -= 1) {}
@@ -274,8 +273,6 @@ pub fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !voi
         return error.NoSave;
     };
     defer gpa.free(data);
-    // Called as its file is (older files do not say).
-    g.setIslandName(cur.name());
     g.decode(data) catch |err| {
         print("motu: {s} is not a world this can read ({s})\n", .{ save_path, @errorName(err) });
         return error.NoSave;
