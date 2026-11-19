@@ -254,10 +254,12 @@ pub const Motu = struct {
             .fill = false,
             .spacing = 12,
             .children = a.dupe(kete.Widget, &.{
-                // The title, and a close button at the top right.
+                // The title, in the middle, and a close button at the top
+                // right (as wide a space on the left keeps it in the
+                // middle).
                 cx.make(kete.SizedBox{ .width = menu_width + 8, .child = cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
-                    cx.make(kete.Text{ .text = "Menu", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
-                    cx.make(kete.Expanded{ .child = cx.make(kete.SizedBox.empty) }),
+                    cx.make(kete.SizedBox{ .width = 36, .height = 36 }),
+                    cx.make(kete.Expanded{ .child = cx.make(kete.Align{ .alignment = .center, .child = cx.make(kete.Text{ .text = "Motu", .style = .{ .size = 22, .color = t.primary }, .wrap = false }) }) }),
                     // (In the title scene the menu stays: an island is
                     // joined from it.)
                     if (g.title) cx.make(kete.SizedBox{ .width = 36, .height = 36 }) else cx.make(kete.IconButton{ .icon = .close, .size = 36, .on_press = .of(g, Game.closeMenu) }),
@@ -806,7 +808,7 @@ test "the menu fits from the smallest window up, and its switches set the option
         u.frame(size[0], size[1], 0, view);
         try testing.expect(!overflows(u.root.?));
     }
-    try testing.expect(findText(u.root.?, "Menu") != null);
+    try testing.expect(findText(u.root.?, "Motu") != null);
     // Its tabs: the islands first; the player; the settings the last
     // (Tab, Tab, Tab).
     try testing.expect(findText(u.root.?, "New island") != null);
