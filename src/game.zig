@@ -32,7 +32,7 @@
 //! In a canoe: W and S paddle, A and D turn, Shift gets out (see boat.zig).
 //!
 //! The game starts in the menu, over the title scene (no island's: see
-//! World.generateTitle): an island is chosen there and joined, and the
+//! title.zig): an island is chosen there and joined, and the
 //! menu's Leave goes back to it. Leaving the menu on an island takes the
 //! mouse (it turns the view), and Esc gives it back with the menu.
 //! Where the mouse cannot be taken, dragging looks around, a click builds
@@ -536,13 +536,13 @@ pub const Game = struct {
         g.island_action = .leave;
     }
 
-    /// The title scene behind the menu (its world made already): the
-    /// view from the water, still.
+    /// The title scene behind the menu (its world, the camera and the
+    /// time of day loaded already: title.zig): still.
     pub fn showTitle(g: *Game) void {
         g.title = true;
-        g.player = .{ .pos = g.world.spawn, .yaw = g.world.spawn_yaw, .pitch = -0.04 };
+        g.player.vel = .{ 0, 0, 0 };
+        g.player.flying = false;
         g.boat = null;
-        g.time_of_day = 0.4;
         g.day = 0;
         g.target = null;
         g.unsaved = false;

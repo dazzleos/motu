@@ -161,10 +161,26 @@ pub const Creatures = struct {
     spawned: bool = false,
     seed: u32 = 0,
     time: f32 = 0,
-    /// In the title scene (World.generateTitle): the dolphins keep to
-    /// either side of the channel, where the menu leaves it in view, and
-    /// leap more often.
+    /// In the title scene (title.zig): one pod of dolphins,
+    /// beside the menu, leaping more often; one turtle, near the eye.
     title: bool = false,
+
+    /// The pods there are (in the title scene, one).
+    fn pods(c: *const Creatures) usize {
+        return if (c.title) 1 else pod_count;
+    }
+
+    /// Whether `s` swims at (x, z): in the water its kind keeps to (in
+    /// the title scene, which it swims at the surface of, any).
+    fn keeps(c: *const Creatures, s: *const Swimmer, w: *const World, x: f32, z: f32) bool {
+        if (c.title) return waterDepth(w, x, z) >= 1;
+        return s.keepsTo(w, x, z);
+    }
+
+    /// The turtles and sharks there are (in the title scene, a turtle).
+    fn swimmerCount(c: *const Creatures) usize {
+        return if (c.title) 1 else c.swimmers.len;
+    }
 
     /// Places birds over the island and coast, and schools of fish in the
     /// shallows and sea around it.
@@ -269,13 +285,14 @@ pub const Creatures = struct {
 
         // A few turtles in the shallows and a couple of sharks further
         // out, each alone, round the island.
-        for (&c.swimmers, 0..) |*sw, i| {
+        for (c.swimmers[0..c.swimmerCount()], 0..) |*sw, i| {
             const kind: Swimmer.Kind = if (i < turtle_count) .turtle else .shark;
             const s = seed +% @as(u32, @intCast(i)) *% 2246822519 +% 77;
-            const home = findWaterFor(w, kind, s, i);
+            // In the title scene: in the bay, right of the menu.
+            const home: [2]f32 = if (c.title) titleSpot(w, 7, 9) else findWaterFor(w, kind, s, i);
             const floor = seaFloorAt(w, home[0], home[1]);
             sw.* = .{
-                .pos = .{ home[0], (swimBand(kind, floor)[0] + swimBand(kind, floor)[1]) * 0.5, home[1] },
+                .pos = .{ home[0], if (c.title) titleBand()[1] else (swimBand(kind, floor)[0] + swimBand(kind, floor)[1]) * 0.5, home[1] },
                 .yaw = rand01(s +% 1) * std.math.pi * 2,
                 .speed = if (kind == .turtle) 0.7 + 0.2 * rand01(s +% 2) else 1.6 + 0.4 * rand01(s +% 2),
                 .phase = rand01(s +% 3) * std.math.pi * 2,
@@ -286,7 +303,7 @@ pub const Creatures = struct {
 
         // The pods: the first in the lagoon off the starting beach, the
         // others out past the reef, either side.
-        for (0..pod_count) |pod| {
+        for (0..c.pods()) |pod| {
             const s = seed +% @as(u32, @intCast(pod)) *% 3266489917 +% 991;
             const home = if (c.title) titleDolphinWater(w, pod) else findDolphinWater(w, s, pod);
             const yaw = rand01(s +% 1) * std.math.pi * 2;
@@ -375,12 +392,12 @@ pub const Creatures = struct {
         c.trail_clock += dt;
         if (c.trail_clock >= trail_every) {
             c.trail_clock -= trail_every;
-            for (0..pod_count) |pod| {
+            for (0..c.pods()) |pod| {
                 c.trail_at[pod] = (c.trail_at[pod] + 1) % trail_len;
                 c.trails[pod][c.trail_at[pod]] = c.dolphins[pod * pod_size].pos;
             }
         }
-        for (0..pod_count) |pod| {
+        for (0..c.pods()) |pod| {
             // Time to leap: one after another, if there is water to come
             // down in ahead of each.
             c.next_leap[pod] -= dt;
@@ -469,14 +486,14 @@ pub const Creatures = struct {
     }
 
     fn tickSwimmers(c: *Creatures, w: *const World, dt: f32) void {
-        for (&c.swimmers, 0..) |*s, idx| {
+        for (c.swimmers[0..c.swimmerCount()], 0..) |*s, idx| {
             // Wander, drawn back home when far from it.
             var wish_x = @sin(s.yaw);
             var wish_z = -@cos(s.yaw);
             const hx = s.home[0] - s.pos[0];
             const hz = s.home[1] - s.pos[2];
             const hd = @sqrt(hx * hx + hz * hz);
-            const leash: f32 = if (s.kind == .turtle) 10 else 22;
+            const leash: f32 = if (c.title) 3 else if (s.kind == .turtle) 10 else 22;
             if (hd > leash) {
                 wish_x += (hx / hd) * 0.8;
                 wish_z += (hz / hd) * 0.8;
@@ -486,11 +503,11 @@ pub const Creatures = struct {
             wish_z += @sin(s.yaw) * wander;
             // Turn from water not its own (land, or too deep or shallow).
             const look: f32 = if (s.kind == .turtle) 1.5 else 3;
-            if (!s.keepsTo(w, s.pos[0] + @sin(s.yaw) * look, s.pos[2] - @cos(s.yaw) * look)) {
+            if (!c.keeps(s, w, s.pos[0] + @sin(s.yaw) * look, s.pos[2] - @cos(s.yaw) * look)) {
                 var best = s.yaw + std.math.pi;
                 for (1..8) |step| {
                     const cand = s.yaw + @as(f32, @floatFromInt(step)) * (std.math.pi / 4.0);
-                    if (s.keepsTo(w, s.pos[0] + @sin(cand) * look, s.pos[2] - @cos(cand) * look)) {
+                    if (c.keeps(s, w, s.pos[0] + @sin(cand) * look, s.pos[2] - @cos(cand) * look)) {
                         best = cand;
                         break;
                     }
@@ -503,12 +520,13 @@ pub const Creatures = struct {
             s.yaw = wrapAngle(s.yaw + std.math.clamp(diff, -max_turn, max_turn));
             const nx = s.pos[0] + @sin(s.yaw) * s.speed * dt;
             const nz = s.pos[2] - @cos(s.yaw) * s.speed * dt;
-            if (s.keepsTo(w, nx, nz)) {
+            if (c.keeps(s, w, nx, nz)) {
                 s.pos[0] = nx;
                 s.pos[2] = nz;
             } else s.yaw = wrapAngle(s.yaw + std.math.pi * 0.5);
-            // Between the bed and the surface, as its kind swims.
-            const band = swimBand(s.kind, seaFloorAt(w, s.pos[0], s.pos[2]));
+            // Between the bed and the surface, as its kind swims (in the
+            // title scene, at the surface, to be seen).
+            const band = if (c.title) titleBand() else swimBand(s.kind, seaFloorAt(w, s.pos[0], s.pos[2]));
             const target = band[0] + (band[1] - band[0]) * 0.5;
             const dy = target - s.pos[1];
             s.pitch = std.math.clamp(dy * 0.3, -0.2, 0.2);
@@ -702,14 +720,14 @@ pub const Creatures = struct {
             emitFish(&builder, f, light);
         }
 
-        for (&c.dolphins) |*dl| {
+        for (c.dolphins[0 .. c.pods() * pod_size]) |*dl| {
             const d = dl.pos - eye;
             if (math.dot(d, d) > max_d2) continue;
             if (!frustum.sees(dl.pos - V3{ 1.5, 1, 1.5 }, dl.pos + V3{ 1.5, 1, 1.5 })) continue;
             emitDolphin(&builder, dl, lightAtPos(w, dl.pos));
         }
 
-        for (&c.swimmers) |*s| {
+        for (c.swimmers[0..c.swimmerCount()]) |*s| {
             const d = s.pos - eye;
             if (math.dot(d, d) > max_d2) continue;
             if (!frustum.sees(s.pos - V3{ 1.2, 0.6, 1.2 }, s.pos + V3{ 1.2, 0.6, 1.2 })) continue;
@@ -877,6 +895,12 @@ fn waterFor(kind: Swimmer.Kind, w: *const World, x: f32, z: f32) bool {
 /// The heights a turtle or shark keeps between over a sea bed at `floor`
 /// (its top at `floor + 1`): a turtle just under the surface, a shark in
 /// the middle of the water.
+/// The title scene's turtle: just under the surface, its shell at it.
+fn titleBand() [2]f32 {
+    const surface: f32 = world_mod.sea_level - 1 + mesher.water_top;
+    return .{ surface - 0.1, surface };
+}
+
 fn swimBand(kind: Swimmer.Kind, floor: f32) [2]f32 {
     const surface: f32 = world_mod.sea_level - 1 + mesher.water_top;
     return switch (kind) {
@@ -909,12 +933,20 @@ fn findWaterFor(w: *const World, kind: Swimmer.Kind, seed: u32, i: usize) [2]f32
 
 /// Where a pod lives: the first in the lagoon off the starting beach
 /// (where the player sees them first), the others outside the reef.
-/// In the title scene: ahead of the eye, either side of the middle (the
-/// menu's), the last pod further off.
+/// In the title scene: in the bay, right of the menu.
 fn titleDolphinWater(w: *const World, pod: usize) [2]f32 {
-    const side: f32 = if (pod % 2 == 0) -1 else 1;
-    const ahead: f32 = 24 + 10 * @as(f32, @floatFromInt(pod));
-    return .{ w.spawn[0] + side * (11 + 4 * @as(f32, @floatFromInt(pod))), w.spawn[2] - ahead };
+    _ = pod;
+    return titleSpot(w, 16, 26);
+}
+
+/// In the title scene: `right` of the camera and `ahead` of it, as it
+/// faces.
+fn titleSpot(w: *const World, right: f32, ahead: f32) [2]f32 {
+    const yaw = w.spawn_yaw;
+    return .{
+        w.spawn[0] + @cos(yaw) * right + @sin(yaw) * ahead,
+        w.spawn[2] + @sin(yaw) * right - @cos(yaw) * ahead,
+    };
 }
 
 fn findDolphinWater(w: *const World, seed: u32, pod: usize) [2]f32 {
@@ -1581,4 +1613,27 @@ test "turtles and sharks are spread round the atoll, nearer and further out" {
     // The turtles not all at one distance from the middle.
     const turtles = radii[0..turtle_count];
     try testing.expect(std.mem.max(f32, turtles) - std.mem.min(f32, turtles) > 15);
+}
+
+test "the title scene: one pod of dolphins and one turtle, at the surface, ahead of the eye" {
+    const w = try World.create(std.testing.allocator);
+    defer w.destroy();
+    var g = @import("game.zig").Game.init(std.testing.allocator, w);
+    defer g.deinit();
+    try @import("title.zig").load(&g);
+    var c: Creatures = .{};
+    c.sync(w, 0);
+    try std.testing.expect(c.title);
+    try std.testing.expectEqual(@as(usize, 1), c.pods());
+    try std.testing.expectEqual(@as(usize, 1), c.swimmerCount());
+    var t: f32 = 0;
+    const start = c.swimmers[0].pos;
+    while (t < 30) : (t += 0.05) c.tick(w, 0.05);
+    const turtle = c.swimmers[0];
+    // It swims (about its home).
+    try std.testing.expect(@abs(turtle.pos[0] - start[0]) + @abs(turtle.pos[2] - start[2]) > 0.5);
+    try std.testing.expectEqual(Swimmer.Kind.turtle, turtle.kind);
+    try std.testing.expect(@abs(turtle.pos[0] - turtle.home[0]) < 8 and @abs(turtle.pos[2] - turtle.home[1]) < 8);
+    try std.testing.expect(turtle.pos[1] > world_mod.sea_level - 1.5);
+    for (c.dolphins[0..pod_size]) |d| try std.testing.expect(d.pos[2] < w.spawn[2] - 8);
 }

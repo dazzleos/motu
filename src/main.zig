@@ -32,6 +32,7 @@ const boat_mod = @import("boat.zig");
 const places = @import("places.zig");
 const platform = @import("platform").platform;
 const on_linux = @import("linux.zig");
+const title = @import("title.zig");
 
 const print = sys.print;
 pub const Renderer = renderer_mod.Renderer(gpu.Device);
@@ -266,7 +267,7 @@ pub fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !voi
 pub fn toTitle(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current) void {
     if (g.wantsSave()) save(gpa, g, cur);
     cur.len = 0;
-    g.world.generateTitle() catch |err| print(sys.log_warning ++ "motu: cannot make the title scene ({s})\n", .{@errorName(err)});
+    title.load(g) catch |err| print(sys.log_warning ++ "motu: cannot show the title scene ({s})\n", .{@errorName(err)});
     g.showTitle();
     _ = findIslands(g, "");
 }
@@ -755,6 +756,7 @@ test {
     _ = @import("boat.zig");
     _ = @import("creatures.zig");
     _ = @import("renderer.zig");
+    _ = @import("title.zig");
     _ = @import("preview.zig");
     _ = @import("game.zig");
     _ = @import("view.zig");
