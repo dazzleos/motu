@@ -384,10 +384,7 @@ pub const Game = struct {
                 g.w_at = g.clock;
             },
             .f1 => g.hud_hidden = !g.hud_hidden,
-            .t => {
-                g.telescope = !g.telescope;
-                g.say(if (g.telescope) "Telescope" else "Telescope away");
-            },
+            .t => g.telescope = !g.telescope,
             .e => if (g.palette_open) g.closePalette() else {
                 g.palette_open = true;
                 g.palette_section = blocks.sectionOf(g.selected());
@@ -953,10 +950,31 @@ pub const Game = struct {
         return .{ .name = data[5..][0..data[4]], .rest = data[5 + @as(usize, data[4]) ..] };
     }
 
-    /// The island's name, its world, then the player and the hotbar.
+    /// After the name, what follows is deflated (older files' is not).
+    pub const deflated_magic = "DZBZ";
+
+    /// The island's name; then, deflated, its world, the player and the
+    /// hotbar.
     pub fn encode(g: *const Game, out: *std.ArrayList(u8)) !void {
         var hbuf: [5 + 48]u8 = undefined;
         try out.appendSlice(g.gpa, nameHeader(&hbuf, g.islandName()));
+        try out.appendSlice(g.gpa, deflated_magic);
+        var raw: std.ArrayList(u8) = .empty;
+        defer raw.deinit(g.gpa);
+        try g.encodeRaw(&raw);
+        // Quickly (it is done as the game goes on, saving it): the
+        // world's runs of blocks deflate well even so.
+        var w: std.Io.Writer.Allocating = .fromArrayList(g.gpa, out);
+        defer out.* = w.toArrayList();
+        const window = try g.gpa.alloc(u8, std.compress.flate.max_window_len);
+        defer g.gpa.free(window);
+        var c = try std.compress.flate.Compress.init(&w.writer, window, .raw, .fastest);
+        try c.writer.writeAll(raw.items);
+        try c.finish();
+    }
+
+    /// The world, then the player and the hotbar, as they are.
+    fn encodeRaw(g: *const Game, out: *std.ArrayList(u8)) !void {
         try g.world.encode(out, g.gpa);
         try out.appendSlice(g.gpa, magic);
         try out.append(g.gpa, version);
@@ -993,7 +1011,20 @@ pub const Game = struct {
     pub fn decode(g: *Game, file: []const u8) !void {
         const split = splitHeader(file);
         if (split.name) |n| g.setIslandName(n);
-        const data = split.rest;
+        if (std.mem.startsWith(u8, split.rest, deflated_magic)) {
+            var in: std.Io.Reader = .fixed(split.rest[deflated_magic.len..]);
+            const window = try g.gpa.alloc(u8, std.compress.flate.max_window_len);
+            defer g.gpa.free(window);
+            var d: std.compress.flate.Decompress = .init(&in, .raw, window);
+            const raw = d.reader.allocRemaining(g.gpa, .limited(64 * 1024 * 1024)) catch return error.Corrupt;
+            defer g.gpa.free(raw);
+            return g.decodeRaw(raw);
+        }
+        return g.decodeRaw(split.rest);
+    }
+
+    /// Reads what `encodeRaw` wrote.
+    fn decodeRaw(g: *Game, data: []const u8) !void {
         const at = try g.world.decode(data);
         const rest = data[at..];
         if (rest.len < 5 + 6 * 4 + 1 + 9 + 1 or !std.mem.eql(u8, rest[0..4], magic) or rest[4] < 1 or rest[4] > version) return error.Corrupt;
@@ -1470,4 +1501,44 @@ test "behind the menu, the pointer neither turns the view nor builds nor takes t
     try testing.expectEqual(pitch, g.player.pitch);
     try testing.expect(g.capture_wanted == null);
     try testing.expect(!g.unsaved);
+}
+
+test "an island's file: its name, then deflated (and older ones, not, read too)" {
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    try w.generate(world_mod.default_seed);
+    var g = Game.init(testing.allocator, w);
+    defer g.deinit();
+    g.setIslandName("Lagoon");
+    g.time_of_day = 0.6;
+    g.player.pos = .{ 70.5, 40, 80.5 };
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    const sys = @import("sys");
+    const started = sys.nowNs();
+    try g.encode(&out);
+    const took = sys.nowNs() - started;
+    var raw: std.ArrayList(u8) = .empty;
+    defer raw.deinit(testing.allocator);
+    try g.encodeRaw(&raw);
+    std.debug.print("island file: {d} KB deflated ({d} KB as it was), in {d} ms\n", .{ out.items.len / 1024, raw.items.len / 1024, took / std.time.ns_per_ms });
+    try testing.expect(out.items.len * 2 < raw.items.len);
+    try testing.expectEqualStrings("Lagoon", Game.splitHeader(out.items).name.?);
+
+    // Read back: the same world, player and name.
+    const w2 = try World.create(testing.allocator);
+    defer w2.destroy();
+    var g2 = Game.init(testing.allocator, w2);
+    defer g2.deinit();
+    try g2.decode(out.items);
+    try testing.expectEqualStrings("Lagoon", g2.islandName());
+    try testing.expectEqual(g.player.pos, g2.player.pos);
+    try testing.expectEqual(g.time_of_day, g2.time_of_day);
+    try testing.expect(std.mem.eql(Block, w.blocks, w2.blocks));
+
+    // An older file (no name, not deflated): read as it is.
+    g2.setIslandName("Called as its file");
+    try g2.decode(raw.items);
+    try testing.expectEqualStrings("Called as its file", g2.islandName());
+    try testing.expect(std.mem.eql(Block, w.blocks, w2.blocks));
 }

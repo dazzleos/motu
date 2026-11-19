@@ -399,6 +399,7 @@ fn renameInFile(gpa: std.mem.Allocator, file: []const u8, name: []const u8) !voi
 pub fn save(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
     // No island played (the title scene, another's game): nothing kept.
     if (cur.len == 0) return;
+    const started = sys.nowNs();
     var pbuf: [256]u8 = undefined;
     const save_path = cur.path(&pbuf);
     var out: std.ArrayList(u8) = .empty;
@@ -417,7 +418,7 @@ pub fn save(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void
     };
     _ = linux.rename(tmp, save_path);
     g.unsaved = false;
-    print("motu: saved {s} ({d} KB)\n", .{ cur.name(), out.items.len / 1024 });
+    print("motu: saved {s} ({d} KB) in {d} ms\n", .{ cur.name(), out.items.len / 1024, (sys.nowNs() - started) / std.time.ns_per_ms });
 }
 
 /// Where the frames' time goes, since it was last said: each part of
