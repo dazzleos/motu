@@ -433,21 +433,31 @@ fn islandsTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
     }.f;
     if (!g.title) {
         var rows: std.ArrayList(kete.Widget) = .empty;
+        // The island played, and (at its end) leaving it.
+        const leave = cx.make(kete.FilledButton{ .label = "Leave", .on_press = .of(g, Game.leaveIsland) });
         switch (g.net.status) {
-            .joined => |island| rows.append(a, cx.make(kete.ListItem{ .headline = island, .supporting_text = "Playing now", .leading = remoteIcon(cx), .selected = true })) catch {},
+            .joined => |island| rows.append(a, cx.make(kete.ListItem{ .headline = island, .supporting_text = "Playing now", .leading = remoteIcon(cx), .selected = true, .trailing = leave })) catch {},
             else => {
                 const name = if (g.islands.current) |i| g.islands.name(i) else "Island";
-                rows.append(a, cx.make(kete.ListItem{ .headline = name, .supporting_text = "Playing now", .leading_icon = .landscape, .selected = true })) catch {};
+                rows.append(a, cx.make(kete.ListItem{ .headline = name, .supporting_text = "Playing now", .leading_icon = .landscape, .selected = true, .trailing = leave })) catch {};
                 rows.append(a, cx.make(kete.SwitchRow{ .value = g.net.open, .label = "Let others on this network join", .on_changed = .of(g, Game.setOpen) })) catch {};
-                switch (g.net.status) {
-                    .hosting => |n| rows.append(a, note(cx, if (n == 1) "1 player has joined you" else cx.fmt("{d} players have joined you", .{n}))) catch {},
-                    else => {},
+                // Those who have joined, each with a button to remove
+                // them.
+                if (g.net.players.len > 0) {
+                    var players: std.ArrayList(kete.Widget) = .empty;
+                    for (g.net.players) |pl| {
+                        const rm = a.create(RemovePlayer) catch break;
+                        rm.* = .{ .game = g, .id = pl.id };
+                        players.append(a, cx.make(kete.ListItem{
+                            .headline = a.dupe(u8, pl.name()) catch "",
+                            .leading_icon = .person,
+                            .trailing = cx.make(kete.TextButton{ .label = "Remove", .on_press = .of(rm, RemovePlayer.press) }),
+                        })) catch {};
+                    }
+                    rows.append(a, cx.make(kete.SizedBox{ .height = 52 * @as(f32, @floatFromInt(@min(players.items.len, 2))), .child = cx.make(kete.ScrollView{ .child = cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .children = players.items }) }) })) catch {};
                 }
             },
         }
-        rows.append(a, cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
-            cx.make(kete.FilledButton{ .label = "Leave", .on_press = .of(g, Game.leaveIsland) }),
-        }) catch &.{} })) catch {};
         return cx.make(kete.Column{ .fill = false, .spacing = 12, .cross_axis_alignment = .stretch, .children = rows.items });
     }
     var items: std.ArrayList(kete.Widget) = .empty;
@@ -522,6 +532,15 @@ const IslandPick = struct {
 
     fn delete(p: *IslandPick) void {
         p.game.deleteIsland(p.index);
+    }
+};
+
+const RemovePlayer = struct {
+    game: *Game,
+    id: u8,
+
+    fn press(r: *RemovePlayer) void {
+        r.game.removePlayer(r.id);
     }
 };
 
@@ -930,6 +949,9 @@ test "playing together: islands nearby listed under ours and joined, the switch 
     // someone asking, over the menu.
     g.net.leave = false;
     g.net.status = .{ .hosting = 1 };
+    var joined: [1]game_mod.Net.Joined = .{.{ .id = 2 }};
+    joined[0].setName("calm-heron");
+    g.net.players = &joined;
     g.title = false;
     g.islands.current = 0;
     g.net.request = "brave-otter";
@@ -941,7 +963,10 @@ test "playing together: islands nearby listed under ours and joined, the switch 
     try testing.expect(findText(u.root.?, "Let others on this network join") != null);
     click(u, findText(u.root.?, "Let others on this network join").?);
     try testing.expect(g.net.open);
-    try testing.expect(findText(u.root.?, "1 player has joined you") != null);
+    // Who has joined, each with a button to remove them.
+    try testing.expect(findText(u.root.?, "calm-heron") != null);
+    click(u, findText(u.root.?, "Remove").?);
+    try testing.expectEqual(@as(?u8, 2), g.net.remove);
     try testing.expect(findText(u.root.?, "brave-otter wants to join") != null);
     click(u, findText(u.root.?, "Allow (Y)").?);
     try testing.expectEqual(@as(?bool, true), g.net.answer);

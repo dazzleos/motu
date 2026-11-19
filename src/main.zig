@@ -669,6 +669,11 @@ fn run(init: std.process.Init) !void {
                 toTitle(gpa, &game, &cur);
                 mesh(renderer, world, game.player.eye(), 12, &trouble);
             },
+            .removed => {
+                toTitle(gpa, &game, &cur);
+                mesh(renderer, world, game.player.eye(), 12, &trouble);
+                game.say("You were removed from that island");
+            },
             .denied => game.say("They said no"),
             .failed => game.say("Cannot reach that game"),
         };

@@ -76,6 +76,8 @@ const Kind = enum(u8) {
     leave,
     /// The time of day.
     time,
+    /// The host removed the player it is sent to.
+    removed,
     _,
 };
 
@@ -88,6 +90,8 @@ pub const Event = union(enum) {
     left,
     /// The host said no.
     denied,
+    /// The host removed this player: back to this island.
+    removed,
     /// The game could not be reached.
     failed,
 };
@@ -289,6 +293,8 @@ pub const Session = struct {
     /// This player's id: 0 on the host.
     my_id: u8 = 0,
     remotes: [max_players]Remote = @splat(.{}),
+    /// The players who have joined (hosting), for the menu.
+    players: [max_players]game_mod.Net.Joined = undefined,
     others: [max_players]player_mod.Other = undefined,
     /// The request shown (a slot in `peers`).
     request_slot: ?usize = null,
@@ -498,6 +504,18 @@ pub const Session = struct {
             s.toPlayers(.time, &.{&tb}, null);
         }
 
+        // One the menu asked to be removed: told, gone for the others now,
+        // closed once that is sent.
+        if (g.net.remove) |id| {
+            g.net.remove = null;
+            for (&s.peers) |*slot| if (slot.*) |*p| if (p.state == .playing and p.id == id) {
+                p.send(s.gpa, .removed, &.{});
+                p.state = .closing;
+                s.remotes[id].active = false;
+                s.toPlayers(.leave, &.{&.{id}}, null);
+            };
+        }
+
         // Sent; gone.
         for (&s.peers) |*slot| if (slot.*) |*p| {
             p.flush();
@@ -515,8 +533,11 @@ pub const Session = struct {
         };
         var playing: u8 = 0;
         for (s.peers) |p| if (p != null and p.?.state == .playing) {
+            s.players[playing] = .{ .id = p.?.id };
+            s.players[playing].setName(p.?.name());
             playing += 1;
         };
+        g.net.players = s.players[0..playing];
         g.net.status = if (playing > 0) .{ .hosting = playing } else .alone;
     }
 
@@ -637,6 +658,10 @@ pub const Session = struct {
                 .denied => if (h.state == .hello) {
                     h.consume(at + f.size);
                     return s.endJoin(g, .denied);
+                },
+                .removed => if (h.state == .playing) {
+                    h.consume(at + f.size);
+                    return s.endJoin(g, .removed);
                 },
                 .edit => if (h.state == .playing) {
                     if (decodeEdit(f.payload)) |e| g.editFromNetwork(e);
@@ -984,6 +1009,39 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
         }
     }.f);
     try testing.expect(left != null and left.? == .left);
+}
+
+test "a host lists who has joined, and can remove them" {
+    var pair: Pair = undefined;
+    try pair.init();
+    defer pair.deinit();
+    _ = try pair.until(struct {
+        fn f(p: *Pair) bool {
+            return p.gb.net.nearby.len == 1;
+        }
+    }.f);
+    pair.gb.joinNearby(pair.gb.net.nearby[0]);
+    _ = try pair.until(struct {
+        fn f(p: *Pair) bool {
+            return p.ga.net.request != null;
+        }
+    }.f);
+    pair.ga.allowJoin();
+    _ = try pair.until(struct {
+        fn f(p: *Pair) bool {
+            return p.gb.net.status == .joined and p.ga.net.players.len == 1;
+        }
+    }.f);
+    try testing.expectEqualStrings("guest-pi", pair.ga.net.players[0].name());
+    // Removed: told so, and gone from the host's list and its world.
+    pair.ga.removePlayer(pair.ga.net.players[0].id);
+    const removed = try pair.until(struct {
+        fn f(p: *Pair) bool {
+            return p.gb.net.status == .alone and p.ga.net.players.len == 0 and p.ga.net.others.len == 0;
+        }
+    }.f);
+    try testing.expect(removed != null and removed.? == .removed);
+    try testing.expect(pair.ga.net.status == .alone);
 }
 
 test "a host can say no" {

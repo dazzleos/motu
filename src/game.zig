@@ -139,6 +139,11 @@ pub const Net = struct {
     /// Others on the network may join (the menu's switch, on an island):
     /// it says it is there, and those asking are asked about.
     open: bool = false,
+    /// Hosting: the players who have joined, for the menu.
+    players: []const Joined = &.{},
+    /// One the menu asked to be removed (by id).
+    remove: ?u8 = null,
+
     /// Games nearby, for the menu.
     nearby: []const Nearby = &.{},
     /// One the menu chose to ask to join.
@@ -152,6 +157,22 @@ pub const Net = struct {
     outbox: std.ArrayList(Edit) = .empty,
     /// The others playing, as drawn.
     others: []const player_mod.Other = &.{},
+
+    /// A player who has joined this game.
+    pub const Joined = struct {
+        id: u8,
+        name_buf: [64]u8 = undefined,
+        name_len: u8 = 0,
+
+        pub fn name(p: *const Joined) []const u8 {
+            return p.name_buf[0..p.name_len];
+        }
+
+        pub fn setName(p: *Joined, s: []const u8) void {
+            p.name_len = @intCast(@min(s.len, p.name_buf.len));
+            @memcpy(p.name_buf[0..p.name_len], s[0..p.name_len]);
+        }
+    };
 
     pub const Status = union(enum) {
         alone,
@@ -420,6 +441,11 @@ pub const Game = struct {
     /// Asks the game `n` (from the menu) to join it.
     pub fn joinNearby(g: *Game, n: Nearby) void {
         g.net.join = n;
+    }
+
+    /// Removes a player who joined this game (the menu's button).
+    pub fn removePlayer(g: *Game, id: u8) void {
+        g.net.remove = id;
     }
 
     /// Leaves the game joined, back to this island.

@@ -195,6 +195,10 @@ pub fn run(init: std.process.Init) !void {
                 };
             },
             .left => main.toTitle(gpa, &game, &cur),
+            .removed => {
+                main.toTitle(gpa, &game, &cur);
+                game.say("You were removed from that island");
+            },
             .denied => game.say("They said no"),
             .failed => game.say("Cannot reach that game"),
         };
