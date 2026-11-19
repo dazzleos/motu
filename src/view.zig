@@ -235,7 +235,7 @@ pub const Motu = struct {
     }
 
     /// The menu's tabs.
-    const menu_tabs = [_]kete.Tab{ .{ .label = "Islands" }, .{ .label = "Player" }, .{ .label = "Play together" }, .{ .label = "Settings" } };
+    const menu_tabs = [_]kete.Tab{ .{ .label = "Islands" }, .{ .label = "Player" }, .{ .label = "Settings" } };
     const menu_width = 520;
 
     /// The menu, over the game (which goes on): tabs for the islands,
@@ -247,7 +247,6 @@ pub const Motu = struct {
         const content = switch (g.menu_tab) {
             .islands => islandsTab(cx, g),
             .player => playerTab(cx, g),
-            .play => playTogether(cx, g),
             .settings => settingsTab(cx, g),
         };
         return cx.make(kete.RoundedBox{ .color = gfx.Color.argb(0xe0202024), .radius = .all(16), .child = cx.make(kete.Padding{ .padding = .{ .left = 20, .top = 12, .right = 12, .bottom = 20 }, .child = cx.make(kete.Column{
@@ -417,24 +416,39 @@ const AvatarPicture = struct {
     }
 };
 
-/// The islands kept. In the title scene: choose one and join it, delete
-/// one (asked twice), or make a new one. On an island (or in another's
-/// game): leave it, back to the title scene to choose another.
+/// The islands. In the title scene: those kept here, and under them those
+/// nearby, on other computers on the network (a plane on their icon, the
+/// computer's name under theirs): choose one and join it, delete one kept
+/// here (asked twice), or make a new one. On an island: it, a switch to let
+/// others on the network join, and leaving it (back to the title scene, to
+/// choose another); in another's game, leaving it.
 fn islandsTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
     const a = cx.arena;
     const t = cx.theme();
+    const note = struct {
+        fn f(c: *kete.BuildContext, text: []const u8) kete.Widget {
+            const th = c.theme();
+            return c.make(kete.Text{ .text = text, .style = .{ .size = th.body_size, .color = th.on_surface_variant } });
+        }
+    }.f;
     if (!g.title) {
-        const where = if (g.islands.current) |i| g.islands.name(i) else switch (g.net.status) {
-            .joined => |host| cx.fmt("{s}'s island", .{host}),
-            else => "An island",
-        };
-        return cx.make(kete.Column{ .fill = false, .spacing = 12, .cross_axis_alignment = .stretch, .children = a.dupe(kete.Widget, &.{
-            cx.make(kete.ListItem{ .headline = where, .supporting_text = "Playing now", .leading_icon = .landscape, .selected = true }),
-            cx.make(kete.Text{ .text = "To choose another island, leave this one.", .style = .{ .size = t.body_size, .color = t.on_surface_variant } }),
-            cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
-                cx.make(kete.FilledButton{ .label = "Leave", .on_press = .of(g, Game.leaveIsland) }),
-            }) catch &.{} }),
-        }) catch &.{} });
+        var rows: std.ArrayList(kete.Widget) = .empty;
+        switch (g.net.status) {
+            .joined => |island| rows.append(a, cx.make(kete.ListItem{ .headline = island, .supporting_text = "Playing now", .leading = remoteIcon(cx), .selected = true })) catch {},
+            else => {
+                const name = if (g.islands.current) |i| g.islands.name(i) else "Island";
+                rows.append(a, cx.make(kete.ListItem{ .headline = name, .supporting_text = "Playing now", .leading_icon = .landscape, .selected = true })) catch {};
+                rows.append(a, cx.make(kete.SwitchRow{ .value = g.net.open, .label = "Let others on this network join", .on_changed = .of(g, Game.setOpen) })) catch {};
+                switch (g.net.status) {
+                    .hosting => |n| rows.append(a, note(cx, if (n == 1) "1 player has joined you" else cx.fmt("{d} players have joined you", .{n}))) catch {},
+                    else => {},
+                }
+            },
+        }
+        rows.append(a, cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
+            cx.make(kete.FilledButton{ .label = "Leave", .on_press = .of(g, Game.leaveIsland) }),
+        }) catch &.{} })) catch {};
+        return cx.make(kete.Column{ .fill = false, .spacing = 12, .cross_axis_alignment = .stretch, .children = rows.items });
     }
     var items: std.ArrayList(kete.Widget) = .empty;
     for (0..g.islands.count) |k| {
@@ -454,14 +468,48 @@ fn islandsTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
             .on_press = .of(act, IslandPick.select),
         })) catch {};
     }
-    if (g.islands.count == 0) items.append(a, cx.make(kete.Text{ .text = "No islands yet: make one.", .style = .{ .size = t.body_size, .color = t.on_surface_variant } })) catch {};
+    // Those nearby, on other computers.
+    const chosen = g.remoteChosen();
+    for (g.net.nearby) |n| {
+        const pick = a.create(RemotePick) catch break;
+        pick.* = .{ .game = g, .nearby = n };
+        items.append(a, cx.make(kete.ListItem{
+            .headline = pick.nearby.name(),
+            .supporting_text = pick.nearby.machine(),
+            .leading = remoteIcon(cx),
+            .selected = if (chosen) |c| c.same(n.where()) else false,
+            .on_press = .of(pick, RemotePick.select),
+        })) catch {};
+    }
+    if (items.items.len == 0) items.append(a, cx.make(kete.Text{ .text = "No islands yet: make one.", .style = .{ .size = t.body_size, .color = t.on_surface_variant } })) catch {};
+    // Asking one nearby to join it: waiting for its answer.
+    const buttons: []const kete.Widget = switch (g.net.status) {
+        .asking => |island| a.dupe(kete.Widget, &.{
+            cx.make(kete.Expanded{ .child = note(cx, cx.fmt("Asking to join {s}…", .{island})) }),
+            cx.make(kete.TextButton{ .label = "Stop asking", .on_press = .of(g, Game.leaveGame) }),
+        }) catch &.{},
+        else => a.dupe(kete.Widget, &.{
+            cx.make(kete.FilledButton{ .label = "Join", .on_press = if (g.canJoin()) .of(g, Game.joinIsland) else null }),
+            cx.make(kete.OutlinedButton{ .label = "New island", .on_press = .of(g, Game.newIsland) }),
+        }) catch &.{},
+    };
     return cx.make(kete.Column{ .fill = false, .spacing = 12, .cross_axis_alignment = .stretch, .children = a.dupe(kete.Widget, &.{
         cx.make(kete.SizedBox{ .height = 150, .child = cx.make(kete.ScrollView{ .child = cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 2, .children = items.items }) }) }),
-        cx.make(kete.Row{ .spacing = 8, .children = a.dupe(kete.Widget, &.{
-            cx.make(kete.FilledButton{ .label = "Join", .on_press = if (g.islands.selected != null) .of(g, Game.joinIsland) else null }),
-            cx.make(kete.OutlinedButton{ .label = "New island", .on_press = .of(g, Game.newIsland) }),
-        }) catch &.{} }),
+        cx.make(kete.Row{ .spacing = 8, .children = buttons }),
     }) catch &.{} });
+}
+
+/// An island's icon with a plane on its corner: one on another computer.
+fn remoteIcon(cx: *kete.BuildContext) kete.Widget {
+    const t = cx.theme();
+    return cx.make(kete.SizedBox{ .width = 28, .height = 24, .child = cx.make(kete.Overlay{ .children = cx.arena.dupe(kete.Widget, &.{
+        cx.make(kete.Align{ .alignment = .center_left, .child = cx.make(kete.Icon{ .icon = .landscape }) }),
+        cx.make(kete.Align{ .alignment = .top_right, .child = cx.make(kete.RoundedBox{
+            .color = t.primary,
+            .radius = .all(7),
+            .child = cx.make(kete.Padding{ .padding = .all(1), .child = cx.make(kete.Icon{ .icon = .flight, .size = 12, .color = t.on_primary }) }),
+        }) }),
+    }) catch &.{} }) });
 }
 
 const IslandPick = struct {
@@ -474,6 +522,15 @@ const IslandPick = struct {
 
     fn delete(p: *IslandPick) void {
         p.game.deleteIsland(p.index);
+    }
+};
+
+const RemotePick = struct {
+    game: *Game,
+    nearby: game_mod.Nearby,
+
+    fn select(p: *RemotePick) void {
+        p.game.selectRemote(p.nearby);
     }
 };
 
@@ -508,62 +565,6 @@ const FpsGraph = struct {
             const x = w - @as(f32, @floatFromInt(self.history.len - i)) * slot;
             c.fillRect(.{ .x = x + 1, .y = h - 2 - bh, .w = slot - 2, .h = bh }, colorOf(fps));
         }
-    }
-};
-
-/// Games nearby listed at most (the menu must fit the smallest window).
-const max_nearby_shown = 3;
-
-/// The menu's tab for playing together: how it is going, and the games
-/// nearby to join.
-fn playTogether(cx: *kete.BuildContext, g: *Game) kete.Widget {
-    const a = cx.arena;
-    var items: std.ArrayList(kete.Widget) = .empty;
-    const note = struct {
-        fn f(c: *kete.BuildContext, text: []const u8) kete.Widget {
-            const th = c.theme();
-            return c.make(kete.Text{ .text = text, .style = .{ .size = th.body_size, .color = th.on_surface_variant } });
-        }
-    }.f;
-    switch (g.net.status) {
-        .joined => |host| {
-            items.append(a, note(cx, cx.fmt("Playing on {s}'s island", .{host}))) catch {};
-            items.append(a, cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
-                cx.make(kete.OutlinedButton{ .label = "Leave", .on_press = .of(g, Game.leaveGame) }),
-            }) catch &.{} })) catch {};
-            return cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 8, .children = items.items });
-        },
-        .asking => |host| {
-            items.append(a, note(cx, cx.fmt("Asking {s}…", .{host}))) catch {};
-            items.append(a, cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
-                cx.make(kete.TextButton{ .label = "Stop asking", .on_press = .of(g, Game.leaveGame) }),
-            }) catch &.{} })) catch {};
-            return cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 8, .children = items.items });
-        },
-        .hosting => |n| items.append(a, note(cx, if (n == 1) "1 player has joined you" else cx.fmt("{d} players have joined you", .{n}))) catch {},
-        .alone => items.append(a, note(cx, if (g.title) "On an island, others on this network can ask to join you" else "Others on this network can ask to join you")) catch {},
-    }
-    if (g.net.nearby.len == 0) {
-        items.append(a, note(cx, "No games nearby")) catch {};
-    }
-    for (g.net.nearby[0..@min(g.net.nearby.len, max_nearby_shown)]) |n| {
-        const join = a.create(JoinNearby) catch break;
-        join.* = .{ .game = g, .nearby = n };
-        items.append(a, cx.make(kete.ListItem{
-            .headline = join.nearby.name(),
-            .leading_icon = .computer,
-            .on_press = .of(join, JoinNearby.press),
-        })) catch {};
-    }
-    return cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 2, .children = items.items });
-}
-
-const JoinNearby = struct {
-    game: *Game,
-    nearby: game_mod.Nearby,
-
-    fn press(j: *JoinNearby) void {
-        j.game.joinNearby(j.nearby);
     }
 };
 
@@ -834,10 +835,8 @@ test "the menu fits from the smallest window up, and its switches set the option
     try testing.expect(findText(u.root.?, "Straw hat") != null);
     g.key(.tab, true);
     g.key(.tab, false);
-    try testing.expectEqual(game_mod.MenuTab.play, g.menu_tab);
+    try testing.expectEqual(game_mod.MenuTab.settings, g.menu_tab);
     try testing.expect(!g.typing());
-    g.key(.tab, true);
-    g.key(.tab, false);
     for ([_][2]u32{ min_size, .{ 1920, 1036 } }) |size| {
         u.frame(size[0], size[1], 0, view);
         try testing.expect(!overflows(u.root.?));
@@ -881,7 +880,7 @@ test "the menu fits from the smallest window up, and its switches set the option
     try testing.expect(g.quit_asked);
 }
 
-test "playing together: games nearby to join, someone asking to join, and leaving" {
+test "playing together: islands nearby listed under ours and joined, the switch to let others join, someone asking, and leaving" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
     const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
@@ -891,39 +890,68 @@ test "playing together: games nearby to join, someone asking to join, and leavin
     const icons = try testing.allocator.create(Icons);
     defer testing.allocator.destroy(icons);
     icons.init();
-    var nearby: [4]game_mod.Nearby = undefined;
-    for (&nearby, [_][]const u8{ "awesome-elephant", "brave-otter", "calm-heron", "daring-lynx" }, 0..) |*n, name, i| {
+    g.islands.add("Home");
+    var nearby: [2]game_mod.Nearby = undefined;
+    for (&nearby, [_][]const u8{ "awesome-elephant", "brave-otter" }, [_][]const u8{ "Lagoon", "Reef" }, 0..) |*n, machine, island, i| {
         n.* = .{ .addr = .{ 192, 168, 1, @intCast(10 + i) }, .port = 47153 };
-        n.setName(name);
+        n.setName(island);
+        n.setMachine(machine);
     }
     g.net.nearby = &nearby;
-    g.net.status = .{ .hosting = 1 };
-    g.net.request = "brave-otter";
-    g.showMenuTab(@intFromEnum(game_mod.MenuTab.play));
+    g.title = true;
+    g.showIslands();
     const view: Motu = .{ .game = &g, .icons = icons };
     for ([_][2]u32{ min_size, .{ 1280, 720 }, .{ 1920, 1036 } }) |size| {
         u.frame(size[0], size[1], 0, view);
         try testing.expect(!overflows(u.root.?));
     }
+    // No tab of its own: the islands nearby are with ours, their
+    // computers' names under them.
+    try testing.expect(findText(u.root.?, "Play together") == null);
+    try testing.expect(findText(u.root.?, "Home") != null);
+    try testing.expect(findText(u.root.?, "Lagoon") != null);
+    try testing.expect(findText(u.root.?, "awesome-elephant") != null);
+    try testing.expect(findText(u.root.?, "Reef") != null);
+    // One chosen, then joined: asked.
+    click(u, findText(u.root.?, "Lagoon").?);
+    u.frame(1920, 1036, 0, view);
+    try testing.expect(g.islands.selected == null);
+    click(u, findText(u.root.?, "Join").?);
+    try testing.expectEqualStrings("Lagoon", g.net.join.?.name());
+    try testing.expectEqual([4]u8{ 192, 168, 1, 10 }, g.net.join.?.addr);
+    // Asking: it can be stopped.
+    g.net.join = null;
+    g.net.status = .{ .asking = "Lagoon" };
+    u.frame(1920, 1036, 0, view);
+    try testing.expect(!overflows(u.root.?));
+    click(u, findText(u.root.?, "Stop asking").?);
+    try testing.expect(g.net.leave);
+    // On our island: the switch, off to start with, lets others join; and
+    // someone asking, over the menu.
+    g.net.leave = false;
+    g.net.status = .{ .hosting = 1 };
+    g.title = false;
+    g.islands.current = 0;
+    g.net.request = "brave-otter";
+    for ([_][2]u32{ min_size, .{ 1920, 1036 } }) |size| {
+        u.frame(size[0], size[1], 0, view);
+        try testing.expect(!overflows(u.root.?));
+    }
+    try testing.expect(!g.net.open);
+    try testing.expect(findText(u.root.?, "Let others on this network join") != null);
+    click(u, findText(u.root.?, "Let others on this network join").?);
+    try testing.expect(g.net.open);
     try testing.expect(findText(u.root.?, "1 player has joined you") != null);
     try testing.expect(findText(u.root.?, "brave-otter wants to join") != null);
-    // Three listed at most.
-    try testing.expect(findText(u.root.?, "calm-heron") != null);
-    try testing.expect(findText(u.root.?, "daring-lynx") == null);
-    // The request's Allow, over the menu.
     click(u, findText(u.root.?, "Allow (Y)").?);
     try testing.expectEqual(@as(?bool, true), g.net.answer);
-    // A game nearby: asked to join.
-    u.frame(1920, 1036, 0, view);
-    click(u, findText(u.root.?, "awesome-elephant").?);
-    try testing.expectEqualStrings("awesome-elephant", g.net.join.?.name());
-    try testing.expectEqual([4]u8{ 192, 168, 1, 10 }, g.net.join.?.addr);
-    // Joined: leave.
+    // In another's game: leave it.
     g.net.request = null;
-    g.net.status = .{ .joined = "awesome-elephant" };
+    g.net.status = .{ .joined = "Lagoon" };
+    g.islands.current = null;
     u.frame(min_size[0], min_size[1], 0, view);
     try testing.expect(!overflows(u.root.?));
-    try testing.expect(findText(u.root.?, "Playing on awesome-elephant's island") != null);
+    try testing.expect(findText(u.root.?, "Lagoon") != null);
     click(u, findText(u.root.?, "Leave").?);
     try testing.expect(g.net.leave);
 }

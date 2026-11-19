@@ -90,13 +90,17 @@ pub const Edit = struct {
     block: Block,
 };
 
-/// A game nearby, on the network: its computer's name and where to join it.
+/// A game nearby, on the network: its island's name, the computer's it is
+/// on, and where to join it.
 pub const Nearby = struct {
     name_buf: [64]u8 = undefined,
     name_len: u8 = 0,
+    machine_buf: [64]u8 = undefined,
+    machine_len: u8 = 0,
     addr: [4]u8,
     port: u16,
 
+    /// The island's name.
     pub fn name(n: *const Nearby) []const u8 {
         return n.name_buf[0..n.name_len];
     }
@@ -105,12 +109,36 @@ pub const Nearby = struct {
         n.name_len = @intCast(@min(s.len, n.name_buf.len));
         @memcpy(n.name_buf[0..n.name_len], s[0..n.name_len]);
     }
+
+    /// The computer's name.
+    pub fn machine(n: *const Nearby) []const u8 {
+        return n.machine_buf[0..n.machine_len];
+    }
+
+    pub fn setMachine(n: *Nearby, s: []const u8) void {
+        n.machine_len = @intCast(@min(s.len, n.machine_buf.len));
+        @memcpy(n.machine_buf[0..n.machine_len], s[0..n.machine_len]);
+    }
+
+    /// Whether it is the same game as `o` (wherever it is listed).
+    pub fn same(n: *const Nearby, o: Where) bool {
+        return std.mem.eql(u8, &n.addr, &o.addr) and n.port == o.port;
+    }
+
+    pub fn where(n: *const Nearby) Where {
+        return .{ .addr = n.addr, .port = n.port };
+    }
+
+    pub const Where = struct { addr: [4]u8, port: u16 };
 };
 
 /// Playing together: what net.zig tells the game, and what the game (the
 /// menu, the keys) asks of it.
 pub const Net = struct {
     status: Status = .alone,
+    /// Others on the network may join (the menu's switch, on an island):
+    /// it says it is there, and those asking are asked about.
+    open: bool = false,
     /// Games nearby, for the menu.
     nearby: []const Nearby = &.{},
     /// One the menu chose to ask to join.
@@ -521,12 +549,39 @@ pub const Game = struct {
     /// Chooses an island in the menu (to join, or delete).
     pub fn selectIsland(g: *Game, i: u8) void {
         if (i < g.islands.count) g.islands.selected = i;
+        g.islands.remote = null;
         g.delete_asked = null;
     }
 
-    /// Plays on the island chosen.
+    /// Chooses an island nearby, on another computer (to join).
+    pub fn selectRemote(g: *Game, n: Nearby) void {
+        g.islands.remote = n.where();
+        g.islands.selected = null;
+        g.delete_asked = null;
+    }
+
+    /// The island nearby chosen, if it is still there.
+    pub fn remoteChosen(g: *const Game) ?Nearby {
+        const w = g.islands.remote orelse return null;
+        for (g.net.nearby) |n| if (n.same(w)) return n;
+        return null;
+    }
+
+    /// Plays on the island chosen: one kept here, or asks to join one
+    /// nearby.
     pub fn joinIsland(g: *Game) void {
+        if (g.remoteChosen()) |n| return g.joinNearby(n);
         if (g.islands.selected) |i| g.openIsland(i);
+    }
+
+    /// Whether an island is chosen that can be joined.
+    pub fn canJoin(g: *const Game) bool {
+        return g.remoteChosen() != null or g.islands.selected != null;
+    }
+
+    /// Lets others on the network join this island (or not).
+    pub fn setOpen(g: *Game, on: bool) void {
+        g.net.open = on;
     }
 
     /// Back to the title scene, to choose another island (from another's
@@ -903,7 +958,7 @@ pub const Game = struct {
 };
 
 /// The menu's tabs.
-pub const MenuTab = enum(u2) { islands, player, play, settings };
+pub const MenuTab = enum(u2) { islands, player, settings };
 
 /// The longest name a player can have (in bytes).
 pub const max_name = 24;
@@ -921,6 +976,8 @@ pub const Islands = struct {
     current: ?u8 = null,
     /// The one chosen in the menu.
     selected: ?u8 = null,
+    /// Or one nearby, on another computer, chosen in the menu.
+    remote: ?Nearby.Where = null,
 
     pub fn name(i: *const Islands, k: usize) []const u8 {
         return i.names[k][0..i.lens[k]];

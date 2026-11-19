@@ -1,8 +1,10 @@
 //! Playing together on the local network.
 //!
-//! Every game says it is there: once a second it broadcasts a beacon (UDP,
-//! to everyone on the network, on `port`) with its computer's name and the
-//! port to join it on, and it hears the others', which the menu lists.
+//! Every game others may join (on an island, with the menu's switch on)
+//! says it is there: once a second it broadcasts a beacon (UDP, to everyone
+//! on the network, on `port`) with its island's name, its computer's and
+//! the port to join it on; and it hears the others', which the menu lists
+//! with its islands.
 //!
 //! Joining is over TCP. The one joining says hello with its name; the host
 //! asks its player (who answers with Y or N, or in the notification), then
@@ -41,8 +43,8 @@ pub const max_nearby = 8;
 const beacon_magic = "DZBN";
 /// 2: palms and new plants (a world sent is the new kind). 3: the day,
 /// for the weather. 4: the atoll (worlds 256 across). 6: how players look.
-/// 7: frangipani.
-const protocol_version: u8 = 7;
+/// 7: frangipani. 8: beacons say the island's name and the computer's.
+const protocol_version: u8 = 8;
 const beacon_every = std.time.ns_per_s;
 /// A game not heard for this long has gone.
 const nearby_for = 4 * std.time.ns_per_s;
@@ -373,12 +375,14 @@ pub const Session = struct {
     // --- Finding each other -------------------------------------------------------------
 
     fn discover(s: *Session, g: *Game, now: u64) void {
-        // Joined (or joining), or in the title scene (on no island), this
-        // game cannot be joined: it does not say it is there.
-        if (s.host == null and !g.title and now -| s.last_beacon >= beacon_every) {
+        // Joined (or joining), in the title scene (on no island), or not
+        // let be joined (the menu's switch), this game cannot be joined:
+        // it does not say it is there.
+        if (s.host == null and joinable(g) and now -| s.last_beacon >= beacon_every) {
             s.last_beacon = now;
             var buf: [128]u8 = undefined;
-            const beacon = encodeBeacon(&buf, s.id, s.tcp_port, s.nameFor(g));
+            const island = if (g.islands.current) |i| g.islands.name(i) else "Island";
+            const beacon = encodeBeacon(&buf, s.id, s.tcp_port, s.name_buf[0..s.name_len], island);
             var to = inAddr(s.opts.beacon_addr, s.opts.beacon_port);
             // No network: no one to hear it.
             _ = linux.sendto(s.udp, beacon.ptr, beacon.len, 0, @ptrCast(&to), @sizeOf(linux.sockaddr.in));
@@ -392,7 +396,7 @@ pub const Session = struct {
             const b = parseBeacon(buf[0..rc]) orelse continue;
             if (b.id == s.id) continue;
             const addr: [4]u8 = @bitCast(from.addr);
-            s.heard(addr, b.port, b.name, now);
+            s.heard(addr, b.port, b.machine, b.island, now);
         }
         // Not heard lately: gone.
         var k: usize = 0;
@@ -406,15 +410,17 @@ pub const Session = struct {
         g.net.nearby = s.nearby[0..s.nearby_len];
     }
 
-    fn heard(s: *Session, addr: [4]u8, tcp_port: u16, game_name: []const u8, now: u64) void {
+    fn heard(s: *Session, addr: [4]u8, tcp_port: u16, machine: []const u8, island: []const u8, now: u64) void {
         for (s.nearby[0..s.nearby_len], 0..) |*n, k| if (std.mem.eql(u8, &n.addr, &addr) and n.port == tcp_port) {
-            n.setName(game_name);
+            n.setName(island);
+            n.setMachine(machine);
             s.nearby_seen[k] = now;
             return;
         };
         if (s.nearby_len == max_nearby) return;
         var n: Nearby = .{ .addr = addr, .port = tcp_port };
-        n.setName(game_name);
+        n.setName(island);
+        n.setMachine(machine);
         s.nearby[s.nearby_len] = n;
         s.nearby_seen[s.nearby_len] = now;
         s.nearby_len += 1;
@@ -460,8 +466,9 @@ pub const Session = struct {
                 g.net.answer = null;
             }
         }
-        // In the title scene there is no island to join: asking, told no.
-        if (g.title) for (&s.peers, 0..) |*slot, k| if (slot.*) |*p| if (p.state == .asking and !p.dead) {
+        // In the title scene there is no island to join, and with the
+        // menu's switch off it may not be: asking, told no.
+        if (!joinable(g)) for (&s.peers, 0..) |*slot, k| if (slot.*) |*p| if (p.state == .asking and !p.dead) {
             if (s.request_slot == k) {
                 s.request_slot = null;
                 g.net.request = null;
@@ -704,23 +711,39 @@ pub const Session = struct {
 
 // --- Messages ---------------------------------------------------------------------------
 
-fn encodeBeacon(buf: *[128]u8, id: u32, tcp_port: u16, game_name: []const u8) []const u8 {
-    const len = @min(game_name.len, 64);
+/// Whether others may join this game now: on an island (not the title
+/// scene's), with the menu's switch on.
+fn joinable(g: *const Game) bool {
+    return !g.title and g.net.open;
+}
+
+/// A beacon: the magic, the protocol's version, the game's id and port;
+/// the computer's name (its length, then it) and the island's (the rest).
+fn encodeBeacon(buf: *[128]u8, id: u32, tcp_port: u16, machine: []const u8, island: []const u8) []const u8 {
+    const m = @min(machine.len, 64);
+    const i = @min(island.len, 48);
     @memcpy(buf[0..4], beacon_magic);
     buf[4] = protocol_version;
     std.mem.writeInt(u32, buf[5..9], id, .little);
     std.mem.writeInt(u16, buf[9..11], tcp_port, .little);
-    @memcpy(buf[11..][0..len], game_name[0..len]);
-    return buf[0 .. 11 + len];
+    buf[11] = @intCast(m);
+    @memcpy(buf[12..][0..m], machine[0..m]);
+    @memcpy(buf[12 + m ..][0..i], island[0..i]);
+    return buf[0 .. 12 + m + i];
 }
 
-const Beacon = struct { id: u32, port: u16, name: []const u8 };
+const Beacon = struct { id: u32, port: u16, machine: []const u8, island: []const u8 };
 
 fn parseBeacon(b: []const u8) ?Beacon {
-    if (b.len < 12 or b.len > 11 + 64 or !std.mem.eql(u8, b[0..4], beacon_magic) or b[4] != protocol_version) return null;
-    const n = b[11..];
-    for (n) |c| if (c < 0x20) return null;
-    return .{ .id = std.mem.readInt(u32, b[5..9], .little), .port = std.mem.readInt(u16, b[9..11], .little), .name = n };
+    if (b.len < 13 or b.len > 12 + 64 + 48 or !std.mem.eql(u8, b[0..4], beacon_magic) or b[4] != protocol_version) return null;
+    const m = b[11];
+    if (m > 64 or 12 + @as(usize, m) >= b.len) return null;
+    const machine = b[12..][0..m];
+    const island = b[12 + m ..];
+    if (island.len > 48) return null;
+    for (machine) |c| if (c < 0x20) return null;
+    for (island) |c| if (c < 0x20) return null;
+    return .{ .id = std.mem.readInt(u32, b[5..9], .little), .port = std.mem.readInt(u16, b[9..11], .little), .machine = machine, .island = island };
 }
 
 fn encodeEdit(e: game_mod.Edit) [7]u8 {
@@ -789,10 +812,11 @@ const testing = std.testing;
 
 test "beacons, changes and players, there and back" {
     var buf: [128]u8 = undefined;
-    const b = parseBeacon(encodeBeacon(&buf, 0xdeadbeef, 47153, "awesome-elephant")).?;
+    const b = parseBeacon(encodeBeacon(&buf, 0xdeadbeef, 47153, "awesome-elephant", "Island 2")).?;
     try testing.expectEqual(@as(u32, 0xdeadbeef), b.id);
     try testing.expectEqual(@as(u16, 47153), b.port);
-    try testing.expectEqualStrings("awesome-elephant", b.name);
+    try testing.expectEqualStrings("awesome-elephant", b.machine);
+    try testing.expectEqualStrings("Island 2", b.island);
     try testing.expect(parseBeacon("DZBN") == null);
     try testing.expect(parseBeacon("XXXX\x01\x00\x00\x00\x00\x00\x00a") == null);
 
@@ -843,6 +867,9 @@ const Pair = struct {
         pair.ga = Game.init(testing.allocator, try flatWorld());
         pair.gb = Game.init(testing.allocator, try flatWorld());
         pair.ga.menu_open = false;
+        // Both let others join (the menu's switch).
+        pair.ga.net.open = true;
+        pair.gb.net.open = true;
     }
 
     fn deinit(pair: *Pair) void {
@@ -886,14 +913,16 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
             return p.gb.net.nearby.len == 1 and p.ga.net.nearby.len == 1;
         }
     }.f);
-    try testing.expectEqualStrings("host-pi", pair.gb.net.nearby[0].name());
-    try testing.expectEqualStrings("guest-pi", pair.ga.net.nearby[0].name());
+    try testing.expectEqualStrings("host-pi", pair.gb.net.nearby[0].machine());
+    try testing.expectEqualStrings("guest-pi", pair.ga.net.nearby[0].machine());
+    try testing.expectEqualStrings("Island", pair.gb.net.nearby[0].name());
 
-    // A name chosen is the one the others see.
-    pair.ga.setPlayerName("Moana");
+    // The island played is the one the others see.
+    pair.ga.islands.add("Lagoon");
+    pair.ga.islands.current = 0;
     _ = try pair.until(struct {
         fn f(p: *Pair) bool {
-            return p.gb.net.nearby.len == 1 and std.mem.eql(u8, p.gb.net.nearby[0].name(), "Moana");
+            return p.gb.net.nearby.len == 1 and std.mem.eql(u8, p.gb.net.nearby[0].name(), "Lagoon");
         }
     }.f);
 
@@ -905,7 +934,7 @@ test "a game nearby is heard, asked to join, lets the player in, and they play t
         }
     }.f);
     try testing.expectEqualStrings("guest-pi", pair.ga.net.request.?);
-    try testing.expectEqualStrings("Moana", pair.gb.net.status.asking);
+    try testing.expectEqualStrings("Lagoon", pair.gb.net.status.asking);
 
     // Y: let in, with the host's world.
     pair.ga.key(.y, true);
@@ -983,4 +1012,30 @@ test "a host can say no" {
     try testing.expect(pair.ga.net.request == null);
     // The guest's world is its own still.
     try testing.expectEqual(blocks.Block.grass, pair.gb.world.get(20, 30, 20));
+}
+
+test "a game not let be joined (the menu's switch off) is not heard, and those asking are told no" {
+    var pair: Pair = undefined;
+    try pair.init();
+    defer pair.deinit();
+    pair.ga.net.open = false;
+    // The host hears the guest; the guest does not hear the host.
+    _ = try pair.until(struct {
+        fn f(p: *Pair) bool {
+            return p.ga.net.nearby.len == 1;
+        }
+    }.f);
+    try testing.expectEqual(@as(usize, 0), pair.gb.net.nearby.len);
+    // Asking anyway (it was heard before): told no, and not asked about.
+    var n: Nearby = .{ .addr = .{ 127, 0, 0, 1 }, .port = pair.a.tcp_port };
+    n.setName("Island");
+    pair.gb.joinNearby(n);
+    const denied = try pair.until(struct {
+        fn f(p: *Pair) bool {
+            return p.gb.net.status == .alone;
+        }
+    }.f);
+    try testing.expect(denied != null and denied.? == .denied);
+    try testing.expect(pair.ga.net.request == null);
+    try testing.expect(pair.gb.net.status != .joined);
 }
