@@ -123,18 +123,13 @@ pub fn run(init: std.process.Init) !void {
     });
     defer app.deinit();
 
-    // The world: as it was left, or a new island (as on Dazzle).
+    // The title scene, behind the menu, to choose an island from (as on
+    // Dazzle).
     const world = try world_mod.World.create(gpa);
     var game = game_mod.Game.init(gpa, world);
     defer game.deinit();
     var cur: main.Current = .{};
-    if (main.findIslands(&game, "")) |newest| cur.set(game.islands.name(newest));
-    if (cur.len == 0 or (main.load(gpa, &game, &cur) catch null) == null) {
-        if (cur.len == 0) cur.set("Island");
-        try main.makeIsland(&game, world_mod.default_seed);
-        main.save(gpa, &game, &cur);
-    }
-    _ = main.findIslands(&game, cur.name());
+    main.toTitle(gpa, &game, &cur);
     var opts = options.load();
     game.quality = 1;
     game.look = opts.look;
@@ -176,16 +171,13 @@ pub fn run(init: std.process.Init) !void {
         last = now;
         if (session) |*s| if (s.poll(&game, now)) |event| switch (event) {
             .joined => |j| {
-                main.save(gpa, &game, &cur);
+                main.joined(gpa, &game, &cur);
                 game.joinWorld(j.world, j.pos, j.yaw, j.time, j.day) catch |err| {
                     print("motu: cannot play in that world ({s})\n", .{@errorName(err)});
                     game.leaveGame();
                 };
             },
-            .left => {
-                main.backHome(gpa, &game, &cur);
-                game.say("Back on your island");
-            },
+            .left => main.toTitle(gpa, &game, &cur),
             .denied => game.say("They said no"),
             .failed => game.say("Cannot reach that game"),
         };

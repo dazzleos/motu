@@ -31,8 +31,10 @@
 //!
 //! In a canoe: W and S paddle, A and D turn, Shift gets out (see boat.zig).
 //!
-//! The game starts in the menu, which has the options; leaving it takes
-//! the mouse (it turns the view), and Esc gives it back with the menu.
+//! The game starts in the menu, over the title scene (no island's: see
+//! World.generateTitle): an island is chosen there and joined, and the
+//! menu's Leave goes back to it. Leaving the menu on an island takes the
+//! mouse (it turns the view), and Esc gives it back with the menu.
 //! Where the mouse cannot be taken, dragging looks around, a click builds
 //! and pressing and holding takes away.
 //!
@@ -180,6 +182,9 @@ pub const Game = struct {
     /// it (the player standing still). The game starts in it, so the mouse
     /// is not taken before it is wanted.
     menu_open: bool = true,
+    /// Before an island is joined (or after one is left): the title
+    /// scene behind the menu, which stays open.
+    title: bool = false,
     /// The menu's tab shown.
     menu_tab: MenuTab = .islands,
     /// The islands kept (main.zig finds them), the one played first.
@@ -282,7 +287,7 @@ pub const Game = struct {
         // In the menu, only Esc (back to the game) and Tab (the next tab;
         // with Shift, the one before) do anything.
         if (g.menu_open) {
-            if (code == .escape) g.closeMenu();
+            if (code == .escape and !g.title) g.closeMenu();
             if (code == .tab) {
                 const n: i32 = std.enums.values(MenuTab).len;
                 const dir: i32 = if (g.held.contains(.left_shift) or g.held.contains(.right_shift)) -1 else 1;
@@ -347,8 +352,10 @@ pub const Game = struct {
         if (g.captured) g.capture_wanted = false;
     }
 
-    /// Back to the game, which takes the mouse.
+    /// Back to the game, which takes the mouse (not from the title scene:
+    /// an island is joined from the menu).
     pub fn closeMenu(g: *Game) void {
+        if (g.title) return;
         g.menu_open = false;
         g.takeMouse();
     }
@@ -402,6 +409,8 @@ pub const Game = struct {
         g.day = day;
         g.target = null;
         g.unsaved = false;
+        g.title = false;
+        g.islands.current = null;
         g.closeMenu();
     }
 
@@ -409,7 +418,7 @@ pub const Game = struct {
     /// own world (alone, or hosting, with the guests' changes too), not in
     /// a game joined (its host saves that).
     pub fn wantsSave(g: *const Game) bool {
-        return g.unsaved and g.net.status != .joined;
+        return g.unsaved and !g.title and g.net.status != .joined;
     }
 
     /// A change another player made.
@@ -507,6 +516,41 @@ pub const Game = struct {
 
     pub fn openIsland(g: *Game, i: u8) void {
         g.island_action = .{ .open = i };
+    }
+
+    /// Chooses an island in the menu (to join, or delete).
+    pub fn selectIsland(g: *Game, i: u8) void {
+        if (i < g.islands.count) g.islands.selected = i;
+        g.delete_asked = null;
+    }
+
+    /// Plays on the island chosen.
+    pub fn joinIsland(g: *Game) void {
+        if (g.islands.selected) |i| g.openIsland(i);
+    }
+
+    /// Back to the title scene, to choose another island (from another's
+    /// game: leaves it).
+    pub fn leaveIsland(g: *Game) void {
+        if (g.net.status == .joined or g.net.status == .asking) return g.leaveGame();
+        g.island_action = .leave;
+    }
+
+    /// The title scene behind the menu (its world made already): the
+    /// view from the water, still.
+    pub fn showTitle(g: *Game) void {
+        g.title = true;
+        g.player = .{ .pos = g.world.spawn, .yaw = g.world.spawn_yaw, .pitch = -0.04 };
+        g.boat = null;
+        g.time_of_day = 0.4;
+        g.day = 0;
+        g.target = null;
+        g.unsaved = false;
+        g.telescope = false;
+        g.palette_open = false;
+        g.islands.current = null;
+        g.openMenu();
+        g.showIslands();
     }
 
     /// Asks first: the second time, deletes.
@@ -753,6 +797,9 @@ pub const Game = struct {
     /// player there.
     pub fn tick(g: *Game, dt: f32) void {
         g.clock += dt;
+        // The title scene: the view, and the time of day, stay as they
+        // are (the creatures and clouds move on).
+        if (g.title) return;
         const t = g.time_of_day + dt / day_length;
         if (t >= 1) g.day +%= 1;
         g.time_of_day = @mod(t, 1);
@@ -812,6 +859,8 @@ pub const Game = struct {
 
     /// The weather now (see weather.zig).
     pub fn weather(g: *const Game) weather_mod.Weather {
+        // The title scene: fair, a few clouds.
+        if (g.title) return .{ .clouds = 0.3 };
         return weather_mod.Weather.at(g.world.seed, g.day, g.time_of_day);
     }
 
@@ -864,8 +913,10 @@ pub const Islands = struct {
     names: [max][48]u8 = undefined,
     lens: [max]u8 = @splat(0),
     count: u8 = 0,
-    /// The one played now.
-    current: u8 = 0,
+    /// The one played now (none in the title scene, or another's game).
+    current: ?u8 = null,
+    /// The one chosen in the menu.
+    selected: ?u8 = null,
 
     pub fn name(i: *const Islands, k: usize) []const u8 {
         return i.names[k][0..i.lens[k]];
@@ -883,6 +934,8 @@ pub const IslandAction = union(enum) {
     new,
     open: u8,
     delete: u8,
+    /// Back to the title scene.
+    leave,
 };
 
 pub fn timeName(t: f32) []const u8 {

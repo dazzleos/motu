@@ -124,7 +124,7 @@ pub const Motu = struct {
         // The hotbar, at the bottom; what happened, above it.
         var bottom: std.ArrayList(kete.Widget) = .empty;
         if (g.messageShown()) |m| bottom.append(a, label(cx, m, 20)) catch {};
-        if (!g.hud_hidden) bottom.append(a, self.hotbar(cx)) catch {};
+        if (!g.hud_hidden and !g.title) bottom.append(a, self.hotbar(cx)) catch {};
         layers.append(a, cx.make(kete.Align{ .alignment = .bottom_center, .child = cx.make(kete.Padding{ .padding = .all(14), .child = cx.make(kete.Column{
             .fill = false,
             .spacing = 8,
@@ -258,7 +258,9 @@ pub const Motu = struct {
                 cx.make(kete.SizedBox{ .width = menu_width + 8, .child = cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
                     cx.make(kete.Text{ .text = "Menu", .style = .{ .size = 22, .color = t.primary }, .wrap = false }),
                     cx.make(kete.Expanded{ .child = cx.make(kete.SizedBox.empty) }),
-                    cx.make(kete.IconButton{ .icon = .close, .size = 36, .on_press = .of(g, Game.closeMenu) }),
+                    // (In the title scene the menu stays: an island is
+                    // joined from it.)
+                    if (g.title) cx.make(kete.SizedBox{ .width = 36, .height = 36 }) else cx.make(kete.IconButton{ .icon = .close, .size = 36, .on_press = .of(g, Game.closeMenu) }),
                 }) catch &.{} }) }),
                 cx.make(kete.SizedBox{ .width = menu_width, .child = cx.make(kete.TabBar{ .tabs = &menu_tabs, .selected = @intFromEnum(g.menu_tab), .on_select = .of(g, Game.showMenuTab) }) }),
                 // As tall whichever tab is shown.
@@ -413,33 +415,49 @@ const AvatarPicture = struct {
     }
 };
 
-/// The islands kept: play one, delete one (asked twice), or make a new
-/// one.
+/// The islands kept. In the title scene: choose one and join it, delete
+/// one (asked twice), or make a new one. On an island (or in another's
+/// game): leave it, back to the title scene to choose another.
 fn islandsTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
     const a = cx.arena;
+    const t = cx.theme();
+    if (!g.title) {
+        const where = if (g.islands.current) |i| g.islands.name(i) else switch (g.net.status) {
+            .joined => |host| cx.fmt("{s}'s island", .{host}),
+            else => "An island",
+        };
+        return cx.make(kete.Column{ .fill = false, .spacing = 12, .cross_axis_alignment = .stretch, .children = a.dupe(kete.Widget, &.{
+            cx.make(kete.ListItem{ .headline = where, .supporting_text = "Playing now", .leading_icon = .landscape, .selected = true }),
+            cx.make(kete.Text{ .text = "To choose another island, leave this one.", .style = .{ .size = t.body_size, .color = t.on_surface_variant } }),
+            cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
+                cx.make(kete.FilledButton{ .label = "Leave", .on_press = .of(g, Game.leaveIsland) }),
+            }) catch &.{} }),
+        }) catch &.{} });
+    }
     var items: std.ArrayList(kete.Widget) = .empty;
     for (0..g.islands.count) |k| {
         const i: u8 = @intCast(k);
         const act = a.create(IslandPick) catch break;
         act.* = .{ .game = g, .index = i };
-        const current = i == g.islands.current;
-        const trailing: ?kete.Widget = if (current) null else if (g.delete_asked == i) cx.make(kete.Row{ .fill = false, .spacing = 4, .children = a.dupe(kete.Widget, &.{
+        const trailing: kete.Widget = if (g.delete_asked == i) cx.make(kete.Row{ .fill = false, .spacing = 4, .children = a.dupe(kete.Widget, &.{
             cx.make(kete.TextButton{ .label = "Keep", .on_press = .of(g, Game.keepIsland) }),
             cx.make(kete.FilledButton{ .label = "Delete", .on_press = .of(act, IslandPick.delete) }),
         }) catch &.{} }) else cx.make(kete.IconButton{ .icon = .delete, .size = 36, .on_press = .of(act, IslandPick.delete) });
         items.append(a, cx.make(kete.ListItem{
             .headline = g.islands.name(k),
-            .supporting_text = if (current) "Playing now" else if (g.delete_asked == i) "Delete it for good?" else "",
+            .supporting_text = if (g.delete_asked == i) "Delete it for good?" else "",
             .leading_icon = .landscape,
-            .selected = current,
+            .selected = g.islands.selected == i,
             .trailing = trailing,
-            .on_press = if (current) null else .of(act, IslandPick.open),
+            .on_press = .of(act, IslandPick.select),
         })) catch {};
     }
+    if (g.islands.count == 0) items.append(a, cx.make(kete.Text{ .text = "No islands yet: make one.", .style = .{ .size = t.body_size, .color = t.on_surface_variant } })) catch {};
     return cx.make(kete.Column{ .fill = false, .spacing = 12, .cross_axis_alignment = .stretch, .children = a.dupe(kete.Widget, &.{
         cx.make(kete.SizedBox{ .height = 150, .child = cx.make(kete.ScrollView{ .child = cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 2, .children = items.items }) }) }),
-        cx.make(kete.Row{ .children = a.dupe(kete.Widget, &.{
-            cx.make(kete.FilledButton{ .label = "New island", .on_press = .of(g, Game.newIsland) }),
+        cx.make(kete.Row{ .spacing = 8, .children = a.dupe(kete.Widget, &.{
+            cx.make(kete.FilledButton{ .label = "Join", .on_press = if (g.islands.selected != null) .of(g, Game.joinIsland) else null }),
+            cx.make(kete.OutlinedButton{ .label = "New island", .on_press = .of(g, Game.newIsland) }),
         }) catch &.{} }),
     }) catch &.{} });
 }
@@ -448,8 +466,8 @@ const IslandPick = struct {
     game: *Game,
     index: u8,
 
-    fn open(p: *IslandPick) void {
-        p.game.openIsland(p.index);
+    fn select(p: *IslandPick) void {
+        p.game.selectIsland(p.index);
     }
 
     fn delete(p: *IslandPick) void {
@@ -521,7 +539,7 @@ fn playTogether(cx: *kete.BuildContext, g: *Game) kete.Widget {
             return cx.make(kete.Column{ .fill = false, .cross_axis_alignment = .stretch, .spacing = 8, .children = items.items });
         },
         .hosting => |n| items.append(a, note(cx, if (n == 1) "1 player has joined you" else cx.fmt("{d} players have joined you", .{n}))) catch {},
-        .alone => items.append(a, note(cx, "Others on this network can ask to join you")) catch {},
+        .alone => items.append(a, note(cx, if (g.title) "On an island, others on this network can ask to join you" else "Others on this network can ask to join you")) catch {},
     }
     if (g.net.nearby.len == 0) {
         items.append(a, note(cx, "No games nearby")) catch {};
@@ -737,6 +755,15 @@ fn findText(n: *kete.WidgetNode, text: []const u8) ?*kete.WidgetNode {
     return null;
 }
 
+/// Clicks `node` (its top left corner, a little in).
+fn click(u: *kete.ui.WindowUi, node: *kete.WidgetNode) void {
+    const pos = node.position();
+    const p: kete.Point = .{ pos[0] + 4, pos[1] + 4 };
+    u.pointerMotion(p);
+    u.pointerButton(p, .left, true);
+    u.pointerButton(p, .left, false);
+}
+
 test "the hotbar and palette fit from the smallest window up; clicking them chooses" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
     const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
@@ -768,6 +795,8 @@ test "the menu fits from the smallest window up, and its switches set the option
     const w = try world_mod.World.create(testing.allocator);
     defer w.destroy();
     var g = Game.init(testing.allocator, w);
+    // As it starts: the title scene.
+    g.title = true;
     g.openMenu();
     const icons = try testing.allocator.create(Icons);
     defer testing.allocator.destroy(icons);
@@ -817,7 +846,11 @@ test "the menu fits from the smallest window up, and its switches set the option
     g.setQuality(0.42);
     try testing.expectEqual(@as(f32, 0.7), g.quality);
     try testing.expectApproxEqAbs(@as(f32, 0.4), g.qualitySlider(), 0.001);
-    // Its close button goes back to the game; the one top right quits.
+    // In the title scene, only the one top right (quit); on an island,
+    // its close button goes back to the game too.
+    u.frame(1920, 1036, 0, view);
+    try testing.expectEqual(@as(usize, 1), withIcon(u.root.?, .close).len);
+    g.title = false;
     u.frame(1920, 1036, 0, view);
     const closes = withIcon(u.root.?, .close);
     try testing.expectEqual(@as(usize, 2), closes.len);
@@ -873,15 +906,6 @@ test "playing together: games nearby to join, someone asking to join, and leavin
     // Three listed at most.
     try testing.expect(findText(u.root.?, "calm-heron") != null);
     try testing.expect(findText(u.root.?, "daring-lynx") == null);
-    const click = struct {
-        fn at(ui_: *kete.ui.WindowUi, node: *kete.WidgetNode) void {
-            const pos = node.position();
-            const p: kete.Point = .{ pos[0] + 4, pos[1] + 4 };
-            ui_.pointerMotion(p);
-            ui_.pointerButton(p, .left, true);
-            ui_.pointerButton(p, .left, false);
-        }
-    }.at;
     // The request's Allow, over the menu.
     click(u, findText(u.root.?, "Allow (Y)").?);
     try testing.expectEqual(@as(?bool, true), g.net.answer);
@@ -947,7 +971,7 @@ test "the top-right fullscreen button toggles fullscreen, and shows only with th
     try testing.expect(toggle.toggled);
 }
 
-test "the menu's islands: listed, played, deleted only when asked twice, and a frame rate graph" {
+test "the menu's islands: chosen and joined from the title scene, left, deleted only when asked twice, and a frame rate graph" {
     const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
     const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
     defer u.destroy();
@@ -960,6 +984,7 @@ test "the menu's islands: listed, played, deleted only when asked twice, and a f
     try testing.expectEqual(@as(f32, 78), g.fps_history[game_mod.fps_seconds - 1]);
     try testing.expect(FpsGraph.colorOf(58).toArgb() != FpsGraph.colorOf(40).toArgb() and FpsGraph.colorOf(40).toArgb() != FpsGraph.colorOf(10).toArgb());
     for ([_][]const u8{ "Island", "Island 2", "Island 3" }) |n| g.islands.add(n);
+    g.title = true;
     g.showIslands();
     const icons = try testing.allocator.create(Icons);
     defer testing.allocator.destroy(icons);
@@ -970,11 +995,36 @@ test "the menu's islands: listed, played, deleted only when asked twice, and a f
         try testing.expect(!overflows(u.root.?));
     }
     try testing.expect(findText(u.root.?, "Island 3") != null);
-    try testing.expect(findText(u.root.?, "Playing now") != null);
+    try testing.expect(findText(u.root.?, "Playing now") == null);
+    // In the title scene the menu stays (no close button, Esc does
+    // nothing), and there is no hotbar.
+    g.closeMenu();
+    g.key(.escape, true);
+    g.key(.escape, false);
+    try testing.expect(g.menu_open);
+    // Nothing chosen: nothing to join.
+    click(u, findText(u.root.?, "Join").?);
+    u.frame(1920, 1036, 0, view);
+    try testing.expect(g.island_action == null);
+    // Chosen, then joined.
+    click(u, findText(u.root.?, "Island 2").?);
+    u.frame(1920, 1036, 0, view);
+    try testing.expectEqual(@as(?u8, 1), g.islands.selected);
+    click(u, findText(u.root.?, "Join").?);
+    try testing.expectEqual(game_mod.IslandAction{ .open = 1 }, g.island_action.?);
+    g.island_action = null;
     g.deleteIsland(2);
     try testing.expect(g.island_action == null);
     g.deleteIsland(2);
     try testing.expectEqual(game_mod.IslandAction{ .delete = 2 }, g.island_action.?);
-    g.openIsland(1);
-    try testing.expectEqual(game_mod.IslandAction{ .open = 1 }, g.island_action.?);
+    g.island_action = null;
+    // On an island: it, and Leave (back to the title scene).
+    g.title = false;
+    g.islands.current = 1;
+    u.frame(1920, 1036, 0, view);
+    try testing.expect(!overflows(u.root.?));
+    try testing.expect(findText(u.root.?, "Playing now") != null);
+    try testing.expect(findText(u.root.?, "Island 3") == null);
+    click(u, findText(u.root.?, "Leave").?);
+    try testing.expectEqual(game_mod.IslandAction.leave, g.island_action.?);
 }

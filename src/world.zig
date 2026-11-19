@@ -477,6 +477,140 @@ pub const World = struct {
         w.dirty = .full;
     }
 
+    /// The title scene's seed (no island's: islands' come from the time).
+    pub const title_seed: u32 = 0x7171_e5ce;
+
+    /// The scene behind the menu before an island is chosen: looking from
+    /// the water down a channel between two shores thick with every kind
+    /// of plant, which opens out to the sea; out on it, to the right, a
+    /// tall island. Gulls wheel over the channel and dolphins swim in it
+    /// (creatures.zig places them, ahead of `spawn`).
+    pub fn generateTitle(w: *World) !void {
+        const seed = title_seed;
+        w.seed = seed;
+        @memset(w.blocks, .air);
+        // Where the eye is: in the middle, near the closed end of the
+        // channel, looking down it (yaw 0 faces -z).
+        const cx: f32 = size_x / 2;
+        const eye_z: f32 = 214;
+        // The shores end here, out towards the sea.
+        const cape_z: f32 = eye_z - 62;
+        // Within the fog's reach, and right of the middle (beside the
+        // menu).
+        const isle = [2]f32{ cx + 66, eye_z - 96 };
+        const isle_r: f32 = 20;
+        var z: i32 = 0;
+        while (z < size_z) : (z += 1) {
+            var x: i32 = 0;
+            while (x < size_x) : (x += 1) {
+                const fx = @as(f32, @floatFromInt(x)) + 0.5;
+                const fz = @as(f32, @floatFromInt(z)) + 0.5;
+                const wobble = fbm(seed +% 1, fx / 9, fz / 9, 3) * 6 - 3;
+                // Half the channel's width here: narrow by the eye, wider
+                // further off, closed behind it.
+                const half = if (fz > eye_z) 14 - (fz - eye_z) * 0.9 else 14 + (eye_z - fz) * 0.55;
+                const ashore = @abs(fx - cx) - half + wobble;
+                var h: i32 = undefined;
+                var rock = false;
+                if (fz > cape_z and ashore > 0) {
+                    // Land: a beach, then rising to wooded hills; lower
+                    // towards the capes.
+                    const cape = std.math.clamp((fz - cape_z) / 12, 0, 1);
+                    const rise = @min((ashore - 3) * 0.7, 9) + fbm(seed +% 2, fx / 11, fz / 11, 3) * 5;
+                    h = if (ashore < 3) sea_level - 1 else sea_level + @as(i32, @intFromFloat(@max(rise * cape, 0)));
+                } else {
+                    // Water: shallow by the shores, deeper further out.
+                    const out = if (fz > cape_z) -ashore else -ashore + (cape_z - fz);
+                    h = sea_level - 2 - @as(i32, @intFromFloat(@min(out * 0.35, 6)));
+                }
+                // The island: a beach round a steep green peak, rock at
+                // its top.
+                const dx = fx - isle[0];
+                const dz = fz - isle[1];
+                const r = @sqrt(dx * dx + dz * dz) + wobble;
+                if (r < isle_r) {
+                    const k = 1 - r / isle_r;
+                    const peak: i32 = sea_level + @as(i32, @intFromFloat(36 * k * k * (1.4 - 0.4 * k)));
+                    h = if (r > isle_r - 3) sea_level - 1 else @max(peak, sea_level);
+                    rock = h > sea_level + 22;
+                }
+                h = std.math.clamp(h, 3, size_y - 6);
+                const surface: Block = if (rock) .volcanic_rock else if (h >= sea_level) .grass else .sand;
+                var y: i32 = 0;
+                while (y <= h) : (y += 1) {
+                    w.blocks[index(x, y, z)] = if (y == h) surface else if (y > h - 3 and surface == .grass) .dirt else if (y > h - 3) .sand else .volcanic_rock;
+                }
+                while (y < sea_level) : (y += 1) w.blocks[index(x, y, z)] = .water;
+                // The bed: coral and seagrass, under the water.
+                if (h < sea_level - 2) {
+                    const reef = fbm(seed +% 3, fx / 6, fz / 6, 2);
+                    if (reef > 0.6) {
+                        w.blocks[index(x, h + 1, z)] = .coral;
+                    } else if (reef < 0.42 and hash(seed +% 4, x, z) < 0.6) w.blocks[index(x, h + 1, z)] = .seagrass;
+                }
+            }
+        }
+        w.titlePlants(cx, eye_z);
+        w.spawn = .{ cx, sea_level + 0.4, eye_z };
+        w.spawn_yaw = 0;
+        w.settle();
+        try w.computeLight();
+        w.dirty = .full;
+    }
+
+    /// The title scene's shores, thick with plants: palms over all the
+    /// rest, every kind of them; mangroves at the water's edge.
+    fn titlePlants(w: *World, cx: f32, eye_z: f32) void {
+        const seed = title_seed;
+        _ = cx;
+        _ = eye_z;
+        var z: i32 = 0;
+        while (z < size_z) : (z += 1) {
+            var x: i32 = 0;
+            while (x < size_x) : (x += 1) {
+                const h = w.top(x, z);
+                if (h < 1 or h + 6 >= size_y) continue;
+                const ground = w.blocks[index(x, h, z)];
+                const r = hash(seed +% 10, x, z);
+                // Mangroves in the shallows, beside the beach.
+                if (ground == .water and w.get(x, h - 1, z) == .sand and r < 0.35) {
+                    const by_beach = for ([_][2]i32{ .{ 1, 0 }, .{ -1, 0 }, .{ 0, 1 }, .{ 0, -1 } }) |d| {
+                        if (w.get(x + d[0], h, z + d[1]) == .sand) break true;
+                    } else false;
+                    if (by_beach) w.blocks[index(x, h, z)] = .mangrove;
+                    continue;
+                }
+                // Palms on a grid (never too close), on grass and beach.
+                if (@mod(x, 4) == 0 and @mod(z, 4) == 0 and (ground == .grass or (ground == .sand and h == sea_level - 1)) and hash(seed +% 11, x, z) < (if (ground == .grass) @as(f32, 0.6) else 0.3)) {
+                    w.tree(x, h + 1, z, 4 + @as(i32, @intFromFloat(hash(seed +% 12, x, z) * 5)), seed);
+                    continue;
+                }
+                if (ground != .grass) continue;
+                const b: Block = if (r < 0.06)
+                    .banana
+                else if (r < 0.1)
+                    .hibiscus
+                else if (r < 0.13)
+                    .frangipani
+                else if (r < 0.18) {
+                    const tall: i32 = 2 + @as(i32, @intFromFloat(hash(seed +% 13, x, z) * 3));
+                    var k: i32 = 1;
+                    while (k <= tall) : (k += 1) w.blocks[index(x, h + k, z)] = .bamboo;
+                    continue;
+                } else if (r < 0.3)
+                    .leafy_plant
+                else if (r < 0.58)
+                    .tall_grass
+                else if (r < 0.9)
+                    // Flowers in patches of one colour.
+                    Block.flowers[@intFromFloat(@floor(hash(seed +% 14, @divFloor(x, 3), @divFloor(z, 3)) * Block.flowers.len))]
+                else
+                    continue;
+                w.blocks[index(x, h + 1, z)] = b;
+            }
+        }
+    }
+
     fn growTrees(w: *World, heights: []const i32) void {
         const seed = w.seed;
         const grid = 7;
@@ -1088,3 +1222,39 @@ test "water: a world saved while it flowed is flooded when read" {
     try testing.expectEqual(Block.water, r.get(19, sea_level - 1, 50));
 }
 
+
+test "the title scene: the eye over water in a channel, every kind of plant on its shores in view, and an island out at sea" {
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    try w.generateTitle();
+    const ex: i32 = @intFromFloat(@floor(w.spawn[0]));
+    const ez: i32 = @intFromFloat(@floor(w.spawn[2]));
+    try testing.expectEqual(Block.water, w.get(ex, sea_level - 1, ez));
+    try testing.expectEqual(Block.air, w.get(ex, sea_level, ez));
+    // Ahead (towards -z), within sixty blocks: every plant.
+    var seen: std.EnumSet(Block) = .empty;
+    var z = ez - 60;
+    while (z <= ez) : (z += 1) {
+        var x = ex - 60;
+        while (x <= ex + 60) : (x += 1) {
+            var y: i32 = 0;
+            while (y < size_y) : (y += 1) seen.insert(w.get(x, y, z));
+        }
+    }
+    for ([_]Block{ .palm, .bamboo, .banana, .mangrove, .hibiscus, .frangipani, .leafy_plant, .tall_grass, .seagrass, .coral } ++ Block.flowers) |b| {
+        if (!seen.contains(b)) std.debug.print("missing {s}\n", .{@tagName(b)});
+        try testing.expect(seen.contains(b));
+    }
+    // The water straight ahead is open: no land on the line of sight for
+    // eighty blocks.
+    z = ez - 1;
+    while (z > ez - 80) : (z -= 1) try testing.expect(w.top(ex, z) < sea_level);
+    // The island out at sea (past the capes) stands well above it.
+    var highest: i32 = 0;
+    z = 0;
+    while (z < ez - 70) : (z += 1) {
+        var x: i32 = size_x / 2;
+        while (x < size_x) : (x += 1) highest = @max(highest, w.top(x, z));
+    }
+    try testing.expect(highest > sea_level + 20);
+}

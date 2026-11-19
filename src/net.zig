@@ -373,9 +373,9 @@ pub const Session = struct {
     // --- Finding each other -------------------------------------------------------------
 
     fn discover(s: *Session, g: *Game, now: u64) void {
-        // Joined (or joining), this game cannot be joined: it does not say
-        // it is there.
-        if (s.host == null and now -| s.last_beacon >= beacon_every) {
+        // Joined (or joining), or in the title scene (on no island), this
+        // game cannot be joined: it does not say it is there.
+        if (s.host == null and !g.title and now -| s.last_beacon >= beacon_every) {
             s.last_beacon = now;
             var buf: [128]u8 = undefined;
             const beacon = encodeBeacon(&buf, s.id, s.tcp_port, s.nameFor(g));
@@ -460,6 +460,15 @@ pub const Session = struct {
                 g.net.answer = null;
             }
         }
+        // In the title scene there is no island to join: asking, told no.
+        if (g.title) for (&s.peers, 0..) |*slot, k| if (slot.*) |*p| if (p.state == .asking and !p.dead) {
+            if (s.request_slot == k) {
+                s.request_slot = null;
+                g.net.request = null;
+                g.net.answer = null;
+            }
+            s.answer(g, k, false);
+        };
         if (s.request_slot == null) {
             for (&s.peers, 0..) |*slot, k| if (slot.*) |*p| if (p.state == .asking and !p.dead) {
                 s.request_slot = k;

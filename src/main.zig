@@ -39,7 +39,8 @@ pub const Renderer = renderer_mod.Renderer(gpu.Device);
 /// How the islands' files end (they are kept in places.dir()).
 const island_ext = ".motu";
 
-/// The island played now: its name (its file's, less the ending).
+/// The island played now: its name (its file's, less the ending); none
+/// in the title scene, or in another's game.
 pub const Current = struct {
     buf: [48]u8 = undefined,
     len: usize = 0,
@@ -103,9 +104,11 @@ pub fn findIslands(g: *game_mod.Game, current: []const u8) ?u8 {
             }
         }
     }
-    for (0..g.islands.count) |k| if (std.mem.eql(u8, g.islands.name(k), current)) {
+    for (0..g.islands.count) |k| if (current.len > 0 and std.mem.eql(u8, g.islands.name(k), current)) {
         g.islands.current = @intCast(k);
     };
+    // The one chosen in the menu: the one played, else the newest.
+    g.islands.selected = g.islands.current orelse newest;
     return newest;
 }
 
@@ -258,12 +261,20 @@ pub fn load(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) !voi
     };
 }
 
-/// Back from another's game: this island, as saved before joining.
-pub fn backHome(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
-    load(gpa, g, cur) catch {
-        makeIsland(g, world_mod.default_seed) catch {};
-    };
-    g.unsaved = false;
+/// The title scene, behind the menu: no island played (the one played
+/// is saved first).
+pub fn toTitle(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current) void {
+    if (g.wantsSave()) save(gpa, g, cur);
+    cur.len = 0;
+    g.world.generateTitle() catch |err| print(sys.log_warning ++ "motu: cannot make the title scene ({s})\n", .{@errorName(err)});
+    g.showTitle();
+    _ = findIslands(g, "");
+}
+
+/// Joined another's game: this island saved, and none played here.
+pub fn joined(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current) void {
+    if (g.wantsSave()) save(gpa, g, cur);
+    cur.len = 0;
 }
 
 /// Does what the menu asked with the islands.
@@ -274,28 +285,41 @@ pub fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, ac
     }
     switch (action) {
         .new => {
-            save(gpa, g, cur);
+            if (g.wantsSave()) save(gpa, g, cur);
             var nbuf: [48]u8 = undefined;
             cur.set(newName(g, &nbuf));
             makeIsland(g, @truncate(sys.nowNs() *% 0x9e3779b97f4a7c15 >> 32)) catch |err| {
                 print(sys.log_warning ++ "motu: cannot make an island ({s})\n", .{@errorName(err)});
                 return;
             };
+            g.title = false;
             save(gpa, g, cur);
             g.say(cur.name());
         },
         .open => |i| {
             if (i >= g.islands.count) return;
-            save(gpa, g, cur);
+            if (g.wantsSave()) save(gpa, g, cur);
             var nbuf: [48]u8 = undefined;
             const n = g.islands.name(i);
             @memcpy(nbuf[0..n.len], n);
             cur.set(nbuf[0..n.len]);
-            backHome(gpa, g, cur);
+            load(gpa, g, cur) catch {
+                // Not readable: the title scene still.
+                g.say("Cannot open that island");
+                cur.len = 0;
+                return;
+            };
+            g.title = false;
+            g.unsaved = false;
             g.say(cur.name());
+        },
+        .leave => {
+            toTitle(gpa, g, cur);
+            return;
         },
         .delete => |i| {
             if (i >= g.islands.count or i == g.islands.current) return;
+            if (g.islands.selected == i) g.islands.selected = null;
             var pbuf: [256]u8 = undefined;
             _ = linux.unlink(pathOf(g.islands.name(i), &pbuf));
             print("motu: deleted {s}\n", .{g.islands.name(i)});
@@ -309,6 +333,8 @@ pub fn islandAction(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *Current, ac
 }
 
 pub fn save(gpa: std.mem.Allocator, g: *game_mod.Game, cur: *const Current) void {
+    // No island played (the title scene, another's game): nothing kept.
+    if (cur.len == 0) return;
     var pbuf: [256]u8 = undefined;
     const save_path = cur.path(&pbuf);
     var out: std.ArrayList(u8) = .empty;
@@ -524,19 +550,12 @@ fn run(init: std.process.Init) !void {
     try host.init(gpa, init.io, init.minimal.environ, .{ .app_id = "motu", .pipelined = true });
     defer host.deinit();
 
-    // The world: as it was left, or a new island.
+    // The title scene, behind the menu, to choose an island from.
     const world = try world_mod.World.create(gpa);
     var game = game_mod.Game.init(gpa, world);
     defer game.deinit();
-    // The island played last; the first time, one made (and kept).
     var cur: Current = .{};
-    if (findIslands(&game, "")) |newest| cur.set(game.islands.name(newest));
-    if (cur.len == 0 or (load(gpa, &game, &cur) catch null) == null) {
-        if (cur.len == 0) cur.set("Island");
-        try makeIsland(&game, world_mod.default_seed);
-        save(gpa, &game, &cur);
-    }
-    _ = findIslands(&game, cur.name());
+    toTitle(gpa, &game, &cur);
     // The options as chosen, or as suit the GPU (the Pi 4's and 5's draws
     // them fast enough; the older one's does not).
     var opts = options.load();
@@ -638,7 +657,7 @@ fn run(init: std.process.Init) !void {
         if (session) |*s| if (s.poll(&game, now)) |event| switch (event) {
             .joined => |j| {
                 // This island, kept for coming back to.
-                save(gpa, &game, &cur);
+                joined(gpa, &game, &cur);
                 game.joinWorld(j.world, j.pos, j.yaw, j.time, j.day) catch |err| {
                     print(sys.log_warning ++ "motu: cannot play in that world ({s})\n", .{@errorName(err)});
                     game.leaveGame();
@@ -646,9 +665,8 @@ fn run(init: std.process.Init) !void {
                 mesh(renderer, world, game.player.eye(), 12, &trouble);
             },
             .left => {
-                backHome(gpa, &game, &cur);
+                toTitle(gpa, &game, &cur);
                 mesh(renderer, world, game.player.eye(), 12, &trouble);
-                game.say("Back on your island");
             },
             .denied => game.say("They said no"),
             .failed => game.say("Cannot reach that game"),

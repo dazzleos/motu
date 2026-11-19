@@ -161,6 +161,10 @@ pub const Creatures = struct {
     spawned: bool = false,
     seed: u32 = 0,
     time: f32 = 0,
+    /// In the title scene (World.generateTitle): the dolphins keep to
+    /// either side of the channel, where the menu leaves it in view, and
+    /// leap more often.
+    title: bool = false,
 
     /// Places birds over the island and coast, and schools of fish in the
     /// shallows and sea around it.
@@ -168,6 +172,7 @@ pub const Creatures = struct {
         c.seed = w.seed;
         c.time = 0;
         c.spawned = true;
+        c.title = w.seed == World.title_seed;
         const seed = w.seed ^ 0x5f3759df;
 
         // Six small flocks of four birds each: two of gulls along the
@@ -283,9 +288,9 @@ pub const Creatures = struct {
         // others out past the reef, either side.
         for (0..pod_count) |pod| {
             const s = seed +% @as(u32, @intCast(pod)) *% 3266489917 +% 991;
-            const home = findDolphinWater(w, s, pod);
+            const home = if (c.title) titleDolphinWater(w, pod) else findDolphinWater(w, s, pod);
             const yaw = rand01(s +% 1) * std.math.pi * 2;
-            c.next_leap[pod] = 4 + 8 * rand01(s +% 2);
+            c.next_leap[pod] = if (c.title) 1 + 3 * rand01(s +% 2) else 4 + 8 * rand01(s +% 2);
             for (0..pod_size) |m| {
                 const off = podOffset(@intCast(m));
                 const x = home[0] + @cos(yaw) * off[0] - @sin(yaw) * off[1];
@@ -381,7 +386,7 @@ pub const Creatures = struct {
             c.next_leap[pod] -= dt;
             if (c.next_leap[pod] <= 0) {
                 const s = c.seed +% @as(u32, @intFromFloat(c.time * 7)) +% @as(u32, @intCast(pod)) *% 77;
-                c.next_leap[pod] = 9 + 12 * rand01(s);
+                c.next_leap[pod] = if (c.title) 4 + 5 * rand01(s) else 9 + 12 * rand01(s);
                 for (c.dolphins[pod * pod_size ..][0..pod_size]) |*d| {
                     if (d.leap == null and leapClear(w, d)) d.leap = -0.35 * @as(f32, @floatFromInt(d.member));
                 }
@@ -425,7 +430,7 @@ pub const Creatures = struct {
             const hx = d.home[0] - d.pos[0];
             const hz = d.home[1] - d.pos[2];
             const hd = @sqrt(hx * hx + hz * hz);
-            if (hd > 24) {
+            if (hd > @as(f32, if (c.title) 9 else 24)) {
                 wish_x += (hx / hd) * 0.8;
                 wish_z += (hz / hd) * 0.8;
             }
@@ -904,6 +909,14 @@ fn findWaterFor(w: *const World, kind: Swimmer.Kind, seed: u32, i: usize) [2]f32
 
 /// Where a pod lives: the first in the lagoon off the starting beach
 /// (where the player sees them first), the others outside the reef.
+/// In the title scene: ahead of the eye, either side of the middle (the
+/// menu's), the last pod further off.
+fn titleDolphinWater(w: *const World, pod: usize) [2]f32 {
+    const side: f32 = if (pod % 2 == 0) -1 else 1;
+    const ahead: f32 = 24 + 10 * @as(f32, @floatFromInt(pod));
+    return .{ w.spawn[0] + side * (11 + 4 * @as(f32, @floatFromInt(pod))), w.spawn[2] - ahead };
+}
+
 fn findDolphinWater(w: *const World, seed: u32, pod: usize) [2]f32 {
     if (pod == 0) {
         // `spawn_yaw` looks out over the lagoon.
