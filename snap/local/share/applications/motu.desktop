@@ -3,6 +3,6 @@ Type=Application
 Name=Motu
 Comment=Build islands out of blocks
 Exec=motu
-Icon=${SNAP}/meta/gui/motu.png
+Icon=${SNAP}/share/icons/hicolor/64x64/apps/motu.png
 Categories=Game;
 StartupNotify=true

@@ -18,6 +18,7 @@ issues: https://github.com/dazzleos/motu/issues
 contact: https://github.com/dazzleos/motu/issues
 grade: stable
 confinement: strict
+icon: snap/local/share/icons/hicolor/64x64/apps/motu.png
 
 platforms:
   amd64:
@@ -43,7 +44,9 @@ apps:
     command-chain:
       - bin/desktop-sockets
       - bin/gpu-2404-wrapper
-    desktop: meta/gui/motu.desktop
+    # (The desktop file and icon come with snap/local, as the
+    # desktop-sockets part dumps it.)
+    desktop: share/applications/motu.desktop
     plugs:
       - wayland
       - opengl
