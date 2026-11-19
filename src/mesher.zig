@@ -86,6 +86,10 @@ pub const Info = struct {
 
 /// How high water's surface is in its block.
 pub const water_top: f32 = 0.875;
+/// How far the water's surface reaches into the shore beside it, and how
+/// far down it goes there (see `waterFaces`): further than the waves rise.
+const lip: f32 = 0.5;
+const lip_drop: f32 = 0.75;
 
 /// A chunk's meshes, in the order they are drawn (and kept in its buffer).
 pub const Section = enum(u4) {
@@ -519,6 +523,22 @@ fn waterFaces(gpa: std.mem.Allocator, w: *const World, p: P, mesh: *Mesh) !void 
     if (surface and !above.isOpaque()) {
         const l = w.lightAt(p[0], p[1] + 1, p[2]);
         try waterQuad(gpa, mesh, .up, .{ .{ x, top, z + 1 }, .{ x + 1, top, z + 1 }, .{ x + 1, top, z }, .{ x, top, z } }, getDepth(w, p, &depth), l, @splat(.wave));
+        // Against the shore: a lip from the edge into the block beside
+        // it, sloping down. It moves with the waves as the edge does, so
+        // a crest washes up over the shore (and a trough draws back from
+        // it) rather than showing the surface's edge.
+        const low = top - lip_drop;
+        for ([_]Face{ .east, .west, .south, .north }) |face| {
+            const q = add(p, face.normal());
+            if (!World.inBounds(q[0], q[1], q[2]) or !w.get(q[0], q[1], q[2]).isOpaque()) continue;
+            const corners: [4][3]f32 = switch (face) {
+                .east => .{ .{ x + 1, top, z + 1 }, .{ x + 1 + lip, low, z + 1 }, .{ x + 1 + lip, low, z }, .{ x + 1, top, z } },
+                .west => .{ .{ x - lip, low, z + 1 }, .{ x, top, z + 1 }, .{ x, top, z }, .{ x - lip, low, z } },
+                .south => .{ .{ x, low, z + 1 + lip }, .{ x + 1, low, z + 1 + lip }, .{ x + 1, top, z + 1 }, .{ x, top, z + 1 } },
+                else => .{ .{ x, top, z }, .{ x + 1, top, z }, .{ x + 1, low, z - lip }, .{ x, low, z - lip } },
+            };
+            try waterQuad(gpa, mesh, .up, corners, getDepth(w, p, &depth), l, @splat(.wave));
+        }
     }
     // Sides against air (not into the sea beyond the world), and the
     // bottom if it is over air.

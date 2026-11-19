@@ -1162,6 +1162,13 @@ fn seaRingPatches(gpa: std.mem.Allocator, patches: *[sea_patch_count]SeaPatch) !
                 const x_end: i32 = @min(px0 + sea_patch_size, s + ring.far);
                 while (x < x_end) : (x += ring.step) {
                     if (x >= -ring.inner and x < s + ring.inner and z >= -ring.inner and z < s + ring.inner) continue;
+                    // Against the finer ring inside it (where the waves
+                    // still move it): the edge between them given that
+                    // ring's vertex in its middle, so no crack opens there.
+                    if (ring.step == 2 and ring.info == wave) if (innerEdge(x, z, ring.inner, s)) |edge| {
+                        try stitched(&out, gpa, @floatFromInt(x), @floatFromInt(z), 2, y, ring.info, edge);
+                        continue;
+                    };
                     try add(&out, gpa, @floatFromInt(x), @floatFromInt(z), @floatFromInt(ring.step), y, ring.info);
                 }
             }
@@ -1179,6 +1186,33 @@ fn seaRingPatches(gpa: std.mem.Allocator, patches: *[sea_patch_count]SeaPatch) !
     };
     std.debug.assert(pi == sea_patch_count);
     return out.toOwnedSlice(gpa);
+}
+
+/// Which edge of the 2-block quad at (x, z) is on the inner edge of its
+/// ring (the square from -`inner` to `s` + `inner`), as `stitched` numbers
+/// them; null if none is.
+fn innerEdge(x: i32, z: i32, inner: i32, s: i32) ?u2 {
+    const lo = -inner;
+    const hi = s + inner;
+    const along_x = x >= lo and x + 2 <= hi;
+    const along_z = z >= lo and z + 2 <= hi;
+    if (along_x and z + 2 == lo) return 0;
+    if (along_z and x + 2 == lo) return 1;
+    if (along_x and z == hi) return 2;
+    if (along_z and x == hi) return 3;
+    return null;
+}
+
+/// A quad at (x0, z0), `size` across, with a vertex in the middle of its
+/// edge `edge` (0: z0 + size, 1: x0 + size, 2: z0, 3: x0): as two quads
+/// fanned from it (the second's last corner twice: a triangle).
+fn stitched(list: *std.ArrayList(Vertex), gpa: std.mem.Allocator, x0: f32, z0: f32, size: f32, y: f32, info: f32, edge: u2) !void {
+    const c = [4][2]f32{ .{ x0, z0 + size }, .{ x0 + size, z0 + size }, .{ x0 + size, z0 }, .{ x0, z0 } };
+    const a = c[edge];
+    const b = c[edge +% 1];
+    const m = [2]f32{ (a[0] + b[0]) / 2, (a[1] + b[1]) / 2 };
+    const ring = [5][2]f32{ m, c[edge +% 1], c[edge +% 2], c[edge +% 3], c[edge] };
+    for ([8]usize{ 0, 1, 2, 3, 0, 3, 4, 4 }) |k| try list.append(gpa, .{ .pos = .{ ring[k][0], y, ring[k][1] }, .uv = .{ 0, 0 }, .info = info });
 }
 
 fn seaRing(gpa: std.mem.Allocator) ![]Vertex {
