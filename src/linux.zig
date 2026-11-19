@@ -46,6 +46,8 @@ const Scene = struct {
     failed: bool = false,
     reach: reach_mod.Reach = .{},
     trouble: main.Trouble = .{},
+    /// Frames of the world drawn (for the frame rate the settings show).
+    frames: u32 = 0,
 
     fn deinit(s: *Scene) void {
         if (s.renderer) |r| r.deinit();
@@ -80,6 +82,7 @@ const Scene = struct {
     fn draw(ctx: *anyopaque, frame: *view.Draw.Frame, area: kete.gfx.GpuArea) anyerror!void {
         const s: *Scene = @ptrCast(@alignCast(ctx));
         const r = s.ready() orelse return;
+        s.frames += 1;
         const g = s.game;
         const dev = s.dev.?;
         const box = area.viewport;
@@ -162,6 +165,8 @@ pub fn run(init: std.process.Init) !void {
 
     var last = sys.nowNs();
     var last_save = last;
+    // The frame rate, each second (the settings' graph).
+    var fps_since = last;
     // The mouse can be taken (it turns the view) if the compositor can
     // lock the pointer: until it says it cannot.
     game.can_capture = true;
@@ -182,6 +187,11 @@ pub fn run(init: std.process.Init) !void {
             .failed => game.say("Cannot reach that game"),
         };
         game.tick(dt);
+        if (now - fps_since >= std.time.ns_per_s) {
+            game.noteFps(@as(f32, @floatFromInt(scene.frames)) / (@as(f32, @floatFromInt(now - fps_since)) / std.time.ns_per_s));
+            scene.frames = 0;
+            fps_since = now;
+        }
         if (game.capture_wanted) |take| {
             game.capture_wanted = null;
             if (take) {
