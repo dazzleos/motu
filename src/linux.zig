@@ -89,9 +89,20 @@ const Scene = struct {
         if (box.width == 0 or box.height == 0) return;
         _ = s.reach.frame(sys.nowNs(), 0);
         // Straight into the window's frame, where the view is (the
-        // renderer's viewport and scissor are within the view: at 0, 0).
-        const vp: gpu.Viewport = .{ .x = 0, .y = 0, .width = box.width, .height = box.height };
-        const scissor: ?gpu.Viewport = if (area.scissor) |sc| .{ .x = sc.x - box.x, .y = sc.y - box.y, .width = sc.width, .height = sc.height } else null;
+        // renderer's viewport and scissor are within the view: at 0, 0);
+        // at a quality under the full one, that much smaller, stretched
+        // into it.
+        const q = std.math.clamp(g.quality, options.min_quality, 1);
+        const size = if (q < 0.999) vulkan.State.smallSize(.{ .x = 0, .y = 0, .width = box.width, .height = box.height }, q) else [2]u32{ box.width, box.height };
+        const vp: gpu.Viewport = .{ .x = 0, .y = 0, .width = size[0], .height = size[1] };
+        const kx = @as(f32, @floatFromInt(size[0])) / @as(f32, @floatFromInt(box.width));
+        const ky = @as(f32, @floatFromInt(size[1])) / @as(f32, @floatFromInt(box.height));
+        const scissor: ?gpu.Viewport = if (area.scissor) |sc| .{
+            .x = @intFromFloat(@floor(@as(f32, @floatFromInt(sc.x - box.x)) * kx)),
+            .y = @intFromFloat(@floor(@as(f32, @floatFromInt(sc.y - box.y)) * ky)),
+            .width = @intFromFloat(@ceil(@as(f32, @floatFromInt(sc.width)) * kx)),
+            .height = @intFromFloat(@ceil(@as(f32, @floatFromInt(sc.height)) * ky)),
+        } else null;
         var boats: main.Boats = .{};
         const v: renderer_mod.View = .{
             .camera = g.camera(),
@@ -110,7 +121,7 @@ const Scene = struct {
         // Cleared within what may be drawn on (outside the telescope's
         // square, black).
         const within = area.scissor orelse box;
-        try dev.begin(frame, .{ .x = box.x, .y = box.y, .width = box.width, .height = box.height }, .{ .x = within.x, .y = within.y, .width = within.width, .height = within.height });
+        try dev.begin(frame, .{ .x = box.x, .y = box.y, .width = box.width, .height = box.height }, .{ .x = within.x, .y = within.y, .width = within.width, .height = within.height }, q);
         defer dev.end();
         const cut = if (g.telescope) main.lens(vp, scissor) else scissor;
         r.draw(renderer_mod.FrameSink{ .frame = dev }, vp, cut, v) catch |err| s.trouble.note("drawing the world", err);
@@ -134,7 +145,8 @@ pub fn run(init: std.process.Init) !void {
     var cur: main.Current = .{};
     main.toTitle(gpa, &game, &cur);
     var opts = options.load();
-    game.quality = 1;
+    // As chosen (all of it, to start with).
+    game.quality = opts.quality orelse 1;
     game.look = opts.look;
     game.setPlayerName(opts.name());
     const icons = try gpa.create(view.Icons);
@@ -206,7 +218,8 @@ pub fn run(init: std.process.Init) !void {
             main.save(gpa, &game, &cur);
             last_save = now;
         }
-        if (!std.meta.eql(game.look, opts.look) or !std.mem.eql(u8, game.playerName(), opts.name())) {
+        if (game.quality != (opts.quality orelse 1) or !std.meta.eql(game.look, opts.look) or !std.mem.eql(u8, game.playerName(), opts.name())) {
+            if (game.quality != (opts.quality orelse 1)) opts.quality = game.quality;
             opts.look = game.look;
             opts.setName(game.playerName());
             options.save(&opts);

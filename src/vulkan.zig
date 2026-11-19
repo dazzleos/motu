@@ -115,6 +115,7 @@ const Procs = struct {
     CmdDrawIndexed: *const fn (vk.VkCommandBuffer, u32, u32, u32, i32, u32) callconv(.c) void,
     CmdPipelineBarrier: *const fn (vk.VkCommandBuffer, vk.VkFlags, vk.VkFlags, vk.VkFlags, u32, ?*const anyopaque, u32, ?*const anyopaque, u32, [*]const vk.VkImageMemoryBarrier) callconv(.c) void,
     CmdCopyBufferToImage: *const fn (vk.VkCommandBuffer, vk.VkBuffer, vk.VkImage, u32, u32, [*]const vk.VkBufferImageCopy) callconv(.c) void,
+    CmdBlitImage: *const fn (vk.VkCommandBuffer, vk.VkImage, u32, vk.VkImage, u32, u32, [*]const vk.VkImageBlit, u32) callconv(.c) void,
 };
 
 const GetInstanceProcAddr = *const fn (?vk.VkInstance, [*:0]const u8) callconv(.c) ?*const anyopaque;
@@ -141,6 +142,7 @@ const Dead = struct {
         texture: TextureRec,
         target: Target,
         window: Window,
+        small: Small,
     },
 };
 
@@ -159,6 +161,17 @@ const Target = struct {
     width: u32 = 0,
     height: u32 = 0,
     depth: TextureRec = .{},
+};
+
+/// Where the world is drawn smaller than the view (at a quality under
+/// the full one), before it is stretched into the window's frame: its
+/// image, and its depth.
+const Small = struct {
+    width: u32 = 0,
+    height: u32 = 0,
+    color: TextureRec = .{},
+    depth: TextureRec = .{},
+    framebuffer: vk.VkFramebuffer = vk.VK_NULL_HANDLE,
 };
 
 /// A frame of the window's, as it is drawn into: its image (kete's), and
@@ -192,6 +205,12 @@ pub const State = struct {
     layout: vk.VkPipelineLayout = vk.VK_NULL_HANDLE,
     pool: vk.VkDescriptorPool = vk.VK_NULL_HANDLE,
     render_pass: vk.VkRenderPass = vk.VK_NULL_HANDLE,
+    /// Into `small`, to stretch from.
+    small_pass: vk.VkRenderPass = vk.VK_NULL_HANDLE,
+    small: Small = .{},
+    /// Drawing into `small`: where it is stretched to in the frame's
+    /// image, from where in it.
+    stretch: ?struct { image: vk.VkImage, src: [2][2]i32, dst: [2][2]i32 } = null,
     ring: BufferRec = .{},
     ring_map: []u8 = &.{},
     ring_at: u32 = 0,
@@ -241,6 +260,8 @@ pub const State = struct {
         s.textures.deinit(s.gpa);
         s.destroyTarget(s.target);
         s.destroyWindow(s.window);
+        s.destroySmall(s.small);
+        s.f.DestroyRenderPass(s.device, s.small_pass, null);
         s.destroyBufferRec(s.ring);
         s.sets.deinit(s.gpa);
         s.f.DestroyDescriptorPool(s.device, s.pool, null);
@@ -310,6 +331,25 @@ pub const State = struct {
         } };
         try check(s.f.CreateRenderPass(s.device, &.{ .attachmentCount = attachments.len, .pAttachments = &attachments, .pSubpasses = &subpass, .dependencyCount = deps.len, .pDependencies = &deps }, null, &s.render_pass));
 
+        // Drawing smaller: into an image of its own, left to be read
+        // from (stretched into the frame); after the last frame's
+        // stretching from it.
+        const small_attachments = [_]vk.VkAttachmentDescription{
+            .{ .format = color_format, .samples = vk.VK_SAMPLE_COUNT_1_BIT, .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE, .finalLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL },
+            .{ .format = depth_format, .samples = vk.VK_SAMPLE_COUNT_1_BIT, .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE, .finalLayout = vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL },
+        };
+        const small_color_ref = [_]vk.VkAttachmentReference{.{ .attachment = 0, .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }};
+        const small_subpass = [_]vk.VkSubpassDescription{.{ .pColorAttachments = &small_color_ref, .pDepthStencilAttachment = &depth_ref }};
+        const small_deps = [_]vk.VkSubpassDependency{.{
+            .srcSubpass = vk.VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = vk.VK_PIPELINE_STAGE_TRANSFER_BIT | vk.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            .srcAccessMask = vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = color_rw | depth_rw,
+        }};
+        try check(s.f.CreateRenderPass(s.device, &.{ .attachmentCount = small_attachments.len, .pAttachments = &small_attachments, .pSubpasses = &small_subpass, .dependencyCount = small_deps.len, .pDependencies = &small_deps }, null, &s.small_pass));
+
         s.ring = try s.makeBuffer(ring_size, vk.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
         var p: ?*anyopaque = null;
         try check(s.f.MapMemory(s.device, s.ring.memory, 0, ring_size, 0, &p));
@@ -345,6 +385,12 @@ pub const State = struct {
         s.destroyTextureRec(t.depth);
     }
 
+    fn destroySmall(s: *State, sm: Small) void {
+        if (sm.framebuffer != vk.VK_NULL_HANDLE) s.f.DestroyFramebuffer(s.device, sm.framebuffer, null);
+        s.destroyTextureRec(sm.color);
+        s.destroyTextureRec(sm.depth);
+    }
+
     fn destroyWindow(s: *State, w: Window) void {
         if (w.framebuffer != vk.VK_NULL_HANDLE) s.f.DestroyFramebuffer(s.device, w.framebuffer, null);
         if (w.view != vk.VK_NULL_HANDLE) s.f.DestroyImageView(s.device, w.view, null);
@@ -356,6 +402,7 @@ pub const State = struct {
             .texture => |t| s.destroyTextureRec(t),
             .target => |t| s.destroyTarget(t),
             .window => |w| s.destroyWindow(w),
+            .small => |sm| s.destroySmall(sm),
         }
     }
 
@@ -471,7 +518,10 @@ pub const State = struct {
     /// buffer: the textures made since the last copied in, and what was
     /// let go of then destroyed; then, where the world's view is (`view`,
     /// in the frame), within `within`, the frame cleared (and the depth).
-    pub fn begin(s: *State, frame: *const Frame, view: Viewport, within: Viewport) !void {
+    /// At a `quality` under 1, it is drawn that much smaller (across and
+    /// down), into an image of its own, and stretched into the frame at
+    /// `end`: draws are then as big as that (`smallSize`).
+    pub fn begin(s: *State, frame: *const Frame, view: Viewport, within: Viewport, quality: f32) !void {
         const cmd = frame.cmd;
         s.frame_no += 1;
         var k: usize = 0;
@@ -494,6 +544,7 @@ pub const State = struct {
         const y1 = @min(within.y + @as(i32, @intCast(within.height)), @as(i32, @intCast(fh)));
         if (x1 <= x0 or y1 <= y0) return;
         const origin = frame.origin;
+        if (quality < 0.999) return s.beginSmall(cmd, frame, view, .{ .{ x0, y0 }, .{ x1, y1 } }, quality);
         s.offset = .{ view.x + origin[0], view.y + origin[1] };
         s.area = .{ .x = x0 + origin[0], .y = y0 + origin[1], .width = @intCast(x1 - x0), .height = @intCast(y1 - y0) };
         // The depth (and the framebuffer) as big as the image is, up to
@@ -530,13 +581,103 @@ pub const State = struct {
         s.cmd = cmd;
     }
 
-    /// Ends drawing the world into the frame (kete draws on, over it).
+    /// How big the world is drawn, `view` at `quality`.
+    pub fn smallSize(view: Viewport, quality: f32) [2]u32 {
+        return .{
+            @max(1, @as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(view.width)) * quality)))),
+            @max(1, @as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(view.height)) * quality)))),
+        };
+    }
+
+    /// `begin`, smaller: into `small`, to be stretched into `frame`'s
+    /// `view` within `shown` (in the frame: corners).
+    fn beginSmall(s: *State, cmd: vk.VkCommandBuffer, frame: *const Frame, view: Viewport, shown: [2][2]i32, quality: f32) !void {
+        const size = smallSize(view, quality);
+        if (s.small.width != size[0] or s.small.height != size[1]) {
+            if (s.small.framebuffer != vk.VK_NULL_HANDLE) s.bury(.{ .small = s.small });
+            s.small = .{};
+            s.small = try s.makeSmall(size[0], size[1]);
+        }
+        s.offset = .{ 0, 0 };
+        s.area = .{ .x = 0, .y = 0, .width = size[0], .height = size[1] };
+        // The part of the view shown (clipped), and where that is in the
+        // small image.
+        const kx = @as(f32, @floatFromInt(size[0])) / @as(f32, @floatFromInt(view.width));
+        const ky = @as(f32, @floatFromInt(size[1])) / @as(f32, @floatFromInt(view.height));
+        const o = frame.origin;
+        var src: [2][2]i32 = undefined;
+        var dst: [2][2]i32 = undefined;
+        for (0..2) |c| {
+            dst[c] = .{ shown[c][0] + o[0], shown[c][1] + o[1] };
+            src[c] = .{
+                @intFromFloat(@round(@as(f32, @floatFromInt(shown[c][0] - view.x)) * kx)),
+                @intFromFloat(@round(@as(f32, @floatFromInt(shown[c][1] - view.y)) * ky)),
+            };
+        }
+        s.stretch = .{ .image = frame.image, .src = src, .dst = dst };
+        const clears = [2]vk.VkClearValue{
+            .{ .color = .{ 0, 0, 0, 1 } },
+            .{ .depth_stencil = .{ .depth = 1.0, .stencil = 0 } },
+        };
+        s.f.CmdBeginRenderPass(cmd, &.{
+            .renderPass = s.small_pass,
+            .framebuffer = s.small.framebuffer,
+            .renderArea = .{ .offset = .{ .x = 0, .y = 0 }, .extent = .{ .width = size[0], .height = size[1] } },
+            .clearValueCount = clears.len,
+            .pClearValues = &clears,
+        }, 0);
+        s.cmd = cmd;
+    }
+
+    /// Ends drawing the world into the frame (kete draws on, over it):
+    /// drawn smaller, stretched into it (smoothly).
     pub fn end(s: *State) void {
         const cmd = s.cmd orelse return;
         s.f.CmdEndRenderPass(cmd);
         s.cmd = null;
+        if (s.stretch) |st| {
+            s.stretch = null;
+            const color = vk.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            const range: vk.VkImageSubresourceRange = .{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT };
+            const before = [1]vk.VkImageMemoryBarrier{.{ .srcAccessMask = color, .dstAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL, .newLayout = vk.VK_IMAGE_LAYOUT_GENERAL, .image = st.image, .subresourceRange = range }};
+            s.f.CmdPipelineBarrier(cmd, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, 0, null, 1, &before);
+            const region = [1]vk.VkImageBlit{.{
+                .srcOffsets = .{ .{ .x = st.src[0][0], .y = st.src[0][1], .z = 0 }, .{ .x = st.src[1][0], .y = st.src[1][1], .z = 1 } },
+                .dstOffsets = .{ .{ .x = st.dst[0][0], .y = st.dst[0][1], .z = 0 }, .{ .x = st.dst[1][0], .y = st.dst[1][1], .z = 1 } },
+            }};
+            s.f.CmdBlitImage(cmd, s.small.color.image, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, st.image, vk.VK_IMAGE_LAYOUT_GENERAL, 1, &region, vk.VK_FILTER_LINEAR);
+            const after = [1]vk.VkImageMemoryBarrier{.{ .srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = color, .oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL, .newLayout = vk.VK_IMAGE_LAYOUT_GENERAL, .image = st.image, .subresourceRange = range }};
+            s.f.CmdPipelineBarrier(cmd, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, null, 0, null, 1, &after);
+            return;
+        }
         s.bury(.{ .window = s.window });
         s.window = .{};
+    }
+
+    fn makeSmall(s: *State, width: u32, height: u32) !Small {
+        var t: Small = .{ .width = width, .height = height };
+        errdefer s.destroySmall(t);
+        for ([2]u32{ color_format, depth_format }, [2]*TextureRec{ &t.color, &t.depth }) |format, r| {
+            const is_depth = format == depth_format;
+            try check(s.f.CreateImage(s.device, &.{
+                .format = format,
+                .extent = .{ .width = width, .height = height, .depth = 1 },
+                .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+                .usage = if (is_depth) vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT else vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            }, null, &r.image));
+            var req: vk.VkMemoryRequirements = undefined;
+            s.f.GetImageMemoryRequirements(s.device, r.image, &req);
+            try check(s.f.AllocateMemory(s.device, &.{ .allocationSize = req.size, .memoryTypeIndex = try s.memoryType(req.memoryTypeBits, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) }, null, &r.memory));
+            try check(s.f.BindImageMemory(s.device, r.image, r.memory, 0));
+            try check(s.f.CreateImageView(s.device, &.{
+                .image = r.image,
+                .format = format,
+                .subresourceRange = .{ .aspectMask = if (is_depth) vk.VK_IMAGE_ASPECT_DEPTH_BIT else vk.VK_IMAGE_ASPECT_COLOR_BIT },
+            }, null, &r.view));
+        }
+        const views = [2]vk.VkImageView{ t.color.view, t.depth.view };
+        try check(s.f.CreateFramebuffer(s.device, &.{ .renderPass = s.small_pass, .attachmentCount = 2, .pAttachments = &views, .width = width, .height = height }, null, &t.framebuffer));
+        return t;
     }
 
     fn makeTarget(s: *State, width: u32, height: u32) !Target {
