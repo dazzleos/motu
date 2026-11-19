@@ -864,10 +864,22 @@ pub fn Renderer(comptime Device: type) type {
             }
             r.sky.setUniforms(std.mem.asBytes(&sky));
             try target.quads(&r.sky, r.dome.handle, 0, r.dome_quads, .{ null, null, null });
-            // 3. Water, far to near; the sea around the world first (it is
+            // 3. Plants in the water (seagrass), far to near, before the
+            // water's surface (which hides what is under it from its depth
+            // on): it is drawn over them.
+            const no_tex: [3]?gpu.Texture = .{ null, null, null };
+            var k = visible.len;
+            while (k > 0) {
+                k -= 1;
+                const c = r.regions[visible[k].i];
+                for (0..blocks.Tile.strips) |sk| {
+                    const sec = mesher.Section.under(@intCast(sk));
+                    try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], .{ tex[sk], null, null });
+                }
+            }
+            // 4. Water, far to near; the sea around the world first (it is
             // furthest), culled in 64x64 patches.
             const water = &r.water;
-            const no_tex: [3]?gpu.Texture = .{ null, null, null };
             const sea_y: f32 = world_mod.sea_level - 1 + mesher.water_top;
             const max_sea_d = depth + start + 16;
             var sea_run_first: u32 = 0;
@@ -892,13 +904,13 @@ pub fn Renderer(comptime Device: type) type {
             if (sea_run_count > 0) {
                 try target.quads(water, r.sea.handle, sea_run_first * 4 * @sizeOf(Vertex), sea_run_count, no_tex);
             }
-            var k = visible.len;
+            k = visible.len;
             while (k > 0) {
                 k -= 1;
                 const c = r.regions[visible[k].i];
                 try target.quads(water, c.bo.?.handle, c.offset(.water), c.quads[@intFromEnum(mesher.Section.water)], no_tex);
             }
-            // 4. Glass and plants, far to near.
+            // 5. Glass and plants, far to near.
             k = visible.len;
             while (k > 0) {
                 k -= 1;
@@ -908,7 +920,7 @@ pub fn Renderer(comptime Device: type) type {
                     try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], .{ tex[sk], null, null });
                 }
             }
-            // 5. The outline.
+            // 6. The outline.
             if (v.outline) |cell| {
                 const at = V3{ @floatFromInt(cell[0]), @floatFromInt(cell[1]), @floatFromInt(cell[2]) };
                 const lu: LineUniforms = .{ .mvp = math.mul(vp, math.translation(at)), .color = .{ 0.05, 0.05, 0.05, 1 } };

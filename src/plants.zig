@@ -55,9 +55,11 @@ pub const Out = struct {
     /// Into the solid meshes (drawn first, hiding what is behind), not
     /// the see-through ones.
     solid: bool = false,
+    /// See-through, and in the water (drawn before its surface).
+    under: bool = false,
 
     pub fn quad(o: Out, tile: Tile, face: Face, c: [4]V, uv: [4][2]f32, anims: [4]Anim) !void {
-        const list = o.mesh.list(if (o.solid) .solid(tile.strip()) else .clear(tile.strip()));
+        const list = o.mesh.list(if (o.solid) .solid(tile.strip()) else if (o.under) .under(tile.strip()) else .clear(tile.strip()));
         for (c, uv, anims) |p, t, a| try list.append(o.gpa, .{
             .pos = p,
             .uv = .{ t[0], mesher.stripT(tile, t[1]) },
@@ -339,7 +341,7 @@ fn flatStone(o: Out, at: V, r: f32, h: f32, turn: f32) !void {
 
 pub fn plant(gpa: std.mem.Allocator, w: *const World, p: [3]i32, blk: Block, mesh: *mesher.Mesh) !void {
     const l = w.lightAt(p[0], p[1], p[2]);
-    const o: Out = .{ .gpa = gpa, .mesh = mesh, .sky = world_mod.skyOf(l), .lamp = world_mod.lampOf(l) };
+    const o: Out = .{ .gpa = gpa, .mesh = mesh, .sky = world_mod.skyOf(l), .lamp = world_mod.lampOf(l), .under = blk == .seagrass };
     const seed: u32 = @bitCast(p[0] *% 73856093 ^ p[2] *% 19349663 ^ p[1] *% 83492791);
     const turn = hash(seed, 0, 0) * 2 * std.math.pi;
     const base: V = .{ @as(f32, @floatFromInt(p[0])) + 0.5, @floatFromInt(p[1]), @as(f32, @floatFromInt(p[2])) + 0.5 };

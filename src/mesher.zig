@@ -98,6 +98,12 @@ pub const Section = enum(u4) {
     clear1,
     clear2,
     clear3,
+    /// See-through, in the water (seagrass): drawn before the water's
+    /// surface, which is drawn over them.
+    under0,
+    under1,
+    under2,
+    under3,
 
     pub fn solid(strip: u2) Section {
         return @enumFromInt(@as(u4, strip));
@@ -107,7 +113,11 @@ pub const Section = enum(u4) {
         return @enumFromInt(@as(u4, blocks.Tile.strips + 1) + strip);
     }
 
-    pub const count = 2 * blocks.Tile.strips + 1;
+    pub fn under(strip: u2) Section {
+        return @enumFromInt(@as(u4, 2 * blocks.Tile.strips + 1) + strip);
+    }
+
+    pub const count = 3 * blocks.Tile.strips + 1;
 };
 
 /// The order a strip's solid faces are kept in, a face's after another's.
@@ -144,7 +154,9 @@ pub const Mesh = struct {
     }
 
     pub fn clearCount(m: *const Mesh) usize {
-        return m.items(.clear0).len + m.items(.clear1).len + m.items(.clear2).len + m.items(.clear3).len;
+        var n: usize = 0;
+        for (0..blocks.Tile.strips) |k| n += m.items(.clear(@intCast(k))).len + m.items(.under(@intCast(k))).len;
+        return n;
     }
 
     pub fn quads(m: *const Mesh) usize {
