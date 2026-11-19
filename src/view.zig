@@ -281,7 +281,7 @@ fn settingsTab(cx: *kete.BuildContext, g: *Game) kete.Widget {
         .spacing = 12,
         .children = arena.dupe(kete.Widget, &.{
             cx.make(kete.Text{ .text = "Quality", .style = .{ .size = t.body_size, .color = t.on_surface }, .wrap = false }),
-            cx.make(kete.Expanded{ .child = cx.make(kete.Slider{ .value = g.qualitySlider(), .on_changed = .of(g, Game.setQuality) }) }),
+            cx.make(kete.Expanded{ .child = cx.make(kete.Slider{ .value = g.qualitySlider(), .on_changed = .of(g, Game.setQuality), .on_change_end = .of(g, Game.endQuality) }) }),
             cx.make(kete.SizedBox{ .width = 60, .child = cx.make(kete.Text{
                 .text = cx.fmt("{d:.0}%", .{g.quality * 100}),
                 .style = .{ .size = t.body_size, .color = t.on_surface_variant },
@@ -890,6 +890,10 @@ test "the menu fits from the smallest window up, and its switches set the option
     g.setQuality(0.42);
     try testing.expectEqual(@as(f32, 0.7), g.quality);
     try testing.expectApproxEqAbs(@as(f32, 0.4), g.qualitySlider(), 0.001);
+    // Drawn so once it is let go.
+    try testing.expectEqual(@as(f32, 1), g.quality_drawn);
+    g.endQuality(0.42);
+    try testing.expectEqual(@as(f32, 0.7), g.quality_drawn);
     // In the title scene, only the one top right (quit); on an island,
     // its close button goes back to the game too.
     u.frame(1920, 1036, 0, view);

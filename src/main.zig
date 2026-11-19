@@ -623,8 +623,7 @@ fn run(init: std.process.Init) !void {
     var opts = options.load();
     var kept = options.effective(opts, host.dev.is_v3d);
     game.quality = kept;
-    // The quality the window's buffer is drawn at (see below).
-    var shown_quality = kept;
+    game.quality_drawn = kept;
     game.look = opts.look;
     game.setPlayerName(opts.name());
     const renderer_started = sys.nowNs();
@@ -765,15 +764,15 @@ fn run(init: std.process.Init) !void {
         // and palette come and go: making buffers of another size each
         // time (and an image to draw the world into, to keep the menu
         // sharp), with the GPU's memory nearly all used, hung the GPU. A
-        // quality chosen in the menu applies when it closes, not at each
-        // step of the slider. In a window (its title bar), the buffer is
-        // the window's full size, and the world is stretched into it by
-        // the GPU.
-        if (!game.menu_open) shown_quality = game.quality;
+        // quality chosen in the menu applies when the slider is let go
+        // (or the menu closes), not at each step of a drag. In a window
+        // (its title bar), the buffer is the window's full size, and the
+        // world is stretched into it by the GPU, as the slider goes.
+        if (!game.menu_open) game.quality_drawn = game.quality;
         const whole_screen = win.win.fullscreen;
-        win.win.render_scale = if (whole_screen) shown_quality else 1;
+        win.win.render_scale = if (whole_screen) game.quality_drawn else 1;
         scene.stretch = !whole_screen;
-        scene.quality = shown_quality;
+        scene.quality = if (whole_screen) game.quality_drawn else game.quality;
         if (whole_screen) upscaler.release();
         // Asked for in the menu.
         if (game.island_action) |action| {

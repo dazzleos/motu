@@ -256,8 +256,13 @@ pub const Game = struct {
     fps_history: [fps_seconds]f32 = @splat(0),
     fps_count: u8 = 0,
     /// How big the window is drawn, of its size across and down (the
-    /// display stretches it): from half to all of it.
+    /// display stretches it): from half to all of it, as the menu's
+    /// slider has it.
     quality: f32 = 1,
+    /// The quality it is drawn at on the whole screen: the slider's when
+    /// it is let go (its buffers are made again at that size, too costly
+    /// at each step of a drag), or when the menu closes.
+    quality_drawn: f32 = 1,
     /// The view's size, and the pointer in it (if it is there).
     view_size: [2]f32 = .{ 1, 1 },
     pointer: ?[2]f32 = null,
@@ -492,6 +497,12 @@ pub const Game = struct {
         const steps = 10;
         const k = @round(std.math.clamp(slider, 0, 1) * steps) / steps;
         g.quality = 0.5 + 0.5 * k;
+    }
+
+    /// The quality the slider was let go at: drawn so.
+    pub fn endQuality(g: *Game, slider: f32) void {
+        g.setQuality(slider);
+        g.quality_drawn = g.quality;
     }
 
     /// The quality, as the menu's slider shows it.
