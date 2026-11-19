@@ -679,6 +679,8 @@ const WorldView = struct {
 
     pub fn event(self: *const WorldView, _: *kete.WidgetNode, e: kete.Event) bool {
         const g = self.game;
+        // Behind the menu, the world is only looked at.
+        if (g.menu_open) return false;
         switch (e) {
             .motion => |pos| g.pointerAt(pos),
             .leave => if (g.press == null) g.pointerAt(null),

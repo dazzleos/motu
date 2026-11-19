@@ -630,6 +630,8 @@ pub const Game = struct {
     }
 
     pub fn pointerDown(g: *Game, pos: [2]f32) void {
+        // Behind the menu, the world is only looked at.
+        if (g.menu_open) return;
         g.press = .{ .at = pos, .last = pos, .dragging = false };
         g.pointer = pos;
     }
@@ -670,6 +672,7 @@ pub const Game = struct {
 
     /// Right click, or a long press.
     pub fn removeAtPointer(g: *Game) void {
+        if (g.menu_open) return;
         g.press = null;
         g.updateTarget();
         _ = g.remove();
@@ -677,6 +680,7 @@ pub const Game = struct {
 
     /// Middle click: the block pointed at goes in the hotbar.
     pub fn pickAtPointer(g: *Game) void {
+        if (g.menu_open) return;
         g.updateTarget();
         const t = g.target orelse return;
         const b = g.world.get(t.cell[0], t.cell[1], t.cell[2]);
@@ -1298,4 +1302,23 @@ test "a canoe: right click gets in, W paddles, it is saved with the player, Shif
     }
     try testing.expectEqual(@as(usize, 3), canoes);
     try testing.expect(g.player.pos[1] > 31.4);
+}
+
+test "behind the menu, the pointer neither turns the view nor builds nor takes the mouse" {
+    var g = try testGame();
+    defer g.world.destroy();
+    defer g.deinit();
+    g.can_capture = true;
+    g.openMenu();
+    const yaw = g.player.yaw;
+    const pitch = g.player.pitch;
+    g.pointerDown(.{ 400, 300 });
+    g.pointerAt(.{ 600, 100 });
+    g.pointerUp();
+    g.removeAtPointer();
+    g.pickAtPointer();
+    try testing.expectEqual(yaw, g.player.yaw);
+    try testing.expectEqual(pitch, g.player.pitch);
+    try testing.expect(g.capture_wanted == null);
+    try testing.expect(!g.unsaved);
 }
