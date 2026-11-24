@@ -567,6 +567,18 @@ pub const Input = struct {
 
     pub fn filter(in: *Input, e: kete.window.InputEvent) bool {
         const game = in.game;
+        // A touch, or a key or a mouse's button: which was used last.
+        switch (e) {
+            .touch_down => game.touch_input = true,
+            .key => |k| if (k.pressed) {
+                game.touch_input = false;
+            },
+            .button => |b| if (b.pressed) {
+                game.touch_input = false;
+            },
+            .relative_motion => game.touch_input = false,
+            else => {},
+        }
         switch (e) {
             .key => |k| {
                 // Typing a name: the keys are its, but Esc and Tab.

@@ -274,6 +274,9 @@ pub const Game = struct {
     /// it turns the view, and its buttons act on the block in the middle.
     can_capture: bool = false,
     captured: bool = false,
+    /// The last input was a touch (not a key or a mouse's button): with
+    /// no keyboard for Esc, a button opens the menu.
+    touch_input: bool = false,
     /// For the window: take the mouse (true) or give it back (false).
     capture_wanted: ?bool = null,
     /// What happened, shown for a moment.

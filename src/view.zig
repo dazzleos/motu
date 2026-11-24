@@ -157,6 +157,16 @@ pub const Motu = struct {
                 .child = cx.make(kete.Padding{ .padding = .{ .top = 12, .right = 12 }, .child = cx.make(kete.Row{ .fill = false, .spacing = 8, .children = a.dupe(kete.Widget, &.{ fullscreen_button, quit_button }) catch &.{} }) }),
             })) catch {};
         }
+        // Touched (with no keyboard for Esc, no window controls in
+        // fullscreen): a button, top left, opens the menu.
+        if (!g.menu_open and g.touch_input) layers.append(a, cx.make(kete.Align{
+            .alignment = .top_left,
+            .child = cx.make(kete.Padding{ .padding = .{ .top = 12, .left = 12 }, .child = cx.make(kete.RoundedBox{
+                .color = button_bg,
+                .radius = kete.CornerRadii.all(fullscreen_size / 2),
+                .child = cx.make(kete.IconButton{ .size = fullscreen_size, .icon = .menu, .on_press = .of(g, Game.openMenu) }),
+            }) }),
+        })) catch {};
         if (g.net.request) |who| layers.append(a, cx.make(kete.Align{
             .alignment = .top_center,
             .child = cx.make(kete.Padding{ .padding = .{ .top = 12 }, .child = joinRequest(cx, g, who) }),
@@ -1050,6 +1060,33 @@ test "the top-right fullscreen button toggles fullscreen, and shows only with th
     u.pointerButton(p, .left, true);
     u.pointerButton(p, .left, false);
     try testing.expect(toggle.toggled);
+}
+
+test "touched, a button top left opens the menu" {
+    const f = try font.Font.init(@embedFile("FiraSans-Regular.ttf"));
+    const u = try kete.ui.WindowUi.create(testing.allocator, testing.io, &f);
+    defer u.destroy();
+    const w = try world_mod.World.create(testing.allocator);
+    defer w.destroy();
+    var g = Game.init(testing.allocator, w);
+    const icons = try testing.allocator.create(Icons);
+    defer testing.allocator.destroy(icons);
+    icons.init();
+    const view: Motu = .{ .game = &g, .icons = icons, .fullscreen = true };
+    g.closeMenu();
+    // With a keyboard or a mouse: none.
+    u.frame(800, 600, 0, view);
+    try testing.expectEqual(@as(usize, 0), withIcon(u.root.?, .menu).len);
+    g.touch_input = true;
+    u.frame(800, 600, 1, view);
+    const btn = withIcon(u.root.?, .menu)[0];
+    const at = btn.position();
+    try testing.expect(at[0] < 100 and at[1] < 100);
+    clickNode(u, btn);
+    try testing.expect(g.menu_open);
+    // In the menu, it is not needed.
+    u.frame(800, 600, 2, view);
+    try testing.expectEqual(@as(usize, 0), withIcon(u.root.?, .menu).len);
 }
 
 test "the menu's islands: chosen and joined from the title scene, left, deleted only when asked twice, and a frame rate graph" {
