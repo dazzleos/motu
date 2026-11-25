@@ -350,13 +350,22 @@ const world_mod = @import("world.zig");
 const math = @import("math.zig");
 const testing = std.testing;
 
-/// Renders the island as the game would, with the real shaders.
-pub fn picture(gpa: std.mem.Allocator, w: *world_mod.World, view: renderer.View, width: u32, height: u32) !Image {
+/// Renders the island as the game would, with the real shaders (seen only
+/// from `fixed`, if given: see Renderer.setFixedView).
+pub fn picture(gpa: std.mem.Allocator, w: *world_mod.World, view: renderer.View, width: u32, height: u32, fixed: ?@import("seen.zig").View) !Image {
     var state: renderer.FakeDevice.State = .{ .gpa = gpa };
     defer state.deinit();
     const r = try renderer.Renderer(renderer.FakeDevice).init(gpa, .{ .state = &state });
     defer r.deinit();
+    r.setFixedView(fixed);
+    // A new renderer: every chunk meshed (another may have been before).
+    w.dirty.setRangeValue(.{ .start = 0, .end = world_mod.chunk_count }, true);
     _ = try r.update(w, view.camera.eye, 1000);
+    // (And what the fixed view sees worked out, and kept.)
+    if (fixed != null) {
+        r.waitForSeen();
+        _ = try r.update(w, view.camera.eye, 1000);
+    }
     var rec: Recorder = .{ .gpa = gpa };
     defer rec.deinit();
     try r.draw(&rec, .{ .x = 0, .y = 0, .width = width, .height = height }, null, view);
@@ -387,7 +396,7 @@ test "the island from its beach, drawn with the real shaders: sky above, land an
         .aspect = @as(f32, width) / height,
         .time = 3,
         .env = renderer.Environment.at(0.38),
-    }, width, height);
+    }, width, height, null);
     defer testing.allocator.free(img.pixels);
     // The top row is mostly sky (palms' fronds may be against it): blue,
     // bright.
@@ -409,3 +418,29 @@ test "the island from its beach, drawn with the real shaders: sky above, land an
     try testing.expect(ground > width / 2);
 }
 
+
+test "the title scene, drawn with only what its place sees, looks as it did" {
+    const game_mod = @import("game.zig");
+    const title = @import("title.zig");
+    const gpa = testing.allocator;
+    const w = try world_mod.World.create(gpa);
+    defer w.destroy();
+    var g = game_mod.Game.init(gpa, w);
+    defer g.deinit();
+    try title.load(&g);
+    const width = 240;
+    const height = 135;
+    // As far as can be seen, and as near as the frame rate may bring it.
+    for ([_]f32{ 1, 0.5 }) |reach| {
+        const view: renderer.View = .{ .camera = g.camera(), .aspect = @as(f32, width) / height, .time = 7.3, .env = renderer.Environment.at(title.time_of_day), .reach = reach };
+        const all = try picture(gpa, w, view, width, height, null);
+        defer gpa.free(all.pixels);
+        const seen = try picture(gpa, w, view, width, height, title.fixedView(w));
+        defer gpa.free(seen.pixels);
+        // The same but where a crack between faces (a pixel's centre
+        // between them) shows what is behind: there, what was left out.
+        var differ: usize = 0;
+        for (all.pixels, seen.pixels) |a, b| differ += @intFromBool(a != b);
+        try testing.expect(differ <= width * height / 1000);
+    }
+}

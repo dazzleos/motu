@@ -15,7 +15,9 @@
 //! 4. Glass and plants, blended, the furthest first.
 //! 5. The outline of the block picked.
 //!
-//! Chunks out of view, or past the fog, are not drawn at all. Every quad's
+//! Chunks out of view, or past the fog, are not drawn at all. For a scene
+//! seen from one place only (the title scene's), `setFixedView` leaves out
+//! of the meshes every face that cannot be seen from there (see seen.zig). Every quad's
 //! two triangles come from one shared index buffer (0 1 2, 0 2 3, then the
 //! next four...), so a mesh is only its vertices; a chunk with more quads
 //! than one index range holds is drawn in parts.
@@ -35,6 +37,7 @@ const creatures = @import("creatures.zig");
 const boat_mod = @import("boat.zig");
 const furniture = @import("furniture.zig");
 const weather_mod = @import("weather.zig");
+const seen_mod = @import("seen.zig");
 
 const World = world_mod.World;
 const Vertex = mesher.Vertex;
@@ -336,6 +339,98 @@ const ChunkGpu = struct {
     }
 };
 
+/// Now, in nanoseconds (a monotonic clock).
+fn nowNs() u64 {
+    return @import("sys").nowNs();
+}
+
+/// Working out which of the chunks' meshes' quads a fixed view sees (see
+/// seen.zig, and `Renderer.setFixedView`), on a thread of its own: it
+/// reads the meshes (nothing changes them meanwhile), and says which quads
+/// to keep, in the meshes' order (a bit each), when `done`.
+const SeenJob = struct {
+    gpa: std.mem.Allocator,
+    view: seen_mod.View,
+    chunks: *const [world_mod.chunk_count]ChunkMesh,
+    started_ns: u64,
+    thread: ?std.Thread = null,
+    keep: std.DynamicBitSetUnmanaged = .{},
+    failed: ?anyerror = null,
+    done: std.atomic.Value(bool) = .init(false),
+
+    fn deinit(j: *SeenJob) void {
+        j.keep.deinit(j.gpa);
+    }
+
+    fn run(j: *SeenJob) void {
+        j.work() catch |err| {
+            j.failed = err;
+        };
+        j.done.store(true, .release);
+    }
+
+    fn work(j: *SeenJob) !void {
+        var total: usize = 0;
+        for (j.chunks) |*c| for (c.quads) |q| {
+            total += q;
+        };
+        j.keep = try .initEmpty(j.gpa, total);
+        var s = try seen_mod.Seen.init(j.gpa, j.view);
+        defer s.deinit();
+        // Chunks out of every view (in the widest window): nothing of
+        // them can show (palms' fronds reach out of their chunks).
+        const frustum = math.Frustum.of(s.vp);
+        var in_view: std.StaticBitSet(world_mod.chunk_count) = .empty;
+        for (j.chunks, 0..) |*c, i| {
+            if (c.min_y > c.max_y) continue;
+            const x: f32 = @floatFromInt(i % world_mod.chunks_x * world_mod.chunk_size);
+            const z: f32 = @floatFromInt(i / world_mod.chunks_x * world_mod.chunk_size);
+            const m = palm_reach;
+            if (frustum.sees(.{ x - m, c.min_y - 1, z - m }, .{ x + world_mod.chunk_size + m, c.max_y + 1, z + world_mod.chunk_size + m })) in_view.set(i);
+        }
+        // What hides: opaque faces (not the see-through strip's).
+        for (j.chunks, 0..) |*c, i| for (0..blocks.Tile.strips) |k| {
+            if (!in_view.isSet(i) or textures.stripSeeThrough(@intCast(k))) continue;
+            const sec = mesher.Section.solid(@intCast(k));
+            const first = c.start(sec);
+            for (0..c.quads[@intFromEnum(sec)]) |q| s.addOccluder(c.verts[(first + q) * 4 ..][0..4]);
+        };
+        try s.finish();
+        // Each quad, in the meshes' order (a chunk's sections in turn).
+        var bit: usize = 0;
+        for (j.chunks, 0..) |*c, i| {
+            const shown = in_view.isSet(i);
+            for (0..mesher.Section.count) |si| {
+                const first = c.start(@enumFromInt(si));
+                for (0..c.quads[si]) |q| {
+                    const quad = c.verts[(first + q) * 4 ..][0..4];
+                    if (shown and s.sees(quad, moves(quad))) j.keep.set(bit);
+                    bit += 1;
+                }
+            }
+        }
+    }
+};
+
+/// How far a quad's corners move in the shaders (blocks): a water
+/// surface's rise and fall (its swell, and the chop: 0.09 by 0.65
+/// and 0.45; see shaders/water_common.zig), or what sways (by its
+/// kind, 0.035 by the kind squared, one way and 0.7 of that the
+/// other; see shaders/terrain.zig); a little to spare.
+fn moves(q: *const [4]Vertex) f32 {
+    var most: f32 = 0;
+    for (q) |v| {
+        const anim = mesher.Info.unpack(v.info).anim;
+        const k: f32 = @floatFromInt(@intFromEnum(anim));
+        const m: f32 = switch (anim) {
+            .wave => swell_height + 0.09 * (0.65 + 0.45),
+            else => 0.035 * k * k * 1.23,
+        };
+        most = @max(most, m);
+    }
+    return most + 0.05;
+}
+
 /// What `draw` needs to know of the moment.
 pub const View = struct {
     camera: math.Camera,
@@ -404,6 +499,19 @@ pub fn Renderer(comptime Device: type) type {
         regions: [region_count]ChunkGpu = @splat(.{}),
         mesh: mesher.Mesh = .{},
         stats: Stats = .{},
+        /// The one place the scene is seen from, if it is (`setFixedView`),
+        /// and whether the meshes have been made only what it sees (once
+        /// all are made: what hides what needs them all), and how many
+        /// quads that left of how many.
+        fixed_view: ?seen_mod.View = null,
+        fixed_done: bool = false,
+        remesh_all: bool = false,
+        fixed_quads: [2]usize = .{ 0, 0 },
+        /// Working out what the fixed view sees, on a thread of its own (it
+        /// takes a while: the frames go on).
+        seen_job: ?*SeenJob = null,
+        /// How long that took, from starting to keeping it.
+        fixed_ms: u64 = 0,
 
         const world_layout: []const gpu.pipeline.VertexField = &.{
             .{ .location = 0, .offset = @offsetOf(Vertex, "pos") },
@@ -538,6 +646,7 @@ pub fn Renderer(comptime Device: type) type {
         }
 
         pub fn deinit(r: *Self) void {
+            r.stopSeen();
             for (&r.chunks) |*c| r.gpa.free(c.verts);
             for (&r.regions) |*g| if (g.bo) |bo| r.dev.destroyBo(bo);
             for (r.strips) |bo| if (gpu.vulkan) r.dev.destroyTexture(bo) else r.dev.destroyBo(bo);
@@ -580,6 +689,11 @@ pub fn Renderer(comptime Device: type) type {
         /// Returns how many are left.
         pub fn update(r: *Self, w: *World, near: V3, limit: usize) !usize {
             r.world = w;
+            // Made for another view (or none): every chunk made again.
+            if (r.remesh_all) {
+                r.remesh_all = false;
+                w.dirty.setRangeValue(.{ .start = 0, .end = world_mod.chunk_count }, true);
+            }
             var done: usize = 0;
             while (done < limit) : (done += 1) {
                 var best: ?usize = null;
@@ -601,13 +715,112 @@ pub fn Renderer(comptime Device: type) type {
                     return err;
                 };
             }
+            // Seen from one place: once all are made, what it sees worked
+            // out (on a thread), and then only that kept.
+            if (r.fixed_view != null and !r.fixed_done and w.dirty.count() == 0) {
+                if (r.seen_job) |job| {
+                    if (job.done.load(.acquire)) try r.keepSeen();
+                } else try r.startSeen();
+            }
             // The regions of those meshed, made again (one without memory
-            // for it is shown as it was, and made again later).
-            for (&r.regions, 0..) |*g, ri| if (g.dirty and !g.far) try r.makeRegion(ri);
+            // for it is shown as it was, and made again later; the others
+            // are made all the same).
+            var failed: ?anyerror = null;
+            for (&r.regions, 0..) |*g, ri| if (g.dirty and !g.far) r.makeRegion(ri) catch |err| {
+                failed = err;
+            };
+            if (failed) |err| return err;
             return w.dirty.count();
         }
 
+        /// The scene is seen only from `view` (its camera never moves, as
+        /// the title scene's does not): what cannot be seen from there is
+        /// left out of the meshes, once they are all made. Null: seen from
+        /// anywhere (as in the game): the meshes are made whole again.
+        pub fn setFixedView(r: *Self, view: ?seen_mod.View) void {
+            if (std.meta.eql(view, r.fixed_view)) return;
+            r.stopSeen();
+            // Meshes made for another view are missing what this one sees.
+            if (r.fixed_done) r.remesh_all = true;
+            r.fixed_view = view;
+            r.fixed_done = false;
+        }
+
+        /// Starts working out what the fixed view sees of the chunks'
+        /// meshes (as they are now: nothing changes them while it does, as
+        /// `stopSeen` is called first), on a thread; without one, here.
+        fn startSeen(r: *Self) !void {
+            const job = try r.gpa.create(SeenJob);
+            errdefer r.gpa.destroy(job);
+            job.* = .{ .gpa = r.gpa, .view = r.fixed_view.?, .chunks = &r.chunks, .started_ns = nowNs() };
+            r.seen_job = job;
+            job.thread = std.Thread.spawn(.{}, SeenJob.run, .{job}) catch null;
+            if (job.thread == null) job.run();
+        }
+
+        /// Waits for the work on what the fixed view sees, if any is under
+        /// way, and lets it go.
+        fn stopSeen(r: *Self) void {
+            const job = r.seen_job orelse return;
+            if (job.thread) |t| t.join();
+            job.deinit();
+            r.gpa.destroy(job);
+            r.seen_job = null;
+        }
+
+        /// Waits for what the fixed view sees to be worked out (for tests,
+        /// and pictures made at once): the next `update` keeps only it.
+        pub fn waitForSeen(r: *Self) void {
+            const job = r.seen_job orelse return;
+            if (job.thread) |t| t.join();
+            job.thread = null;
+        }
+
+        /// Leaves out of the chunks' meshes the quads the fixed view cannot
+        /// see (worked out by the job: see seen.zig), and has their
+        /// regions made again.
+        fn keepSeen(r: *Self) !void {
+            const job = r.seen_job.?;
+            defer r.stopSeen();
+            if (job.failed) |err| return err;
+            var before: usize = 0;
+            var after: usize = 0;
+            var bit: usize = 0;
+            for (&r.chunks, 0..) |*c, i| {
+                var at: usize = 0;
+                var from: usize = 0;
+                var quads: [mesher.Section.count]u32 = @splat(0);
+                for (0..mesher.Section.count) |si| {
+                    // Solid strips' faces stay grouped by the way they face.
+                    const runs: []const u32 = if (si < blocks.Tile.strips) &c.face_quads[si] else &.{c.quads[si]};
+                    for (runs, 0..) |n, run| {
+                        var kept: u32 = 0;
+                        for (0..n) |_| {
+                            const q = c.verts[from * 4 ..][0..4];
+                            from += 1;
+                            defer bit += 1;
+                            if (!job.keep.isSet(bit)) continue;
+                            std.mem.copyForwards(Vertex, c.verts[at * 4 ..][0..4], q);
+                            at += 1;
+                            kept += 1;
+                        }
+                        if (si < blocks.Tile.strips) c.face_quads[si][run] = kept;
+                        quads[si] += kept;
+                    }
+                }
+                before += from;
+                after += at;
+                if (at != from) r.regions[regionOf(i)].dirty = true;
+                c.quads = quads;
+            }
+            r.fixed_quads = .{ after, before };
+            r.fixed_ms = (nowNs() -| job.started_ns) / std.time.ns_per_ms;
+            r.fixed_done = true;
+        }
+
         fn meshChunk(r: *Self, w: *const World, i: usize) !void {
+            // (What is seen of the meshes, being worked out, is out of date.)
+            r.stopSeen();
             const cx = i % world_mod.chunks_x;
             const cz = i / world_mod.chunks_x;
             try mesher.build(r.gpa, w, cx, cz, &r.mesh);
@@ -628,6 +841,8 @@ pub fn Renderer(comptime Device: type) type {
             r.gpa.free(r.chunks[i].verts);
             r.chunks[i] = c;
             r.regions[regionOf(i)].dirty = true;
+            // (Seen from one place: what it sees of it, once all are made.)
+            r.fixed_done = false;
         }
 
         /// Lets go of the buffers of regions well out of sight (`sight`
@@ -1512,3 +1727,43 @@ test "faces turned away are not drawn, and none that can be seen are left out" {
     std.log.info("faces turned to the eye: {d} of {d} quads drawn", .{ drawn, all });
 }
 
+
+test "seen from one place, what it cannot see is not drawn; seen from anywhere again, all of it is" {
+    const game_mod = @import("game.zig");
+    const title = @import("title.zig");
+    const w = try World.create(testing.allocator);
+    defer w.destroy();
+    var g = game_mod.Game.init(testing.allocator, w);
+    defer g.deinit();
+    try title.load(&g);
+    var state: FakeDevice.State = .{ .gpa = testing.allocator };
+    defer state.deinit();
+    const r = try Renderer(FakeDevice).init(testing.allocator, .{ .state = &state });
+    defer r.deinit();
+    const frame = try testing.allocator.create(gpu.Frame);
+    defer testing.allocator.destroy(frame);
+    const Draw = struct {
+        fn triangles(rr: anytype, f: *gpu.Frame, cam: math.Camera) !u32 {
+            f.begin(.{ .handle = 1, .width = 1920, .height = 1080 }, .{ .clear = 0 });
+            try rr.draw(FrameSink{ .frame = f }, .{ .x = 0, .y = 0, .width = 1920, .height = 1080 }, null, .{ .camera = cam, .aspect = 1920.0 / 1080.0, .time = 3, .env = Environment.at(0.4) });
+            return rr.stats.triangles;
+        }
+    };
+    _ = try r.update(w, w.spawn, 1000);
+    const whole = try Draw.triangles(r, frame, g.camera());
+    // Seen only from the title's place: once all is meshed (and what it
+    // sees worked out), less is drawn.
+    r.setFixedView(title.fixedView(w));
+    _ = try r.update(w, w.spawn, 1000);
+    try testing.expect(!r.fixed_done);
+    r.waitForSeen();
+    _ = try r.update(w, w.spawn, 1000);
+    try testing.expect(r.fixed_done);
+    try testing.expect(r.fixed_quads[0] < r.fixed_quads[1]);
+    const seen = try Draw.triangles(r, frame, g.camera());
+    try testing.expect(seen < whole * 4 / 5);
+    // Seen from anywhere (a game): every chunk meshed whole again.
+    r.setFixedView(null);
+    _ = try r.update(w, w.spawn, 1000);
+    try testing.expectEqual(whole, try Draw.triangles(r, frame, g.camera()));
+}

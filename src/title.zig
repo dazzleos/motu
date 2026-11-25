@@ -19,6 +19,8 @@ const std = @import("std");
 const blocks = @import("blocks.zig");
 const world_mod = @import("world.zig");
 const game_mod = @import("game.zig");
+const player_mod = @import("player.zig");
+const seen_mod = @import("seen.zig");
 
 const Block = blocks.Block;
 const World = world_mod.World;
@@ -43,6 +45,14 @@ pub fn load(g: *Game) !void {
     w.spawn_yaw = yaw;
     g.player = .{ .pos = w.spawn, .yaw = yaw, .pitch = pitch };
     g.time_of_day = time_of_day;
+}
+
+/// The one place the title scene is seen from (its camera never moves),
+/// for the renderer to draw only what is seen from there (see seen.zig):
+/// the camera on the cyan block (`w.spawn`, once loaded).
+pub fn fixedView(w: *const World) seen_mod.View {
+    const p: player_mod.Player = .{ .pos = w.spawn, .yaw = yaw, .pitch = pitch };
+    return .{ .camera = p.camera() };
 }
 
 /// Where the cyan block is (the highest, if there are more).

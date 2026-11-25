@@ -752,9 +752,14 @@ fn run(init: std.process.Init) !void {
         const tick_started = sys.nowNs();
         game.tick(dt);
         const mesh_started = sys.nowNs();
+        // The title scene is seen from one place: only what is seen from
+        // there is drawn. A game is seen from anywhere.
+        renderer.setFixedView(if (game.title) title.fixedView(world) else null);
         // What changed, meshed again (a few chunks a frame, so a big change
         // does not stall a frame).
+        const was_fixed = renderer.fixed_done;
         mesh(renderer, world, game.player.eye(), 3, &trouble);
+        if (renderer.fixed_done and !was_fixed) print("motu: seen from one place: {d} quads of {d} kept (worked out in {d} ms)\n", .{ renderer.fixed_quads[0], renderer.fixed_quads[1], renderer.fixed_ms });
         timing.tick_ns += mesh_started - tick_started;
         timing.mesh_ns += sys.nowNs() - mesh_started;
         if (game.wantsSave() and now - last_save > save_every * std.time.ns_per_s) {
@@ -834,6 +839,7 @@ test {
     _ = @import("creatures.zig");
     _ = @import("renderer.zig");
     _ = @import("title.zig");
+    _ = @import("seen.zig");
     _ = @import("preview.zig");
     _ = @import("game.zig");
     _ = @import("view.zig");
