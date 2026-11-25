@@ -959,16 +959,16 @@ pub fn Renderer(comptime Device: type) type {
             }
             var total: u32 = 0;
             for (g.quads) |q| total += q;
-            const bo = if (total == 0) null else try r.dev.createBo(total * 4 * @sizeOf(Vertex));
-            if (r.regions[ri].bo) |old| r.dev.destroyBo(old);
-            r.regions[ri] = .{ .far = false };
-            const new = bo orelse return;
+            if (total == 0) {
+                if (r.regions[ri].bo) |old| r.dev.destroyBo(old);
+                r.regions[ri] = .{ .far = false };
+                return;
+            }
             // Made in memory first (the see-through quads sorted by size:
-            // the buffer is slow to read), then copied into the buffer.
-            const out = r.gpa.alloc(Vertex, total * 4) catch |err| {
-                r.dev.destroyBo(new);
-                return err;
-            };
+            // the buffer is slow to read), then copied into a new buffer;
+            // the old one goes only once it is (if there is no memory, it
+            // stays, and this is made again later).
+            const out = try r.gpa.alloc(Vertex, total * 4);
             defer r.gpa.free(out);
             var at: usize = 0;
             for (0..mesher.Section.count) |si| {
@@ -1002,7 +1002,9 @@ pub fn Renderer(comptime Device: type) type {
                     first += n * 4;
                 }
             }
+            const new = try r.dev.createBo(total * 4 * @sizeOf(Vertex));
             @memcpy(std.mem.bytesAsSlice(Vertex, new.map[0 .. total * 4 * @sizeOf(Vertex)]), out);
+            if (r.regions[ri].bo) |old| r.dev.destroyBo(old);
             g.bo = new;
             // Room for swaying and waves (the swell's too).
             g.min_y -= 0.5 + swell_height;
