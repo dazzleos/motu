@@ -435,7 +435,10 @@ test "the title scene, drawn with only what its place sees, looks as it did" {
         const view: renderer.View = .{ .camera = g.camera(), .aspect = @as(f32, width) / height, .time = 7.3, .env = renderer.Environment.at(title.time_of_day), .reach = reach };
         const all = try picture(gpa, w, view, width, height, null);
         defer gpa.free(all.pixels);
-        const seen = try picture(gpa, w, view, width, height, title.fixedView(w));
+        // (Without leaving out specks, which change it a little.)
+        var fixed = title.fixedView(w);
+        fixed.smallest = 0;
+        const seen = try picture(gpa, w, view, width, height, fixed);
         defer gpa.free(seen.pixels);
         // The same but where a crack between faces (a pixel's centre
         // between them) shows what is behind: there, what was left out.

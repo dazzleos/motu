@@ -31,6 +31,10 @@ pub const View = struct {
     /// Pixels down the view (more: what slips between faces is found more
     /// finely). The screen's: 1080.
     height: u32 = 1080,
+    /// See-through quads (leaves, plants) smaller than this on the screen
+    /// (square pixels, at `height`) are left out too: far off, they are a
+    /// speck in the fog. 0: none are.
+    smallest: f32 = 0,
 };
 
 pub const Seen = struct {
@@ -173,6 +177,15 @@ pub const Seen = struct {
         }
     }
 
+    /// How big a quad is on the screen (square pixels); null if a corner
+    /// is at or behind the eye.
+    pub fn screenArea(s: *const Seen, q: *const [4]Vertex) ?f32 {
+        const c = s.project(q) orelse return null;
+        var a: f32 = 0;
+        for (0..4) |k| a += c[k][0] * c[(k + 1) % 4][1] - c[(k + 1) % 4][0] * c[k][1];
+        return @abs(a) / 2;
+    }
+
     /// Whether a quad can show anywhere (or might: in doubt, it can), even
     /// moved as far as `moves` (blocks) from where its corners are (as
     /// leaves sway and waves rise and fall, in the shaders).
@@ -267,4 +280,15 @@ test "far off to the side, in a wide window: seen; straight up, out of every vie
     try testing.expect(s.sees(&side, 0.25));
     const up = quad(.{ .{ -1, 20, -1 }, .{ 1, 20, -1 }, .{ 1, 20, -3 }, .{ -1, 20, -3 } });
     try testing.expect(!s.sees(&up, 0.25));
+}
+
+test "a quad's size on the screen" {
+    var s = try Seen.init(testing.allocator, .{ .camera = .{ .eye = .{ 0, 0, 0 }, .yaw = 0, .pitch = 0 }, .height = 270 });
+    defer s.deinit();
+    const near = quad(.{ .{ -1, -1, -5 }, .{ 1, -1, -5 }, .{ 1, 1, -5 }, .{ -1, 1, -5 } });
+    const far = quad(.{ .{ -1, -1, -50 }, .{ 1, -1, -50 }, .{ 1, 1, -50 }, .{ -1, 1, -50 } });
+    // Ten times as far: a hundredth the size.
+    try testing.expectApproxEqRel(s.screenArea(&near).? / 100, s.screenArea(&far).?, 0.01);
+    const behind = quad(.{ .{ -1, -1, 5 }, .{ 1, -1, 5 }, .{ 1, 1, 5 }, .{ -1, 1, 5 } });
+    try testing.expect(s.screenArea(&behind) == null);
 }

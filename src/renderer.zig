@@ -402,9 +402,13 @@ const SeenJob = struct {
             const shown = in_view.isSet(i);
             for (0..mesher.Section.count) |si| {
                 const first = c.start(@enumFromInt(si));
+                // See-through quads (not opaque faces, which would leave a
+                // hole, nor water's): too small, left out.
+                const see_through = si != @intFromEnum(mesher.Section.water) and (si >= blocks.Tile.strips or textures.stripSeeThrough(@intCast(si)));
                 for (0..c.quads[si]) |q| {
                     const quad = c.verts[(first + q) * 4 ..][0..4];
-                    if (shown and s.sees(quad, moves(quad))) j.keep.set(bit);
+                    const speck = see_through and if (s.screenArea(quad)) |a| a < j.view.smallest else false;
+                    if (shown and !speck and s.sees(quad, moves(quad))) j.keep.set(bit);
                     bit += 1;
                 }
             }

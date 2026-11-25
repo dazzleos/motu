@@ -49,10 +49,11 @@ pub fn load(g: *Game) !void {
 
 /// The one place the title scene is seen from (its camera never moves),
 /// for the renderer to draw only what is seen from there (see seen.zig):
-/// the camera on the cyan block (`w.spawn`, once loaded).
+/// the camera on the cyan block (`w.spawn`, once loaded). Leaves and
+/// plants smaller than a few pixels (far off, in the fog) are left out.
 pub fn fixedView(w: *const World) seen_mod.View {
     const p: player_mod.Player = .{ .pos = w.spawn, .yaw = yaw, .pitch = pitch };
-    return .{ .camera = p.camera() };
+    return .{ .camera = p.camera(), .smallest = 4 };
 }
 
 /// Where the cyan block is (the highest, if there are more).
