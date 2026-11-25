@@ -233,6 +233,9 @@ const Scene = struct {
             .avatars = g.net.others,
             .boats = boats.items(g),
             .reach = s.reach.k * g.seeing(),
+            // Far leaves and plants smaller than this (square pixels): a
+            // speck in the fog, not worth drawing.
+            .smallest = 16,
         };
         if (s.stretch and s.quality < 1) {
             const size = upscale.sizeOf(.{ vp.width, vp.height }, s.quality);

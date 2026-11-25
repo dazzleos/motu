@@ -289,6 +289,11 @@ const ChunkGpu = struct {
     quads: [mesher.Section.count]u32 = @splat(0),
     /// Of the solid quads, how many face each way (see mesher.face_order).
     face_quads: [blocks.Tile.strips][6]u32 = @splat(@splat(0)),
+    /// Of the see-through quads (plants', seagrass's, and leaves' facing
+    /// each way: `lod_groups`), the biggest first, how many are at least
+    /// each of `lod_sizes` (square blocks): far off, only those big enough
+    /// to show are drawn (see `View.smallest`).
+    lod: [lod_groups][lod_sizes.len]u32 = @splat(@splat(0)),
     /// How high its faces go, for culling.
     min_y: f32 = 0,
     max_y: f32 = 0,
@@ -310,13 +315,15 @@ const ChunkGpu = struct {
     /// (first, count) from the strip's start: a face is seen only from in
     /// front of it, so of the faces of a chunk the eye is east of, none
     /// facing west are.
-    fn facing(c: ChunkGpu, strip: usize, corner: V3, eye: V3, runs: *[3][2]u32) []const [2]u32 {
+    fn facing(c: ChunkGpu, strip: usize, corner: V3, eye: V3, runs: *[3][2]u32, smallest: f32) []const [2]u32 {
         const size: f32 = region_size;
         // A little room for leaves swaying.
         const m = 0.25;
         var n: usize = 0;
         var at: u32 = 0;
-        for (mesher.face_order, c.face_quads[strip]) |face, q| {
+        for (mesher.face_order, c.face_quads[strip], 0..) |face, all, f| {
+            // (Leaves: as many as are big enough to show.)
+            const q = if (textures.stripSeeThrough(@intCast(strip))) c.lodCount(leaves_group + f, smallest, all) else all;
             const seen = switch (face) {
                 .east => eye[0] > corner[0] - m,
                 .west => eye[0] < corner[0] + size + m,
@@ -333,11 +340,63 @@ const ChunkGpu = struct {
                     n += 1;
                 }
             }
-            at += q;
+            at += all;
         }
         return runs[0..n];
     }
+
+    /// How many of `group`'s quads (of `all`) to draw, for those of at least
+    /// `smallest` square blocks: the biggest first, as many as are at
+    /// least the size class at or under it (a few more, never fewer).
+    fn lodCount(c: ChunkGpu, group: usize, smallest: f32, all: u32) u32 {
+        for (lod_sizes, 0..) |size, k| if (size <= smallest) return @min(c.lod[group][k], all);
+        return all;
+    }
 };
+
+/// The see-through quads' groups (see `ChunkGpu.lod`): plants (by strip),
+/// then seagrass (by strip), then leaves (the see-through solid strip's),
+/// by the way they face.
+const plants_group = 0;
+const seagrass_group = blocks.Tile.strips;
+const leaves_group = 2 * blocks.Tile.strips;
+const lod_groups = leaves_group + 6;
+
+/// Size classes for leaving far see-through quads out (square blocks).
+const lod_sizes = [_]f32{ 1, 1.0 / 2.0, 1.0 / 4.0, 1.0 / 8.0, 1.0 / 16.0, 1.0 / 32.0, 1.0 / 64.0, 1.0 / 128.0, 1.0 / 256.0 };
+
+/// How big a quad is (square blocks).
+fn quadArea(q: []const Vertex) f32 {
+    const p0 = V3{ q[0].pos[0], q[0].pos[1], q[0].pos[2] };
+    const a = V3{ q[1].pos[0], q[1].pos[1], q[1].pos[2] } - p0;
+    const b = V3{ q[3].pos[0], q[3].pos[1], q[3].pos[2] } - p0;
+    return math.length(math.cross(a, b));
+}
+
+/// Puts `quads` (four vertices each) in order, the biggest first, and
+/// counts how many are at least each of `lod_sizes`.
+fn sortBySize(gpa: std.mem.Allocator, quads: []Vertex, counts: *[lod_sizes.len]u32) !void {
+    const n = quads.len / 4;
+    counts.* = @splat(0);
+    if (n == 0) return;
+    const Item = struct { area: f32, i: u32 };
+    const items = try gpa.alloc(Item, n);
+    defer gpa.free(items);
+    for (items, 0..) |*it, i| it.* = .{ .area = quadArea(quads[i * 4 ..][0..4]), .i = @intCast(i) };
+    std.mem.sort(Item, items, {}, struct {
+        fn more(_: void, x: Item, y: Item) bool {
+            return x.area > y.area;
+        }
+    }.more);
+    const was = try gpa.dupe(Vertex, quads);
+    defer gpa.free(was);
+    for (items, 0..) |it, i| {
+        @memcpy(quads[i * 4 ..][0..4], was[it.i * 4 ..][0..4]);
+        for (lod_sizes, 0..) |size, k| if (it.area >= size) {
+            counts[k] += 1;
+        };
+    }
+}
 
 /// Now, in nanoseconds (a monotonic clock).
 fn nowNs() u64 {
@@ -458,6 +517,11 @@ pub const View = struct {
     /// The day, and how far into it (in seconds): for the seaplane.
     day: u32 = 0,
     day_seconds: f32 = 0,
+    /// See-through quads (leaves, plants, seagrass) that would be smaller
+    /// than this on the screen (square pixels), by their size and their
+    /// region's distance (its nearest), are not drawn: far off, a speck.
+    /// 0: all are.
+    smallest: f32 = 0,
 };
 
 /// What the last frame drew.
@@ -899,7 +963,13 @@ pub fn Renderer(comptime Device: type) type {
             if (r.regions[ri].bo) |old| r.dev.destroyBo(old);
             r.regions[ri] = .{ .far = false };
             const new = bo orelse return;
-            const out = std.mem.bytesAsSlice(Vertex, new.map[0 .. total * 4 * @sizeOf(Vertex)]);
+            // Made in memory first (the see-through quads sorted by size:
+            // the buffer is slow to read), then copied into the buffer.
+            const out = r.gpa.alloc(Vertex, total * 4) catch |err| {
+                r.dev.destroyBo(new);
+                return err;
+            };
+            defer r.gpa.free(out);
             var at: usize = 0;
             for (0..mesher.Section.count) |si| {
                 const sec: mesher.Section = @enumFromInt(si);
@@ -919,6 +989,20 @@ pub fn Renderer(comptime Device: type) type {
                     at += n;
                 }
             }
+            // The see-through quads, the biggest first, in each group.
+            for (0..blocks.Tile.strips) |k| {
+                for ([_]mesher.Section{ mesher.Section.clear(@intCast(k)), mesher.Section.under(@intCast(k)) }, [_]usize{ plants_group + k, seagrass_group + k }) |sec, group| {
+                    const first = g.offset(sec) / @sizeOf(Vertex);
+                    try sortBySize(r.gpa, out[first..][0 .. g.quads[@intFromEnum(sec)] * 4], &g.lod[group]);
+                }
+                if (!textures.stripSeeThrough(@intCast(k))) continue;
+                var first = g.offset(mesher.Section.solid(@intCast(k))) / @sizeOf(Vertex);
+                for (g.face_quads[k], 0..) |n, f| {
+                    try sortBySize(r.gpa, out[first..][0 .. n * 4], &g.lod[leaves_group + f]);
+                    first += n * 4;
+                }
+            }
+            @memcpy(std.mem.bytesAsSlice(Vertex, new.map[0 .. total * 4 * @sizeOf(Vertex)]), out);
             g.bo = new;
             // Room for swaying and waves (the swell's too).
             g.min_y -= 0.5 + swell_height;
@@ -994,14 +1078,23 @@ pub fn Renderer(comptime Device: type) type {
             for (&tex, r.strips, 0..) |*t, bo, i| t.* = if (gpu.vulkan) bo else .{ .handle = bo.handle, .config = stripConfig(i) };
             const target: Target(@TypeOf(sink)) = .{ .sink = sink, .viewport = viewport, .scissor = scissor, .indices = r.indices.handle, .stats = &r.stats };
 
+            // How big a see-through quad must be (square blocks) at a
+            // region's distance to be drawn: `View.smallest` square pixels.
+            const focal = @as(f32, @floatFromInt(viewport.height)) / 2 / @tan(cam.fov / 2);
+            const Lod = struct {
+                fn smallest(pixels: f32, f: f32, d: f32) f32 {
+                    return pixels * (d / f) * (d / f);
+                }
+            };
             // 1. Solid blocks, near to far.
             for (visible) |o| {
                 const c = r.regions[o.i];
                 const corner = regionCorner(o.i);
+                const smallest = Lod.smallest(v.smallest, focal, o.d);
                 for (0..blocks.Tile.strips) |k| {
                     const sec = mesher.Section.solid(@intCast(k));
                     var runs: [3][2]u32 = undefined;
-                    for (c.facing(k, corner, cam.eye, &runs)) |run| {
+                    for (c.facing(k, corner, cam.eye, &runs, smallest)) |run| {
                         const offset = c.offset(sec) + run[0] * 4 * @sizeOf(Vertex);
                         try target.quads(&r.terrain, c.bo.?.handle, offset, run[1], .{ tex[k], null, null });
                     }
@@ -1093,7 +1186,8 @@ pub fn Renderer(comptime Device: type) type {
                 const c = r.regions[visible[k].i];
                 for (0..blocks.Tile.strips) |sk| {
                     const sec = mesher.Section.under(@intCast(sk));
-                    try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], .{ tex[sk], null, null });
+                    const shown = c.lodCount(seagrass_group + sk, Lod.smallest(v.smallest, focal, visible[k].d), c.quads[@intFromEnum(sec)]);
+                    try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), shown, .{ tex[sk], null, null });
                 }
             }
             // 4. Water, far to near; the sea around the world first (it is
@@ -1136,7 +1230,8 @@ pub fn Renderer(comptime Device: type) type {
                 const c = r.regions[visible[k].i];
                 for (0..blocks.Tile.strips) |sk| {
                     const sec = mesher.Section.clear(@intCast(sk));
-                    try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), c.quads[@intFromEnum(sec)], .{ tex[sk], null, null });
+                    const shown = c.lodCount(plants_group + sk, Lod.smallest(v.smallest, focal, visible[k].d), c.quads[@intFromEnum(sec)]);
+                    try target.quads(&r.terrain_blend, c.bo.?.handle, c.offset(sec), shown, .{ tex[sk], null, null });
                 }
             }
             // 6. The outline.
@@ -1700,7 +1795,7 @@ test "faces turned away are not drawn, and none that can be seen are left out" {
             const c: ChunkGpu = .{ .face_quads = m.face_quads, .min_y = min_y - 0.5, .max_y = max_y + 0.5 };
             for (eyes) |eye| {
                 var runs: [3][2]u32 = undefined;
-                const got = c.facing(k, chunkCorner(i), eye, &runs);
+                const got = c.facing(k, chunkCorner(i), eye, &runs, 0);
                 for (got) |run| drawn += run[1];
                 all += list.len / 4;
                 for (0..list.len / 4) |q| {
@@ -1770,4 +1865,26 @@ test "seen from one place, what it cannot see is not drawn; seen from anywhere a
     r.setFixedView(null);
     _ = try r.update(w, w.spawn, 1000);
     try testing.expectEqual(whole, try Draw.triangles(r, frame, g.camera()));
+}
+
+test "see-through quads sorted by size, and as many drawn as are big enough" {
+    var quads: [3 * 4]Vertex = undefined;
+    // A block high, and half a block, a block and a quarter of one wide.
+    for ([_]f32{ 0.5, 1, 0.25 }, 0..) |width, i| {
+        const x: f32 = @floatFromInt(i * 2);
+        for ([4][2]f32{ .{ 0, 0 }, .{ width, 0 }, .{ width, 1 }, .{ 0, 1 } }, 0..) |c, k| quads[i * 4 + k] = .{ .pos = .{ x + c[0], c[1], 0 }, .uv = .{ 0, 0 }, .info = 0 };
+    }
+    var counts: [lod_sizes.len]u32 = undefined;
+    try sortBySize(testing.allocator, &quads, &counts);
+    // The biggest first (the block from x = 2).
+    try testing.expectEqual(@as(f32, 2), quads[0].pos[0]);
+    try testing.expectApproxEqAbs(@as(f32, 0.25), quadArea(quads[8..12]), 1e-5);
+    var g: ChunkGpu = .{};
+    g.lod[0] = counts;
+    // Half a block or more: two; a third: two (the class under it, a
+    // quarter, has all three: a few more, never fewer); all, for nothing.
+    try testing.expectEqual(@as(u32, 2), g.lodCount(0, 0.5, 3));
+    try testing.expectEqual(@as(u32, 3), g.lodCount(0, 0.3, 3));
+    try testing.expectEqual(@as(u32, 3), g.lodCount(0, 0, 3));
+    try testing.expectEqual(@as(u32, 1), g.lodCount(0, 1, 3));
 }
